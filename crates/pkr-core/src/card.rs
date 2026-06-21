@@ -1,6 +1,7 @@
-// Stubs to allow tests to compile – implementations are incomplete / wrong.
+use std::hash::Hash;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+/// Represents the four suits in a standard deck.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Suit {
     Spade,
@@ -9,7 +10,8 @@ pub enum Suit {
     Club,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// Represents the thirteen ranks in a standard deck.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Rank {
     Two,
@@ -27,15 +29,16 @@ pub enum Rank {
     Ace,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+/// A playing card with a suit and rank.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Card {
     pub suit: Suit,
     pub rank: Rank,
 }
 
 impl Card {
+    /// Creates a new card. This is always valid because the types restrict the values.
     pub fn new(suit: Suit, rank: Rank) -> Self {
-        // placeholder – does not enforce validity; will be fixed later
         Card { suit, rank }
     }
 }
@@ -56,9 +59,19 @@ mod tests {
     fn there_are_52_unique_cards() {
         let suits = [Suit::Spade, Suit::Heart, Suit::Diamond, Suit::Club];
         let ranks = [
-            Rank::Two, Rank::Three, Rank::Four, Rank::Five, Rank::Six,
-            Rank::Seven, Rank::Eight, Rank::Nine, Rank::Ten,
-            Rank::Jack, Rank::Queen, Rank::King, Rank::Ace,
+            Rank::Two,
+            Rank::Three,
+            Rank::Four,
+            Rank::Five,
+            Rank::Six,
+            Rank::Seven,
+            Rank::Eight,
+            Rank::Nine,
+            Rank::Ten,
+            Rank::Jack,
+            Rank::Queen,
+            Rank::King,
+            Rank::Ace,
         ];
         let mut set = HashSet::new();
         for &suit in &suits {
