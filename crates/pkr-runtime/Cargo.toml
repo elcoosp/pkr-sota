@@ -5,6 +5,10 @@ edition.workspace = true
 
 [dependencies]
 pkr-contracts = { workspace = true }
+pkr-export = { workspace = true }
 memmap2 = { workspace = true }
 thiserror = { workspace = true }
 bytemuck = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
