@@ -80,8 +80,9 @@ fn eval_mph(
         let h = hash_key(key, level_seed);
         let bucket = (h % max_level_size as u64) as usize;
         // Each level is stored as contiguous u32 values.
-        let offset = (l * max_level_size + bucket) * 4;
-        let d = u32::from_le_bytes(fmph_data[offset..offset + 4].try_into().unwrap());
+        let offset = l as usize * max_level_size + bucket;
+        let byte_offset = offset * 4;
+        let d = u32::from_le_bytes(fmph_data[byte_offset..byte_offset + 4].try_into().unwrap());
         acc = acc.wrapping_add(d as u64);
     }
     (acc % num_keys as u64) as usize
@@ -91,10 +92,10 @@ fn eval_mph(
 // Tests
 // ---------------------------------------------------------------------------
 #[cfg(test)]
-use std::collections::HashSet;
 mod tests {
     use super::*;
     use pkr_export::header::{FileHeader, FmphHeader, TranslationTableHeader};
+    use std::collections::HashSet;
     use std::io::Write;
 
     /// A self‑contained MPH builder for testing.
@@ -114,15 +115,15 @@ mod tests {
             let mut displacements = vec![0u32; max_level_size];
             let mut used = vec![false; n];
             let mut ok = true;
-            for (bucket, bucket_keys) in keys.iter().map(|&k| {
-                let h = hash_key(k, seed) as usize % max_level_size;
-                (b, k)
-            }).fold(vec![Vec::new(); max_level_size], |mut acc, (b, k)| {
-                acc[b].push(k);
-                acc
-            }).into_iter().enumerate().filter(|(_: |(_, v)| !v.is_empty()usize, v: |(_, v)| !v.is_empty()Vec<u64>)| !v.is_empty()) {
-                // For each bucket, try to find a displacement d such that all
-                // keys in the bucket map to distinct unused slots.
+            let buckets: Vec<(usize, Vec<u64>)> = {
+                let mut acc: Vec<Vec<u64>> = vec![Vec::new(); max_level_size];
+                for &k in keys {
+                    let h = hash_key(k, seed) as usize % max_level_size;
+                    acc[h].push(k);
+                }
+                acc.into_iter().enumerate().filter(|(_, v)| !v.is_empty()).collect()
+            };
+            for (bucket, bucket_keys) in buckets {
                 let mut found = false;
                 for d in 0..(n as u32 * 4) {
                     let mut collision = false;
@@ -330,27 +331,8 @@ mod tests {
 
     #[test]
     fn index_out_of_bounds_returns_none() {
-        // Create a blueprint with infoset_count=1, max_actions=1, but corrupt
-        // the MPH so that eval_mph returns index >= infoset_count.
-        // We'll directly craft a file with a known MPH that maps a key to index 5
-        // while infoset_count=1.
-// //         let keys = vec![1u64];
-// //         // Build a valid MPH for this single key (index 0)
-// //         let (mut fmp_hdr, fmph_bytes) = build_test_mph(&keys);
-//         // Override infoset_count to 1 but make MPH point to index 5 by manipulating
-//         // seed and displacement so that eval_mph returns 5. We can modify the FmphHeader
-//         // and data to cause eval_mph to return 5. Since our eval_mph uses seed and
-//         // level_count=1, we can craft a displacement d such that for the given key,
-//         // hash % n + d ≡ 5 mod 1? No, mod 1 always 0. So we need infoset_count=1,
-//         // but if mph returns idx=5, cdf_start=5*1=5, cdf_end=6 > cdf_len=1, so should
-//         // return None. To force idx=5, we can set infoset_count=6 but only provide 1
-//         // byte of CDF, so boundary check fails. That's simpler: set infoset_count=6,
-//         // max_actions=1, but CDF len=1 (only one byte). Then idx=0..5, only idx=0 is
-//         // valid. We need a mph that maps a key to index 0? We want idx>=1 to trigger
-//         // out-of-bounds. We'll create MPH for 6 keys, but cdf len = 1. Then any
-//         // lookup that maps to idx>=1 will fail.
-//         let keys_many: Vec<u64> = (0..6).map(|i| i as u64).collect();
-        let (fmp_hdr_many, fmph_bytes_many) = build_test_mph(&keys_many);
+        let keys_many: Vec<u64> = (0..6).map(|i| i as u64).collect();
+        let (fmph_hdr_many, fmph_bytes_many) = build_test_mph(&keys_many);
         let fh = FileHeader {
             magic: *b"PKRSOTA1",
             version: 1,
@@ -362,15 +344,12 @@ mod tests {
         let cdf_short = vec![99u8]; // only 1 byte
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_owned();
-        write_test_blueprint(&path, &fh, &fmp_hdr_many, &fmph_bytes_many, &cdf_short);
+        write_test_blueprint(&path, &fh, &fmph_hdr_many, &fmph_bytes_many, &cdf_short);
 
         let mmap = MmapReader::new(&path).unwrap();
         let solver = SolverHandle::new(mmap);
 
-        // Keys 0,1,2,3,4,5 are all in mph; but only the one whose idx=0 will succeed.
-        // We'll test each and count successes. At most one should succeed if mph maps exactly
-        // one to index 0. Actually, mph maps distinct keys to distinct indices 0..5.
-        // So exactly one key will map to 0. Others should return None.
+        // Keys 0..5 are all in mph; but only the one whose idx=0 will succeed.
         let mut success_count = 0;
         for k in 0..6u64 {
             if solver.get_advice_fast(k).is_some() {
@@ -382,15 +361,12 @@ mod tests {
 
     #[test]
     fn large_keyset_stress_test() {
-        // Generate 2000 random keys, build mph, assign CDF, verify no crashes and each key gets
-        // a CDF slice of correct length.
-        use std::collections::HashSet;
         let mut rng = simple_rng(999);
-        let mut keys = HashSet::new();
-        while keys.len() < 2000 {
-            keys.insert(rng.next_u64());
+        let mut keys_set = HashSet::new();
+        while keys_set.len() < 2000 {
+            keys_set.insert(rng.next_u64());
         }
-        let keys_vec: Vec<u64> = keys.into_iter().collect();
+        let keys_vec: Vec<u64> = keys_set.into_iter().collect();
         let n = keys_vec.len();
         let max_actions = 4u8;
         let (fmph_hdr, fmph_bytes) = build_test_mph(&keys_vec);
@@ -416,8 +392,7 @@ mod tests {
         for &k in &keys_vec {
             let advice = solver.get_advice_fast(k).expect("key must be found");
             assert_eq!(advice.cdf_probabilities.len(), max_actions as usize);
-            // Optionally check that the slice is within overall CDF? We can't know exact index,
-            // but we can check that it's a valid 4-byte slice from the CDF array.
+            // Check that the slice is a valid 4-byte slice from the CDF array.
             let slice = &advice.cdf_probabilities;
             let pos = cdf.windows(4).position(|w| w == slice.as_slice());
             assert!(pos.is_some(), "CDF slice for key {k} not found in original CDF");
@@ -426,25 +401,14 @@ mod tests {
 
     #[test]
     fn multiple_levels_mph_evaluation() {
-        // Simulate a 2-level MPH. We'll manually construct a 2-level displacement
-        // table using a simple approach: For a set of keys, build level1 with one
-        // seed and simple displacement, then level2 with another seed to resolve
-        // collisions? Our eval_mph simply sums displacements from each level.
-        // We'll craft a small 2-level table that maps distinct keys to distinct indices.
         let keys = vec![10u64, 20, 30];
         let n = keys.len();
         let level_count = 2u32;
         let max_level_size = 4usize; // buckets per level
-
-        // Use deterministic seeds for reproducibility.
         let seed = 12345u64;
-        // Level 1: displacement array of size max_level_size
+
         let mut displacements = vec![0u32; max_level_size * level_count as usize];
 
-        // We'll brute-force find per-level displacements for each bucket so that
-        // the sum (d1 + d2) % n maps each key to a unique index.
-        // Since n=3, we can try small displacements.
-        // This is ad-hoc but sufficient for testing the multi-level loop.
         fn eval_test_mph(key: u64, seed: u64, displacements: &[u32], max_level_size: usize, level_count: u32, n: usize) -> usize {
             let mut acc: u64 = 0;
             for l in 0..level_count {
@@ -458,7 +422,6 @@ mod tests {
             (acc % n as u64) as usize
         }
 
-        // We'll iterate over possible small values to find a working set.
         let mut found = false;
         for d0_0 in 0..4u32 {
             for d0_1 in 0..4u32 {
@@ -511,7 +474,6 @@ mod tests {
         };
         let fmph_data = bytemuck::cast_slice::<u32, u8>(&displacements).to_vec();
 
-        // Build blueprint with 3 infosets, max_actions=2
         let max_actions = 2u8;
         let cdf = vec![10, 20, 30, 40, 50, 60];
         let fh = FileHeader {
@@ -529,7 +491,6 @@ mod tests {
         let mmap = MmapReader::new(&path).unwrap();
         let solver = SolverHandle::new(mmap);
 
-        // Check each key returns a distinct CDF slice (since mapping is perfect)
         let mut seen_slices = HashSet::new();
         for &k in &keys {
             let advice = solver.get_advice_fast(k).expect("key not found");
@@ -541,7 +502,6 @@ mod tests {
 
     #[test]
     fn blueprint_provider_trait_object_send_sync() {
-        // Ensure SolverHandle can be used as trait object and is Send+Sync.
         fn _assert_send_sync<T: Send + Sync>() {}
         _assert_send_sync::<SolverHandle>();
 
