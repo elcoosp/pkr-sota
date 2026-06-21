@@ -17,9 +17,8 @@ pub struct FmphDataPacked {
     seed2: u64,
     bucket_count: u64,
     /// Offset into a displacements array (if stored separately)
-    /// or inline packed displacements (reserved for future use).
     displacements_offset: u64,
-    /// Reserved padding for alignment.
+    /// Reserved padding.
     _pad: [u8; 24],
 }
 
@@ -30,8 +29,7 @@ const _: () = {
     }
 };
 
-/// Runtime form of FmphData (for evaluation).
-/// Can be constructed from `FmphDataPacked` + a slice of displacements.
+/// Runtime form of FmphData.
 #[derive(Debug, Clone)]
 pub struct FmphData {
     pub keys_len: usize,
@@ -42,7 +40,6 @@ pub struct FmphData {
 }
 
 impl FmphData {
-    /// Pack into a `FmphDataPacked` header, returning the displacement bytes separately.
     pub fn pack(&self, displacement_bytes: &mut Vec<u8>) -> FmphDataPacked {
         let offset = displacement_bytes.len() as u64;
         displacement_bytes.extend_from_slice(bytemuck::cast_slice(&self.displacements));
@@ -56,7 +53,6 @@ impl FmphData {
         }
     }
 
-    /// Unpack from a `FmphDataPacked` header and a byte slice.
     pub fn unpack(packed: &FmphDataPacked, displacement_bytes: &[u8]) -> Self {
         let start = packed.displacements_offset as usize;
         let len = packed.bucket_count as usize;
@@ -72,7 +68,6 @@ impl FmphData {
     }
 }
 
-/// Hash a single `u64` key with a given seed, producing a `u64` digest.
 fn hash_key(key: u64, seed: u64) -> u64 {
     let mut hasher = FixedState::with_seed(seed).build_hasher();
     key.hash(&mut hasher);
@@ -84,27 +79,26 @@ fn hash_key(key: u64, seed: u64) -> u64 {
 /// Returns `FmphData` that maps each key to a distinct index in `0..keys.len()`.
 ///
 /// # Panics
-/// Panics if `keys` is empty (division by zero would occur).
+/// Panics if `keys` is empty or if the algorithm fails after many attempts.
 pub fn build_fmph(keys: &[u64]) -> FmphData {
     let n = keys.len();
     assert!(n > 0, "cannot build FMph for empty key set");
 
-    // Choose bucket count: approximately n / 4, minimum 1.
     let bucket_count = (n / 4).max(1);
-    let max_displacement = (n as u64 * 2).min(50_000) as u32;
+    // Allow enough displacement range; cap at 100_000.
+    let max_displacement = (n as u64 * 4).min(100_000) as u32;
 
     use rand::RngExt;
     let mut rng = rand::rng();
 
-    // Track best attempt for early exit if we find very low displacements.
-    let mut best: Option<FmphData> = None;
-    let mut best_max_disp: u32 = u32::MAX;
+    // We keep trying different seed pairs until we find a perfect hash.
+    // Also track the best result to minimise max displacement.
+    let mut best: Option<(FmphData, u32)> = None; // (data, max_d)
 
-    for _attempt in 0..100 {
+    for _attempt in 0..2000 {
         let seed1 = rng.random();
         let seed2 = rng.random();
 
-        // Partition keys into buckets using the first hash.
         let mut buckets: Vec<Vec<u64>> = vec![Vec::new(); bucket_count];
         for &key in keys {
             let b = hash_key(key, seed1) as usize % bucket_count;
@@ -116,8 +110,7 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
         let mut ok = true;
         let mut max_d = 0u32;
 
-        // Sort buckets by descending size for better chance of finding displacements.
-        // But we need original indices, so we create a permutation.
+        // Process buckets from largest to smallest (better packing).
         let mut perm: Vec<usize> = (0..bucket_count).collect();
         perm.sort_by_key(|&i| buckets[i].len());
         perm.reverse();
@@ -130,13 +123,20 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
 
             let mut found = false;
             for d in 0..max_displacement {
-                let collides = bucket.iter().any(|&k| {
+                // Check that this displacement gives a set of distinct, unused indices.
+                let mut indices = Vec::with_capacity(bucket.len());
+                let mut collision = false;
+                for &k in bucket {
                     let idx = hash_key(k, seed2).wrapping_add(d as u64) as usize % n;
-                    used[idx]
-                });
-                if !collides {
-                    for &k in bucket {
-                        let idx = hash_key(k, seed2).wrapping_add(d as u64) as usize % n;
+                    if used[idx] || indices.contains(&idx) {
+                        collision = true;
+                        break;
+                    }
+                    indices.push(idx);
+                }
+                if !collision {
+                    // Valid displacement found.
+                    for &idx in &indices {
                         used[idx] = true;
                     }
                     displacements[b] = d;
@@ -152,26 +152,25 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
         }
 
         if ok {
-            // Perfect hash found.
-            // Continue searching for one with smaller max displacement.
-            if max_d < best_max_dmp {
-                best_max_d = max_d;
-                best = Some(FmphData {
+            // Perfect hash found; update best.
+            if best.is_none() || max_d < best.as_ref().unwrap().1 {
+                best = Some((FmphData {
                     keys_len: n,
                     seed1,
                     seed2,
                     bucket_count,
                     displacements,
-                });
+                }, max_d));
             }
-            // If max displacement is very small, stop early.
+            // If max displacement is very small, we can stop early.
             if max_d <= 1 {
                 break;
             }
         }
     }
 
-    best.expect("unable to find FMph after 100 attempts; try increasing attempts or max_displacement")
+    best.map(|(data, _)| data)
+        .expect("unable to find FMph after 2000 attempts; try increasing attempts or max_displacement")
 }
 
 /// Evaluate the perfect hash for a single key.
@@ -187,8 +186,6 @@ pub fn eval_fmph(data: &FmphData, key: u64) -> usize {
 mod tests {
     use super::*;
     use rand::RngExt;
-
-    // ── Original tests ──
 
     #[test]
     fn fmph_zero_collisions_1000_keys() {
@@ -232,8 +229,6 @@ mod tests {
         assert!(idx < 3);
     }
 
-    // ── Additional tests ──
-
     #[test]
     fn fmph_no_collisions_small_set() {
         let keys: Vec<u64> = vec![3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5];
@@ -245,7 +240,6 @@ mod tests {
             assert!(idx < n);
             seen[idx] = true;
         }
-        // All indices may not be covered due to duplicates, but that's fine.
     }
 
     #[test]
@@ -271,7 +265,6 @@ mod tests {
     #[test]
     fn fmph_unique_indices_for_distinct_keys() {
         let mut rng = rand::rng();
-        // Use a set to guarantee distinct keys.
         let mut set = std::collections::HashSet::new();
         while set.len() < 100 {
             set.insert(rng.random::<u64>());
@@ -298,7 +291,6 @@ mod tests {
         let packed = fmph.pack(&mut bytes);
         let unpacked = FmphData::unpack(&packed, &bytes);
 
-        // Verify evaluation produces the same indices.
         for &k in &keys {
             let a = eval_fmph(&fmph, k);
             let b = eval_fmph(&unpacked, k);
