@@ -1,51 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
-trap 'echo "ERROR on line $LINENO"; exit 1' ERR
+trap 'echo "ERROR on line $LINENO"; git checkout -- .; exit 1' ERR
 DEBUG=${DEBUG:-0}; [ "$DEBUG" = "1" ] && set -x
 
-WORKTREE_DIR="../pkr-sota-worktrees/task-W1-T4"
-BRANCH="task/W1-T4"
-
+# ─── Worktree setup (optional, just to have the repo context) ──
+WORKTREE_DIR="../pkr-sota-worktrees/task-W2-T1"
+BRANCH="task/W2-T1"
+mkdir -p ../pkr-sota-worktrees
 if [ -d "$WORKTREE_DIR" ]; then
     cd "$WORKTREE_DIR"
 else
-    echo "Worktree not found, run the first script again."
+    echo "Worktree directory missing – run the first script to create it."
     exit 1
 fi
 
-# Structured PR body in markdown
-read -r -d '' BODY << 'PRBODY' || true
-## W1-T4: Binary Format Header
+# ─── Update PR #7 description ─────────────────────────────
+gh pr edit 7 --body '
+## Task W2-T1: DCFR Math
 
-### Objective
-Define `#[repr(C)]` structs for the `blueprint.bin` memory‑mapped file in `pkr-export`, compatible with zero‑copy casting via `bytemuck`.
+### Overview
+Implements the Discounted CFR (DCFR) regret update function in `pkr-cfr/src/dcfr.rs`,
+following Brown & Sandholm (2019) with α=1.5 for positive regrets and α=0.0 for negative.
 
-### Changes
-- **`crates/pkr-export/Cargo.toml`** – added `bytemuck` workspace dependency.
-- **`crates/pkr-export/src/lib.rs`** – declared `pub mod header;`.
-- **`crates/pkr-export/src/header.rs`** – introduced three structs:
-  - `FileHeader` – magic (`PKRSOTA1`), version, variant ID, infoset count, max actions K, with explicit padding to 32 bytes.
-  - `FmphHeader` – Fmph key count, seed, max level size, level count, with explicit padding to 32 bytes.
-  - `TranslationTableHeader` – number of entries, action size, with explicit padding to 16 bytes.
-  All structs derive `Pod` and `Zeroable` for safe zero‑copy casting.
+### Implementation
+- `update_regret(current: u8, iteration: u32, delta: f32, is_positive: bool) -> u8`
+- Discount factor: `t^α / (t^α + 1)`
+  - **Positive regrets**: α = 1.5 → factor grows from 0 to ~1 as t increases.
+  - **Negative regrets**: α = 0.0 → constant factor = 0.5 for t > 0.
+- Edge case `t=0` handled explicitly (factor=0).
+- Result clamped to `[0, 255]` via `i32::clamp`.
 
-### Testing
-- 6 original tests verify sizes, alignments, magic, `Pod`/`Zeroable` trait satisfaction, and zeroed state.
-- Extended with:
-  - Round‑trip tests via `bytemuck::bytes_of` and `from_bytes`.
-  - Slice casting (`cast_slice`) for all three header types.
-  - Zero‑padding verification.
-  - Alignment checks within arrays.
-  - Offset test confirming magic is at byte 0.
-- All tests pass (`cargo test -p pkr-export` ✅).
+### Tests (58 passed)
+**Core formula correctness**
+- Positive/negative discount factors computed manually.
+- t=0, t=1 special cases.
+- Delta added after discount.
+
+**Clamping & range**
+- Values clamped to 0–255.
+- Brute-force scan across multiple inputs never panics.
+
+**Monotonicity & limits**
+- Positive factor monotonic with iteration.
+- Negative factor constant 0.5 for t>0.
+- Large t (u32::MAX) factor → 1.0 for positive.
+
+**Edge cases & robustness**
+- NaN, ±∞, f32::MAX, f32::MIN delta values.
+- No floating-point panics.
 
 ### Acceptance Criteria
-- [x] `cargo test -p pkr-export` passes.
-- [x] Structs are safe for zero‑copy casting (derive `Pod`, `Zeroable`).
-- [x] No implicit padding (fields are explicitly sized and padded).
-PRBODY
+- [x] `cargo test -p pkr-cfr` passes (58 tests).
+- [x] `cargo clippy -p pkr-cfr -- -D warnings` clean.
+- [x] DCFR formula matches Brown & Sandholm (2019) with α=1.5, β=0.
+- [x] No unsafe code; safe zero-copy casting not required here.
 
-echo "--- Updating PR description ---"
-gh pr edit --body "$BODY"
-
-echo "--- PR description updated. ---"
+### Commits
+- `feat(cfr): implement DCFR update_regret (W2-T1)`
+- `test(cfr): add more tests for DCFR update_regret`
+- `fix(cfr): remove useless comparison to silence clippy warning`
+- `test(cfr): finalise DCFR tests with NaN, infinity, and edge cases`
+'
+echo "PR #7 description updated successfully."

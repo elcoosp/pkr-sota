@@ -8,4 +8,6 @@ pkr-contracts = { workspace = true }
 pkr-cfr = { workspace = true }
 thiserror = { workspace = true }
 bytemuck = { workspace = true }
+foldhash = { workspace = true }
+rand = { workspace = true }
 rayon = { workspace = true }
