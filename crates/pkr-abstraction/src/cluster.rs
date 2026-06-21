@@ -305,7 +305,7 @@ mod tests {
         let hash = builder.get_infoset_hash(&hole, &board, &[]);
         // Since evaluate_hand always returns 0, the EHS result will be deterministic
         // but involves Monte Carlo sampling (it will still work). Just ensure it returns something.
-        let hash2 = builder.get_infoset_hash(&hole, &board, &[]);
+        let _hash2 = builder.get_infoset_hash(&hole, &board, &[]);
         // It might vary due to MC randomness, but we won't assert equality (MC not deterministic).
         // Instead, we just check that it's non-zero.
         assert!(hash != 0);
