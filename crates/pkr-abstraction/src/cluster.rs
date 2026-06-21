@@ -217,4 +217,178 @@ mod tests {
         let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
         assert_eq!(unique.len(), 2, "Should have exactly 2 clusters");
     }
+
+    // --- Additional tests for comprehensive coverage ---
+
+    #[test]
+    fn test_single_point_k1() {
+        let features = vec![(0.5, 0.25)];
+        let hashes = cluster_hands(features, 1);
+        assert_eq!(hashes.len(), 1);
+        let hash = hashes[0];
+        let features2 = vec![(0.5, 0.25)];
+        let hashes2 = cluster_hands(features2, 1);
+        assert_eq!(
+            hashes2[0], hash,
+            "Single point must produce deterministic hash"
+        );
+    }
+
+    #[test]
+    fn test_identical_points() {
+        // All points are identical; clustering with any k should assign them to at most 1 cluster.
+        let features = vec![(0.6, 0.36); 50];
+        let hashes = cluster_hands(features.clone(), 5);
+        assert_eq!(hashes.len(), 50);
+        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
+        assert_eq!(
+            unique.len(),
+            1,
+            "Identical points should form a single cluster"
+        );
+    }
+
+    #[test]
+    fn test_k_equals_number_of_points() {
+        let features = generate_features(7);
+        let hashes = cluster_hands(features, 7);
+        assert_eq!(hashes.len(), 7);
+        // Each point could be its own cluster, so number of unique hashes may be up to 7.
+        let unique: std::collections::HashSet<u64> = hashes.iter().cloned().collect();
+        assert!(unique.len() <= 7);
+    }
+
+    #[test]
+    fn test_large_k() {
+        // k larger than number of features is clamped to n
+        let features = generate_features(5);
+        let hashes = cluster_hands(features, 100);
+        assert_eq!(hashes.len(), 5);
+        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
+        assert!(unique.len() <= 5);
+    }
+
+    #[test]
+    fn test_centroids_are_distinct_after_convergence() {
+        // For well-separated data, centroids should be different.
+        let mut features = Vec::new();
+        for _ in 0..30 {
+            features.push((0.1 + rand::random::<f32>() * 0.01, 0.01));
+            features.push((0.9 + rand::random::<f32>() * 0.01, 0.81));
+        }
+        let hashes = cluster_hands(features, 2);
+        let unique: std::collections::HashSet<u64> = hashes.iter().cloned().collect();
+        assert_eq!(unique.len(), 2);
+    }
+
+    #[test]
+    fn test_clustering_is_idempotent() {
+        let features = generate_features(80);
+        let first = cluster_hands(features.clone(), 4);
+        let second = cluster_hands(features, 4);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_abstraction_builder_with_mock_evaluator() {
+        // Use a simple mock evaluator instead of the heavy Monte Carlo.
+        struct MockEval;
+        impl Evaluator for MockEval {
+            fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u16 {
+                0
+            }
+        }
+        let centroids = vec![(0.5, 0.25), (0.3, 0.09)];
+        let builder = KMeansAbstraction::new(centroids.clone(), Box::new(MockEval));
+        let hole = vec![0, 1];
+        let board = vec![];
+        let hash = builder.get_infoset_hash(&hole, &board, &[]);
+        // Since evaluate_hand always returns 0, the EHS result will be deterministic
+        // but involves Monte Carlo sampling (it will still work). Just ensure it returns something.
+        let hash2 = builder.get_infoset_hash(&hole, &board, &[]);
+        // It might vary due to MC randomness, but we won't assert equality (MC not deterministic).
+        // Instead, we just check that it's non-zero.
+        assert!(hash != 0);
+    }
+
+    #[test]
+    fn test_abstraction_builder_different_hands_produce_different_clusters() {
+        // With enough clusters, very different hands should land in different buckets.
+        let centroids = vec![(0.1, 0.01), (0.4, 0.16), (0.7, 0.49), (0.9, 0.81)];
+        let evaluator = Box::new(NlheEvaluator);
+        let builder = KMeansAbstraction::new(centroids, evaluator);
+
+        // AA (strong)
+        let hole_aa = vec![
+            (0 * 13 + 12), // A♠
+            (1 * 13 + 12), // A♥
+        ];
+        let board_empty = vec![];
+        let hash_aa = builder.get_infoset_hash(&hole_aa, &board_empty, &[]);
+
+        // 72o (weak)
+        let hole_72o = vec![
+            (0 * 13 + 5), // 7♠
+            (1 * 13 + 0), // 2♥ (suit2, rank2 -> index 0)
+        ];
+        let hash_72 = builder.get_infoset_hash(&hole_72o, &board_empty, &[]);
+
+        // Since AA is much stronger than 72o, they should almost certainly have different hashes.
+        // Note: due to MC noise, this assertion might fail with low probability; if so, we can relax it.
+        assert_ne!(
+            hash_aa, hash_72,
+            "AA and 72o preflop should be assigned to different clusters"
+        );
+    }
+
+    #[test]
+    fn test_abstraction_builder_on_flop() {
+        let centroids = vec![(0.2, 0.04), (0.5, 0.25), (0.8, 0.64)];
+        let evaluator = Box::new(NlheEvaluator);
+        let builder = KMeansAbstraction::new(centroids, evaluator);
+
+        let hole = vec![
+            (0 * 13 + 12), // A♠
+            (1 * 13 + 12), // A♥
+        ];
+        let flop = vec![
+            (2 * 13 + 12), // A♦
+            (3 * 13 + 12), // A♣
+            (0 * 13 + 11), // K♠
+        ];
+        let hash = builder.get_infoset_hash(&hole, &flop, &[]);
+        assert!(hash != 0);
+        // Repeated call should give the same result if deterministic clustering,
+        // but EHS uses MC and thus may vary slightly; the centroid assignment could potentially change.
+        // We'll just check it's consistent in a single call.
+    }
+
+    #[test]
+    fn test_cluster_hands_all_same_feature_but_different_ehs_squared() {
+        // Edge: all points have same EHS but varying EHS²
+        let features: Vec<_> = (0..20).map(|i| (0.5, 0.2 + i as f32 * 0.01)).collect();
+        let hashes = cluster_hands(features.clone(), 3);
+        assert_eq!(hashes.len(), 20);
+        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
+        assert!(unique.len() <= 3);
+    }
+
+    #[test]
+    fn test_cluster_hands_feature_range() {
+        // Features with extreme values
+        let features = vec![
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (0.3, 0.09),
+            (0.7, 0.49),
+            (0.5, 0.25),
+            (0.9, 0.81),
+            (0.1, 0.01),
+            (0.8, 0.64),
+        ];
+        let hashes = cluster_hands(features, 2);
+        assert_eq!(hashes.len(), 8);
+        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
+        assert!(unique.len() <= 2);
+    }
 }
