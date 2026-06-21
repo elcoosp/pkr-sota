@@ -22,7 +22,6 @@ pub struct FmphDataPacked {
     _pad: [u8; 24],
 }
 
-// Ensure the packed header is exactly 64 bytes.
 const _: () = {
     if std::mem::size_of::<FmphDataPacked>() != 64 {
         panic!("FmphDataPacked must be 64 bytes");
@@ -32,6 +31,7 @@ const _: () = {
 /// Runtime form of FmphData.
 #[derive(Debug, Clone)]
 pub struct FmphData {
+    /// Number of distinct keys.
     pub keys_len: usize,
     seed1: u64,
     seed2: u64,
@@ -76,31 +76,37 @@ fn hash_key(key: u64, seed: u64) -> u64 {
 
 /// Build a minimal perfect hash function for the given keys.
 ///
-/// Returns `FmphData` that maps each key to a distinct index in `0..keys.len()`.
+/// Returns `FmphData` that maps each *distinct* key to a unique index in `0..unique_keys.len()`.
+/// Duplicate keys are allowed and will map to the same index.
 ///
 /// # Panics
-/// Panics if `keys` is empty or if the algorithm fails after many attempts.
+/// Panics if `keys` is empty (after deduplication) or if the algorithm fails after many attempts.
 pub fn build_fmph(keys: &[u64]) -> FmphData {
-    let n = keys.len();
+    // Deduplicate keys
+    use std::collections::HashSet;
+    let unique: Vec<u64> = {
+        let mut set = HashSet::new();
+        keys.iter().copied().filter(|k| set.insert(*k)).collect()
+    };
+
+    let n = unique.len();
     assert!(n > 0, "cannot build FMph for empty key set");
 
-    let bucket_count = (n / 4).max(1);
-    // Allow enough displacement range; cap at 100_000.
-    let max_displacement = (n as u64 * 4).min(100_000) as u32;
+    // More buckets -> easier displacement search.
+    let bucket_count = (n / 2).max(1);
+    let max_displacement = (n as u64 * 8).max(128) as u32;
 
     use rand::RngExt;
     let mut rng = rand::rng();
 
-    // We keep trying different seed pairs until we find a perfect hash.
-    // Also track the best result to minimise max displacement.
-    let mut best: Option<(FmphData, u32)> = None; // (data, max_d)
+    let mut best: Option<(FmphData, u32)> = None;
 
-    for _attempt in 0..2000 {
+    for _attempt in 0..5000 {
         let seed1 = rng.random();
         let seed2 = rng.random();
 
         let mut buckets: Vec<Vec<u64>> = vec![Vec::new(); bucket_count];
-        for &key in keys {
+        for &key in &unique {
             let b = hash_key(key, seed1) as usize % bucket_count;
             buckets[b].push(key);
         }
@@ -110,7 +116,6 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
         let mut ok = true;
         let mut max_d = 0u32;
 
-        // Process buckets from largest to smallest (better packing).
         let mut perm: Vec<usize> = (0..bucket_count).collect();
         perm.sort_by_key(|&i| buckets[i].len());
         perm.reverse();
@@ -123,7 +128,7 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
 
             let mut found = false;
             for d in 0..max_displacement {
-                // Check that this displacement gives a set of distinct, unused indices.
+                // Collect indices for this bucket with displacement d.
                 let mut indices = Vec::with_capacity(bucket.len());
                 let mut collision = false;
                 for &k in bucket {
@@ -135,7 +140,6 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
                     indices.push(idx);
                 }
                 if !collision {
-                    // Valid displacement found.
                     for &idx in &indices {
                         used[idx] = true;
                     }
@@ -152,7 +156,7 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
         }
 
         if ok {
-            // Perfect hash found; update best.
+            // Perfect hash found for unique keys.
             if best.is_none() || max_d < best.as_ref().unwrap().1 {
                 best = Some((FmphData {
                     keys_len: n,
@@ -162,7 +166,6 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
                     displacements,
                 }, max_d));
             }
-            // If max displacement is very small, we can stop early.
             if max_d <= 1 {
                 break;
             }
@@ -170,7 +173,7 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
     }
 
     best.map(|(data, _)| data)
-        .expect("unable to find FMph after 2000 attempts; try increasing attempts or max_displacement")
+        .expect("unable to find FMph after 5000 attempts; try increasing attempts or max_displacement")
 }
 
 /// Evaluate the perfect hash for a single key.
@@ -195,6 +198,8 @@ mod tests {
         let fmph = build_fmph(&keys);
 
         let n = keys.len();
+        // With distinct random keys, unique count should be 1000.
+        assert_eq!(fmph.keys_len, 1000);
         let mut seen = vec![false; n];
         for &key in &keys {
             let idx = eval_fmph(&fmph, key);
@@ -225,6 +230,7 @@ mod tests {
     fn fmph_duplicate_keys() {
         let keys = vec![1, 1, 1];
         let fmph = build_fmph(&keys);
+        // Now unique keys = 1, so index will be 0, which is < 3.
         let idx = eval_fmph(&fmph, 1);
         assert!(idx < 3);
     }
@@ -233,13 +239,16 @@ mod tests {
     fn fmph_no_collisions_small_set() {
         let keys: Vec<u64> = vec![3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5];
         let fmph = build_fmph(&keys);
-        let n = keys.len();
+        // Unique keys: 1,2,3,4,5,6,9 -> 7 keys
+        assert_eq!(fmph.keys_len, 7);
+        let n = fmph.keys_len;
         let mut seen = vec![false; n];
         for &k in &keys {
             let idx = eval_fmph(&fmph, k);
             assert!(idx < n);
             seen[idx] = true;
         }
+        assert!(seen.iter().all(|&x| x));
     }
 
     #[test]
@@ -249,7 +258,7 @@ mod tests {
         let fmph = build_fmph(&keys);
         for &k in &keys {
             let idx = eval_fmph(&fmph, k);
-            assert!(idx < keys.len(), "idx {idx} out of range for {keys:?}");
+            assert!(idx < fmph.keys_len, "idx {idx} out of range for {keys:?}");
         }
     }
 
@@ -271,7 +280,8 @@ mod tests {
         }
         let keys: Vec<u64> = set.into_iter().collect();
         let fmph = build_fmph(&keys);
-        let n = keys.len();
+        let n = fmph.keys_len;
+        assert_eq!(n, 100);
         let mut seen = vec![false; n];
         for &k in &keys {
             let idx = eval_fmph(&fmph, k);
@@ -328,7 +338,8 @@ mod tests {
         let elapsed = start.elapsed();
         eprintln!("Built FMph for 5000 keys in {elapsed:?}");
 
-        let n = keys.len();
+        assert_eq!(fmph.keys_len, 5000);
+        let n = fmph.keys_len;
         let mut seen = vec![false; n];
         for &k in &keys {
             let idx = eval_fmph(&fmph, k);
