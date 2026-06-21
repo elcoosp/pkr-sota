@@ -1,0 +1,11 @@
+[package]
+name = "pkr-abstraction"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pkr-contracts = { workspace = true }
+pkr-core = { workspace = true }
+pkr-eval = { workspace = true }
+# For M1 AMX Matrix acceleration
+amx-rs = "0.1"

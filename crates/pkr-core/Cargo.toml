@@ -1,0 +1,7 @@
+[package]
+name = "pkr-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pkr-contracts = { workspace = true }

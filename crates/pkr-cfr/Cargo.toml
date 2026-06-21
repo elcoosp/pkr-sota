@@ -1,0 +1,8 @@
+[package]
+name = "pkr-cfr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pkr-contracts = { workspace = true }
+pkr-core = { workspace = true }

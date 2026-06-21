@@ -1,0 +1,10 @@
+[package]
+name = "pkr-export"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pkr-contracts = { workspace = true }
+pkr-cfr = { workspace = true }
+thiserror = { workspace = true }
+# Add fmph crate or implement custom FSM minimal perfect hash

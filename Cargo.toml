@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pkr-contracts",
+    "crates/pkr-core",
+    "crates/pkr-eval",
+    "crates/pkr-abstraction",
+    "crates/pkr-cfr",
+    "crates/pkr-export",
+    "crates/pkr-runtime",
+    "binaries/pkr-trainer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["pkr-sota contributors"]
+
+[workspace.dependencies]
+# Shared internal crates
+pkr-contracts = { path = "crates/pkr-contracts" }
+pkr-core = { path = "crates/pkr-core" }
+pkr-eval = { path = "crates/pkr-eval" }
+pkr-abstraction = { path = "crates/pkr-abstraction" }
+pkr-cfr = { path = "crates/pkr-cfr" }
+pkr-export = { path = "crates/pkr-export" }
+pkr-runtime = { path = "crates/pkr-runtime" }
+
+# Shared external crates
+serde = { version = "1.0", features = ["derive"] }
+bytemuck = { version = "1.14", features = ["derive"] }
+memmap2 = "0.9"
+thiserror = "1.0"

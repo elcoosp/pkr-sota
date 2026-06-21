@@ -1,0 +1,8 @@
+[package]
+name = "pkr-contracts"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+bytemuck = { workspace = true }
