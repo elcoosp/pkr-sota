@@ -206,9 +206,7 @@ mod tests {
         let table = CompactRegretTable::new(cap, acts);
         assert_eq!(table.capacity(), cap);
         assert_eq!(table.num_actions(), acts);
-        // internal vec length is exactly cap * acts
-        // We can verify via get_regret on last index doesn't panic
-        let last = (cap - 1) * acts + (acts - 1);
+        // Access last element to ensure no out-of-bounds.
         let _ = table.get_regret(cap - 1, acts - 1);
     }
 
@@ -226,8 +224,85 @@ mod tests {
         // Verify internal vector length matches capacity * num_actions
         let table = CompactRegretTable::new(10, 4);
         // capacity() gives 10, num_actions() gives 4, so total bytes = 40
-        // We can't directly access regrets.len() without a method, but we have get_regret.
-        // We'll just assert that capacity() * num_actions() == 40.
         assert_eq!(table.capacity() * table.num_actions(), 40);
+    }
+
+    #[test]
+    fn extreme_positive_regret_gives_probability_one() {
+        let mut table = CompactRegretTable::new(1, 3);
+        // Make action 1 dominant, others at midpoint (zero regret).
+        table.add_regret(0, 1, 127); // max positive without clamp to 255? 128+127=255, regret=127
+        let strat = table.get_strategy(0);
+        assert!(
+            (strat[1] - 1.0).abs() < 1e-6,
+            "action 1 should have probability 1.0, got {}",
+            strat[1]
+        );
+        assert!((strat[0] - 0.0).abs() < 1e-6, "action 0 should be 0");
+        assert!((strat[2] - 0.0).abs() < 1e-6, "action 2 should be 0");
+    }
+
+    #[test]
+    fn clamped_value_can_be_reduced() {
+        let mut table = CompactRegretTable::new(1, 1);
+        // Clamp to 255
+        table.add_regret(0, 0, 200);
+        assert_eq!(table.get_regret(0, 0), 255);
+        // Reduce by 10 -> 245
+        table.add_regret(0, 0, -10);
+        assert_eq!(table.get_regret(0, 0), 245);
+        // Clamp to 0 then increase
+        table.add_regret(0, 0, -300);
+        assert_eq!(table.get_regret(0, 0), 0);
+        table.add_regret(0, 0, 15);
+        assert_eq!(table.get_regret(0, 0), 15);
+    }
+
+    #[test]
+    fn large_capacity_and_actions() {
+        let cap = 1000;
+        let acts = 10;
+        let mut table = CompactRegretTable::new(cap, acts);
+        // Set and retrieve some values at boundaries
+        table.add_regret(0, 0, 50);
+        table.add_regret(cap - 1, acts - 1, -30);
+        assert_eq!(table.get_regret(0, 0), 178); // 128+50
+        assert_eq!(table.get_regret(cap - 1, acts - 1), 98); // 128-30
+        // Middle infoset untouched -> midpoint
+        assert_eq!(table.get_regret(500, 5), 128);
+    }
+
+    #[test]
+    fn strategy_is_consistent_across_calls() {
+        let mut table = CompactRegretTable::new(1, 2);
+        table.add_regret(0, 0, 10);
+        let s1 = table.get_strategy(0);
+        let s2 = table.get_strategy(0);
+        assert_eq!(s1.len(), s2.len());
+        for (a, b) in s1.iter().zip(s2.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn num_actions_and_capacity_methods_work() {
+        let table = CompactRegretTable::new(7, 3);
+        assert_eq!(table.num_actions(), 3);
+        assert_eq!(table.capacity(), 7);
+    }
+
+    #[test]
+    fn regret_never_exceeds_u8_range() {
+        let mut table = CompactRegretTable::new(1, 1);
+        // Multiple large positive additions
+        for _ in 0..10 {
+            table.add_regret(0, 0, 100);
+        }
+        assert!(table.get_regret(0, 0) <= 255);
+        // Multiple large negative additions
+        for _ in 0..10 {
+            table.add_regret(0, 0, -100);
+        }
+        assert!(table.get_regret(0, 0) >= 0);
     }
 }
