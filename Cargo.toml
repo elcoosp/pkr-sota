@@ -34,8 +34,7 @@ thiserror = "2.0"
 
 # Concurrency & Randomness (Crucial for CFR/AMX)
 rayon = "1.10"
-rand = "0.8"
-rand_chacha = "0.8" # For deterministic CFR sampling
+rand = "0.9"  # Updated to 0.9
 
 # Logging & CLI
 tracing = "0.1"
