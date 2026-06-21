@@ -55,6 +55,7 @@ impl Default for Deck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn new_deck_has_52_cards() {
@@ -78,5 +79,36 @@ mod tests {
         }
         assert!(deck.deal().is_none());
         assert_eq!(deck.remaining(), 0);
+    }
+
+    #[test]
+    fn deal_from_empty_returns_none() {
+        let mut deck = Deck::new();
+        // exhaust deck
+        for _ in 0..52 {
+            deck.deal();
+        }
+        assert_eq!(deck.deal(), None);
+    }
+
+    #[test]
+    fn deck_default_equals_new() {
+        let d1 = Deck::new();
+        let d2 = Deck::default();
+        assert_eq!(d1.remaining(), 52);
+        assert_eq!(d2.remaining(), 52);
+        let set1: HashSet<_> = d1.cards.iter().collect();
+        let set2: HashSet<_> = d2.cards.iter().collect();
+        assert_eq!(set1, set2);
+    }
+
+    #[test]
+    fn new_deck_has_all_unique_cards() {
+        let deck = Deck::new();
+        let mut set = HashSet::new();
+        for &card in &deck.cards {
+            assert!(set.insert(card), "duplicate card found");
+        }
+        assert_eq!(set.len(), 52);
     }
 }
