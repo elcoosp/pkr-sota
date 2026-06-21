@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck;
 use memmap2::Mmap;
 use pkr_export::header::{FileHeader, FmphHeader, TranslationTableHeader};
 use thiserror::Error;
@@ -42,6 +42,7 @@ const SUPPORTED_VERSION: u32 = 1;
 /// Translation table entries (num_entries * action_size bytes)
 /// CDF data                  (infoset_count * max_actions_k bytes)
 /// ```
+#[derive(Debug)]
 pub struct MmapReader {
     /// The memory-mapped file.
     _mmap: Mmap,
@@ -207,7 +208,6 @@ impl MmapReader {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::mem::size_of;
 
     /// Build a valid in-memory blueprint file for testing.
     fn create_test_blueprint(
