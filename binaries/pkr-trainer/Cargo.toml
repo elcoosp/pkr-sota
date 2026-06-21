@@ -2,6 +2,7 @@
 name = "pkr-trainer"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "pkr-trainer"
@@ -10,11 +11,10 @@ path = "src/main.rs"
 [dependencies]
 pkr-contracts = { workspace = true }
 pkr-core = { workspace = true }
-pkr-eval = { workspace = true }
-pkr-abstraction = { workspace = true }
 pkr-cfr = { workspace = true }
 pkr-export = { workspace = true }
-
 clap = { workspace = true }
+rand = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+bytemuck = { workspace = true }
