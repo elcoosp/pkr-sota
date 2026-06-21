@@ -3,57 +3,57 @@ set -euo pipefail
 trap 'echo "ERROR on line $LINENO"; git checkout -- .; exit 1' ERR
 DEBUG=${DEBUG:-0}; [ "$DEBUG" = "1" ] && set -x
 
-WORKTREE_DIR="../pkr-sota-worktrees/task-W3-T4"
+WORKTREE_DIR="../pkr-sota-worktrees/task-W4-T3"
+BRANCH="task/W4-T3"
 cd "$WORKTREE_DIR"
 
-echo "=== Preparing updated PR description ==="
+# Get the PR number for this branch
+PR_NUMBER=$(gh pr view "$BRANCH" --json number -q '.number')
+echo "==> Updating PR #$PR_NUMBER description"
 
-cat > /tmp/pr_body.md << 'EOF'
-## W3-T4: VPS Memory Map Reader
+# Structured markdown body
+NEW_BODY=$(cat <<'PRBODY'
+## Objective
+Implement the fast‑path runtime lookup engine in `pkr-runtime` (W4-T3).
+The `SolverHandle` wraps the memory‑mapped blueprint and performs O(1)
+Minimal Perfect Hash (MPH) lookups to retrieve strategy CDFs.
 
-### Summary
-Implements `MmapReader` in `pkr-runtime`, a read‑only memory‑mapped parser for `blueprint.bin` files. The reader parses the file header using `bytemuck` and exposes raw byte slices for all sections (Fmph displacement data, translation table, CDFs) without any heap allocations for the blueprint data.
+## Changes
+- **`crates/pkr-runtime/src/lookup.rs`** (new file)
+  - `SolverHandle` struct wrapping `MmapReader`
+  - `get_advice_fast(infoset_hash) -> Option<SotaAdvice>`
+  - Implements `pkr_contracts::BlueprintProvider`
+  - Single‑level Hash‑and‑Displace MPH evaluation (`eval_mph`)
+- **`crates/pkr-runtime/src/lib.rs`**
+  - Added `pub mod lookup;`
 
-### Implementation
-- **`crates/pkr-runtime/src/mmap.rs`** – Core module containing:
-  - `MmapError` error enum (using `thiserror`) for file not found, invalid magic, unsupported version, truncated file, etc.
-  - `MmapReader` struct that stores a `memmap2::Mmap`, a stable pointer to the parsed `FileHeader`, and pre‑computed offsets/lengths for each section.
-  - Public methods: `file_header()`, `fmph_header()`, `fmph_data()`, `translation_table_header()`, `translation_table_data()`, `cdf_data()`.
-  - Comprehensive unit tests (12 tests) that create valid blueprint files using `tempfile`, validate all accessors, and cover error conditions.
-- **`crates/pkr-runtime/src/lib.rs`** – Re‑exports `MmapReader` and `MmapError`.
-- **`crates/pkr-runtime/Cargo.toml`** – Added dependencies on `pkr-export` (for header structs) and `tempfile` (dev).
+## Tests
+| Test | Status |
+|------|--------|
+| `basic_lookup_returns_correct_cdf` | ✅ |
+| `empty_blueprint_returns_none` | ✅ |
+| `implements_blueprint_provider` | ✅ |
+| `deterministic_output_for_same_key` | ✅ |
+| `index_out_of_bounds_returns_none` | ✅ |
+| `large_keyset_stress_test` | ✅ |
+| `mph_no_collisions` | ✅ |
+| `blueprint_provider_trait_object_send_sync` | ✅ |
+| `hash_key_deterministic_and_no_panic` | ✅ |
+| All existing `mmap` tests | ✅ (12 tests) |
 
-### Memory Footprint
-The `MmapReader` owns only a `memmap2::Mmap` (which maps the file into the process address space) and a few `usize` offsets. No heap allocation is performed for the blueprint’s data sections – all access is via `&[u8]` slices backed by the mmap.
+**Total: 21 tests passed**
 
-### Acceptance Criteria
-- [x] `cargo test -p pkr-runtime` passes (12/12 tests).
-- [x] Memory footprint equals file size (no heap copies of sections).
-- [x] All file operations are read‑only (`File::open`, `Mmap::map`).
-- [x] File‑not‑found errors handled gracefully (`MmapError::Io`).
+## Acceptance Criteria
+- [x] `cargo test -p pkr-runtime` passes (all 21 tests)
+- [x] Lookup is O(1) branchless (excluding final bounds check)
+- [x] Implements `pkr_contracts::BlueprintProvider`
+- [x] No merge conflicts – only allowed files touched
 
-### Test Results
-```
-running 12 tests
-test mmap::tests::test_cdf_data_content ... ok
-test mmap::tests::test_file_not_found ... ok
-test mmap::tests::test_file_too_small ... ok
-test mmap::tests::test_fmph_data_content ... ok
-test mmap::tests::test_header_pointers_stable ... ok
-test mmap::tests::test_invalid_magic ... ok
-test mmap::tests::test_large_blueprint ... ok
-test mmap::tests::test_open_valid_blueprint ... ok
-test mmap::tests::test_translation_table_content ... ok
-test mmap::tests::test_truncated_cdf_detected ... ok
-test mmap::tests::test_unsupported_version ... ok
-test mmap::tests::test_zero_length_sections ... ok
+## Notes
+- MPH evaluation matches the single‑level format produced by `pkr-export::fmph`
+- Displacement data length forced to a multiple of 8 bytes to satisfy alignment requirements of `TranslationTableHeader`
+PRBODY
+)
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-```
-EOF
-
-echo "=== Updating PR #14 body ==="
-gh pr edit 14 --body-file /tmp/pr_body.md
-
-echo "=== Done. Verifying PR body ==="
-gh pr view 14 --json body --jq '.body' | head -20
+gh pr edit "$PR_NUMBER" --body "$NEW_BODY"
+echo "==> PR description updated"
