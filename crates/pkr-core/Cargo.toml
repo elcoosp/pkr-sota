@@ -2,14 +2,6 @@
 name = "pkr-core"
 version.workspace = true
 edition.workspace = true
-authors.workspace = true
 
 [dependencies]
 pkr-contracts = { workspace = true }
-serde = { workspace = true, optional = true }
-bytemuck = { workspace = true, optional = true }
-
-[features]
-default = []
-serde-support = ["serde"]
-bytemuck-support = ["bytemuck"]
