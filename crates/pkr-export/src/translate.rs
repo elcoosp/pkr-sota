@@ -31,8 +31,6 @@ pub fn compute_translation(
 mod tests {
     use super::*;
 
-    const EPS: f32 = 1e-5;
-
     fn assert_sum_to_255((l, u): (u8, u8)) {
         assert_eq!(
             l as u16 + u as u16,
@@ -120,16 +118,13 @@ mod tests {
             (0.2, 0.8, 0.8, 1.0, 0.0),
         ];
         for &(lo, hi, act, rl, ru) in &test_cases {
-            let res = compute_translation(lo, hi, act, rl, ru);
-            assert_sum_to_255(res);
+            assert_sum_to_255(compute_translation(lo, hi, act, rl, ru));
         }
     }
 
     #[test]
-    fn rounding_does_not_exceed_255() {
+    fn rounding_does_not_exceed_byte_range() {
         let (l, u) = compute_translation(0.0, 1.0, 0.9999, 0.5, 0.5);
-        assert!(l <= 255);
-        assert!(u <= 255);
         assert_eq!(l as u16 + u as u16, 255);
     }
 
@@ -140,5 +135,69 @@ mod tests {
         let _ = compute_translation(0.0, 1.0, f32::NAN, 0.5, 0.5);
         let _ = compute_translation(0.0, 1.0, 0.5, f32::NAN, 0.5);
         let _ = compute_translation(0.0, 1.0, 0.5, 0.5, f32::NAN);
+    }
+
+    #[test]
+    fn favoring_action_with_higher_reach() {
+        let (l1, _) = compute_translation(0.0, 1.0, 0.5, 0.9, 0.1);
+        let (l2, _) = compute_translation(0.0, 1.0, 0.5, 0.1, 0.9);
+        assert!(l1 > l2);
+    }
+
+    #[test]
+    fn reach_sum_less_than_one() {
+        let (l, u) = compute_translation(0.0, 1.0, 0.3, 0.2, 0.0);
+        assert_eq!(l, 255);
+        assert_eq!(u, 0);
+    }
+
+    #[test]
+    fn reach_probabilities_gt_one_still_works() {
+        let (l, u) = compute_translation(0.0, 1.0, 0.5, 2.0, 3.0);
+        assert_sum_to_255((l, u));
+    }
+
+    #[test]
+    fn tiny_positive_denom_no_underflow() {
+        let (l, u) = compute_translation(0.0, 1e-40, 0.5e-40, 1.0, 1.0);
+        assert_sum_to_255((l, u));
+    }
+
+    #[test]
+    fn exactly_one_probability_gets_all_mass() {
+        let (l, u) = compute_translation(0.0, 1.0, 0.0, 1.0, 0.0);
+        assert_eq!(l, 255);
+        assert_eq!(u, 0);
+
+        let (l, u) = compute_translation(0.0, 1.0, 1.0, 0.0, 1.0);
+        assert_eq!(l, 0);
+        assert_eq!(u, 255);
+    }
+
+    #[test]
+    fn actual_slightly_above_upper_graceful() {
+        let (l, u) = compute_translation(0.0, 0.5, 0.5000001, 0.4, 0.6);
+        assert_sum_to_255((l, u));
+    }
+
+    #[test]
+    fn p_lower_monotonically_decreases_with_actual() {
+        let (l1, _) = compute_translation(0.2, 0.8, 0.3, 0.4, 0.6);
+        let (l2, _) = compute_translation(0.2, 0.8, 0.5, 0.4, 0.6);
+        assert!(l1 > l2, "p_lower should decrease as actual moves right");
+    }
+
+    #[test]
+    fn all_zero_inputs_returns_uniform() {
+        let (l, u) = compute_translation(0.0, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(l, 128);
+        assert_eq!(u, 127);
+    }
+
+    #[test]
+    fn result_is_deterministic() {
+        let a = compute_translation(0.1, 0.9, 0.5, 0.3, 0.7);
+        let b = compute_translation(0.1, 0.9, 0.5, 0.3, 0.7);
+        assert_eq!(a, b);
     }
 }
