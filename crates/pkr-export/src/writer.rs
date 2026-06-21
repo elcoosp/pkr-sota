@@ -1,6 +1,5 @@
-use crate::fmph::{FmphData, FmphDataPacked, build_fmph};
+use crate::fmph::build_fmph;
 use crate::header::FileHeader;
-use crate::translate;
 use pkr_cfr::table::CompactRegretTable;
 use std::fs::File;
 use std::io::Write;
