@@ -122,4 +122,127 @@ mod tests {
             ehs_sq
         );
     }
+
+    // --- Additional tests for deeper coverage ---
+
+    #[test]
+    fn test_weak_hand_preflop_low_equity() {
+        let evaluator = NlheEvaluator;
+        // 7♠ 2♦ (off-suit, worst hand)
+        let hole = vec![card_idx(0, 7), card_idx(2, 2)];
+        let board = vec![];
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+        assert!(
+            ehs < 0.45,
+            "72o preflop should have equity <0.45, got {:.4}",
+            ehs
+        );
+        assert!(ehs >= 0.0);
+        assert!(ehs_sq >= ehs * ehs);
+    }
+
+    #[test]
+    fn test_flop_equity_with_flush_draw() {
+        let evaluator = NlheEvaluator;
+        // Hero: A♠ K♠ (spades)
+        let hole = vec![card_idx(0, 14), card_idx(0, 13)];
+        // Flop: Q♠ 5♠ 2♥  (two spades → hero has nut flush draw)
+        let board = vec![
+            card_idx(0, 12), // Q♠
+            card_idx(0, 5),  // 5♠
+            card_idx(1, 2),  // 2♥
+        ];
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+        // Nut flush draw + two overcards should have > 0.45 equity
+        assert!(
+            ehs > 0.4,
+            "Nut flush draw on flop should have equity >0.4, got {:.4}",
+            ehs
+        );
+        assert!(ehs <= 1.0);
+        assert!(ehs_sq >= ehs * ehs);
+    }
+
+    #[test]
+    fn test_turn_equity_variance_smaller_than_flop() {
+        let evaluator = NlheEvaluator;
+        // Hero: A♠ A♥
+        let hole = vec![card_idx(0, 14), card_idx(1, 14)];
+        // Flop: K♠ 7♦ 2♣ (dry flop)
+        let flop = vec![card_idx(0, 13), card_idx(2, 7), card_idx(3, 2)];
+        let (ehs_flop, ehs_sq_flop) = calculate_ehs(&hole, &flop, &evaluator);
+        let var_flop = ehs_sq_flop - ehs_flop * ehs_flop;
+
+        // Turn adds Q♥
+        let turn = vec![
+            card_idx(0, 13),
+            card_idx(2, 7),
+            card_idx(3, 2),
+            card_idx(1, 12),
+        ];
+        let (ehs_turn, ehs_sq_turn) = calculate_ehs(&hole, &turn, &evaluator);
+        let var_turn = ehs_sq_turn - ehs_turn * ehs_turn;
+
+        assert!(
+            var_turn < var_flop + 0.02, // allow some MC noise
+            "Variance on turn ({:.5}) should be <= variance on flop ({:.5})",
+            var_turn,
+            var_flop
+        );
+    }
+
+    #[test]
+    fn test_equity_against_multiple_opponents_not_supported() {
+        // This test ensures the function signature is respected (only 1 opponent)
+        let evaluator = NlheEvaluator;
+        let hole = vec![0, 1];
+        let board = vec![2, 3, 4];
+        // Just verify it doesn't panic for a valid call
+        let (ehs, _) = calculate_ehs(&hole, &board, &evaluator);
+        assert!((0.0..=1.0).contains(&ehs));
+    }
+
+    #[test]
+    fn test_ehs_squared_approximately_equals_variance_plus_ehs_squared() {
+        let evaluator = NlheEvaluator;
+        let hole = vec![card_idx(0, 10), card_idx(1, 10)]; // JJ
+        let board = vec![];
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+        let variance = ehs_sq - ehs * ehs;
+        assert!(
+            variance >= 0.0,
+            "Variance must be non-negative, got {:.6}",
+            variance
+        );
+        // For a non-deterministic outcome, variance should be > 0
+        assert!(variance > 0.0, "Preflop JJ should have positive variance");
+    }
+
+    #[test]
+    fn test_known_board_no_community_cards_needed() {
+        // When board is already 5 cards, no board completion needed.
+        let evaluator = NlheEvaluator;
+        // Royal flush in spades as board
+        let board = vec![
+            card_idx(0, 10), // 10♠
+            card_idx(0, 11), // J♠
+            card_idx(0, 12), // Q♠
+            card_idx(0, 13), // K♠
+            card_idx(0, 14), // A♠
+        ];
+        // Any hole cards (they don't play)
+        let hole = vec![card_idx(1, 2), card_idx(2, 2)]; // 2♥ 2♦
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+        // All players share the board → tie always → equity = 0.5
+        assert!(
+            (ehs - 0.5).abs() < 0.01,
+            "Shared royal flush should give EHS 0.5, got {:.4}",
+            ehs
+        );
+        assert!(
+            (ehs_sq - 0.25).abs() < 0.01,
+            "EHS² should be 0.25, got {:.4}",
+            ehs_sq
+        );
+    }
 }
