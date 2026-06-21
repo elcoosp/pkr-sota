@@ -52,6 +52,16 @@ impl CompactRegretTable {
     pub fn get_regret(&self, infoset_idx: usize, action_idx: usize) -> u8 {
         self.regrets[infoset_idx * self.num_actions + action_idx]
     }
+
+    /// Returns the number of actions per information set.
+    pub fn num_actions(&self) -> usize {
+        self.num_actions
+    }
+
+    /// Returns the total number of information sets this table can hold.
+    pub fn capacity(&self) -> usize {
+        self.regrets.len() / self.num_actions
+    }
 }
 
 #[cfg(test)]
@@ -129,5 +139,95 @@ mod tests {
         let strat = table.get_strategy(0);
         let sum: f32 = strat.iter().sum();
         assert!((sum - 1.0).abs() < 1e-6, "sum was {sum}");
+    }
+
+    #[test]
+    fn strategy_with_all_negative_regrets_is_uniform() {
+        let mut table = CompactRegretTable::new(1, 3);
+        table.add_regret(0, 0, -10);
+        table.add_regret(0, 1, -20);
+        table.add_regret(0, 2, -5);
+        let strat = table.get_strategy(0);
+        let expected = 1.0 / 3.0;
+        for p in strat {
+            assert!((p - expected).abs() < 1e-6, "expected {expected}, got {p}");
+        }
+    }
+
+    #[test]
+    fn strategy_proportional_to_positive_regret() {
+        let mut table = CompactRegretTable::new(1, 3);
+        // Only action 0 and 2 have positive regret.
+        table.add_regret(0, 0, 20);
+        table.add_regret(0, 1, -100);
+        table.add_regret(0, 2, 40);
+        let strat = table.get_strategy(0);
+        // Action 0: regret 20, action2: 40 -> probabilities: 20/60 = 0.333..., 40/60 = 0.666...
+        assert!((strat[0] - (20.0 / 60.0)).abs() < 1e-6, "action0");
+        assert!((strat[1] - 0.0).abs() < 1e-6, "action1 should be 0");
+        assert!((strat[2] - (40.0 / 60.0)).abs() < 1e-6, "action2");
+        let sum: f32 = strat.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "sum should be 1");
+    }
+
+    #[test]
+    fn add_regret_accumulates_over_multiple_calls() {
+        let mut table = CompactRegretTable::new(1, 2);
+        table.add_regret(0, 0, 10);
+        table.add_regret(0, 0, 5);
+        assert_eq!(table.get_regret(0, 0), 143); // 128 + 15
+    }
+
+    #[test]
+    fn adding_zero_delta_does_not_change_regret() {
+        let mut table = CompactRegretTable::new(1, 2);
+        let initial = table.get_regret(0, 0);
+        table.add_regret(0, 0, 0);
+        assert_eq!(table.get_regret(0, 0), initial);
+    }
+
+    #[test]
+    fn multiple_infosets_are_independent() {
+        let mut table = CompactRegretTable::new(3, 3);
+        table.add_regret(0, 1, 10);
+        table.add_regret(1, 2, -5);
+        table.add_regret(2, 0, 20);
+        assert_eq!(table.get_regret(0, 1), 138);
+        assert_eq!(table.get_regret(0, 2), 128); // unchanged
+        assert_eq!(table.get_regret(1, 2), 123);
+        assert_eq!(table.get_regret(1, 0), 128); // unchanged
+        assert_eq!(table.get_regret(2, 0), 148);
+    }
+
+    #[test]
+    fn storage_size_matches_capacity_times_actions() {
+        let cap = 5;
+        let acts = 7;
+        let table = CompactRegretTable::new(cap, acts);
+        assert_eq!(table.capacity(), cap);
+        assert_eq!(table.num_actions(), acts);
+        // internal vec length is exactly cap * acts
+        // We can verify via get_regret on last index doesn't panic
+        let last = (cap - 1) * acts + (acts - 1);
+        let _ = table.get_regret(cap - 1, acts - 1);
+    }
+
+    #[test]
+    fn get_strategy_returns_vector_of_correct_length() {
+        let table = CompactRegretTable::new(1, 4);
+        let strat = table.get_strategy(0);
+        assert_eq!(strat.len(), 4);
+    }
+
+    #[test]
+    fn one_byte_per_action_per_infoset() {
+        // Verify that each stored value is a u8 (size_of == 1)
+        assert_eq!(std::mem::size_of::<u8>(), 1);
+        // Verify internal vector length matches capacity * num_actions
+        let table = CompactRegretTable::new(10, 4);
+        // capacity() gives 10, num_actions() gives 4, so total bytes = 40
+        // We can't directly access regrets.len() without a method, but we have get_regret.
+        // We'll just assert that capacity() * num_actions() == 40.
+        assert_eq!(table.capacity() * table.num_actions(), 40);
     }
 }
