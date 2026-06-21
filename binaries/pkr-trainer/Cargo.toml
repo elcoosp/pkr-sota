@@ -14,3 +14,7 @@ pkr-eval = { workspace = true }
 pkr-abstraction = { workspace = true }
 pkr-cfr = { workspace = true }
 pkr-export = { workspace = true }
+
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

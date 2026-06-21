@@ -7,5 +7,7 @@ edition.workspace = true
 pkr-contracts = { workspace = true }
 pkr-core = { workspace = true }
 pkr-eval = { workspace = true }
-# For M1 AMX Matrix acceleration
-amx-rs = "0.1"
+amx-rs = "0.0.3" # Apple Silicon AMX intrinsics
+rayon = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }

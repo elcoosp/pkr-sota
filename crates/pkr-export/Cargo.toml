@@ -7,4 +7,5 @@ edition.workspace = true
 pkr-contracts = { workspace = true }
 pkr-cfr = { workspace = true }
 thiserror = { workspace = true }
-# Add fmph crate or implement custom FSM minimal perfect hash
+bytemuck = { workspace = true }
+rayon = { workspace = true }
