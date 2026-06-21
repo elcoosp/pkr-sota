@@ -200,4 +200,40 @@ mod tests {
         let b = compute_translation(0.1, 0.9, 0.5, 0.3, 0.7);
         assert_eq!(a, b);
     }
+    #[test]
+    fn equal_reach_gives_linear_interpolation() {
+        // With equal reach probabilities, formula reduces to linear interpolation
+        let (l, u) = compute_translation(0.2, 0.8, 0.5, 0.4, 0.4);
+        assert_sum_to_255((l, u));
+        let expected = (0.8 - 0.5) / (0.8 - 0.2);
+        let expected_q = (expected as f64 * 255.0).round() as u8;
+        let diff = (l as i16 - expected_q as i16).abs();
+        assert!(diff <= 1, "expected close to {expected_q}, got {l}");
+    }
+
+    #[test]
+    fn actual_outside_bounds_clamps() {
+        // Actual below lower: should favour lower action (p_lower ≈ 1.0)
+        let (l, u) = compute_translation(0.2, 0.8, 0.1, 0.5, 0.5);
+        assert_eq!(l, 255);
+        assert_eq!(u, 0);
+
+        // Actual above upper: should favour upper action (p_lower ≈ 0.0)
+        let (l, u) = compute_translation(0.2, 0.8, 0.9, 0.5, 0.5);
+        assert_eq!(l, 0);
+        assert_eq!(u, 255);
+    }
+
+    #[test]
+    fn negative_reach_probabilities_handled() {
+        // Function should not panic and sum must stay 255
+        let (l, u) = compute_translation(0.0, 1.0, 0.5, -0.5, 0.5);
+        assert_sum_to_255((l, u));
+    }
+
+    #[test]
+    fn negative_action_values_handled() {
+        let (l, u) = compute_translation(-0.5, 0.5, 0.0, 0.3, 0.7);
+        assert_sum_to_255((l, u));
+    }
 }
