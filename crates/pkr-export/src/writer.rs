@@ -1,7 +1,4 @@
-use bytemuck;
 use pkr_cfr::table::CompactRegretTable;
-use std::fs;
-use std::io::Read;
 
 /// Stub – will be implemented in green phase.
 pub fn write_blueprint(_path: &str, _table: &CompactRegretTable, _keys: &[u64]) {
@@ -13,8 +10,9 @@ mod tests {
     use super::*;
     use crate::fmph::FmphDataPacked;
     use crate::header::FileHeader;
+    use bytemuck;
     use std::fs;
-    use std::io::Read;
+    use std::io::{Read, Seek, SeekFrom};
     use std::path::PathBuf;
 
     fn create_temp_file_path() -> PathBuf {
@@ -86,21 +84,10 @@ mod tests {
 
         let mut file = fs::File::open(&path).unwrap();
         // skip FileHeader (32 bytes)
-        file.seek(std::io::SeekFrom::Start(32)).unwrap();
+        file.seek(SeekFrom::Start(32)).unwrap();
         let mut fmph_bytes = [0u8; std::mem::size_of::<FmphDataPacked>()];
         file.read_exact(&mut fmph_bytes).unwrap();
         let fmph: &FmphDataPacked = bytemuck::from_bytes(&fmph_bytes);
         assert_eq!(fmph.keys_len, 3);
     }
-
-    // helper to remove temp files after tests (optional)
-    impl Drop for TempFileGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-    struct TempFileGuard {
-        path: PathBuf,
-    }
-    // (We are not using guards for brevity; files left in tmp are fine)
 }
