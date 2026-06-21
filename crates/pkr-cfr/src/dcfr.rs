@@ -234,14 +234,15 @@ mod tests {
 
     #[test]
     fn result_always_in_u8_range() {
-        // brute force a few values
+        // brute force a few values to ensure no panics or overflow
         let values = [0u8, 1, 100, 128, 200, 254, 255];
         let deltas = [-1000.0, -1.0, 0.0, 1.0, 1000.0];
         for &cur in &values {
             for &delta in &deltas {
                 for &is_pos in &[true, false] {
-                    let r = update_regret(cur, 5, delta, is_pos);
-                    assert!(r <= 255, "cur={cur}, delta={delta}, pos={is_pos} => {r}");
+                    // Calling the function is enough to verify it doesn't panic;
+                    // the return type is u8 so it is automatically in range.
+                    let _ = update_regret(cur, 5, delta, is_pos);
                 }
             }
         }
