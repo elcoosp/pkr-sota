@@ -110,7 +110,7 @@ fn traverse(
             for a in 0..num_actions {
                 let delta = utilities[a] - v_sigma;
                 let current_regret = table.get_regret(infoset_idx, a);
-                let is_positive = delta >= 0.0;
+                let is_positive = true; // symmetric discount
                 let new_regret = dcfr::update_regret(current_regret, iteration, delta, is_positive);
                 let delta_i32 = new_regret as i32 - current_regret as i32;
                 table.add_regret(infoset_idx, a, delta_i32);
