@@ -7,7 +7,6 @@ edition.workspace = true
 pkr-contracts = { workspace = true }
 pkr-core = { workspace = true }
 rand = { workspace = true }
-rand_chacha = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
 foldhash = { workspace = true }
