@@ -91,6 +91,7 @@ fn eval_mph(
 // Tests
 // ---------------------------------------------------------------------------
 #[cfg(test)]
+use std::collections::HashSet;
 mod tests {
     use super::*;
     use pkr_export::header::{FileHeader, FmphHeader, TranslationTableHeader};
@@ -115,11 +116,11 @@ mod tests {
             let mut ok = true;
             for (bucket, bucket_keys) in keys.iter().map(|&k| {
                 let h = hash_key(k, seed) as usize % max_level_size;
-                (bucket, k)
+                (b, k)
             }).fold(vec![Vec::new(); max_level_size], |mut acc, (b, k)| {
                 acc[b].push(k);
                 acc
-            }).into_iter().enumerate().filter(|(_, v)| !v.is_empty()) {
+            }).into_iter().enumerate().filter(|(_: |(_, v)| !v.is_empty()usize, v: |(_, v)| !v.is_empty()Vec<u64>)| !v.is_empty()) {
                 // For each bucket, try to find a displacement d such that all
                 // keys in the bucket map to distinct unused slots.
                 let mut found = false;
@@ -333,22 +334,22 @@ mod tests {
         // the MPH so that eval_mph returns index >= infoset_count.
         // We'll directly craft a file with a known MPH that maps a key to index 5
         // while infoset_count=1.
-        let keys = vec![1u64];
-        // Build a valid MPH for this single key (index 0)
-        let (mut fmp_hdr, fmph_bytes) = build_test_mph(&keys);
-        // Override infoset_count to 1 but make MPH point to index 5 by manipulating
-        // seed and displacement so that eval_mph returns 5. We can modify the FmphHeader
-        // and data to cause eval_mph to return 5. Since our eval_mph uses seed and
-        // level_count=1, we can craft a displacement d such that for the given key,
-        // hash % n + d ≡ 5 mod 1? No, mod 1 always 0. So we need infoset_count=1,
-        // but if mph returns idx=5, cdf_start=5*1=5, cdf_end=6 > cdf_len=1, so should
-        // return None. To force idx=5, we can set infoset_count=6 but only provide 1
-        // byte of CDF, so boundary check fails. That's simpler: set infoset_count=6,
-        // max_actions=1, but CDF len=1 (only one byte). Then idx=0..5, only idx=0 is
-        // valid. We need a mph that maps a key to index 0? We want idx>=1 to trigger
-        // out-of-bounds. We'll create MPH for 6 keys, but cdf len = 1. Then any
-        // lookup that maps to idx>=1 will fail.
-        let keys_many: Vec<u64> = (0..6).map(|i| i as u64).collect();
+// //         let keys = vec![1u64];
+// //         // Build a valid MPH for this single key (index 0)
+// //         let (mut fmp_hdr, fmph_bytes) = build_test_mph(&keys);
+//         // Override infoset_count to 1 but make MPH point to index 5 by manipulating
+//         // seed and displacement so that eval_mph returns 5. We can modify the FmphHeader
+//         // and data to cause eval_mph to return 5. Since our eval_mph uses seed and
+//         // level_count=1, we can craft a displacement d such that for the given key,
+//         // hash % n + d ≡ 5 mod 1? No, mod 1 always 0. So we need infoset_count=1,
+//         // but if mph returns idx=5, cdf_start=5*1=5, cdf_end=6 > cdf_len=1, so should
+//         // return None. To force idx=5, we can set infoset_count=6 but only provide 1
+//         // byte of CDF, so boundary check fails. That's simpler: set infoset_count=6,
+//         // max_actions=1, but CDF len=1 (only one byte). Then idx=0..5, only idx=0 is
+//         // valid. We need a mph that maps a key to index 0? We want idx>=1 to trigger
+//         // out-of-bounds. We'll create MPH for 6 keys, but cdf len = 1. Then any
+//         // lookup that maps to idx>=1 will fail.
+//         let keys_many: Vec<u64> = (0..6).map(|i| i as u64).collect();
         let (fmp_hdr_many, fmph_bytes_many) = build_test_mph(&keys_many);
         let fh = FileHeader {
             magic: *b"PKRSOTA1",
@@ -450,7 +451,7 @@ mod tests {
                 let level_seed = seed.wrapping_add(l as u64 * 0x9E3779B97F4A7C15);
                 let h = hash_key(key, level_seed);
                 let bucket = (h % max_level_size as u64) as usize;
-                let offset = (l as usize * max_level_size + bucket);
+                let offset = l as usize * max_level_size + bucket;
                 let d = displacements[offset] as u64;
                 acc = acc.wrapping_add(d);
             }
