@@ -154,4 +154,45 @@ mod tests {
         let fmph: &FmphDataPacked = bytemuck::from_bytes(&fmph_bytes);
         assert_eq!(fmph.keys_len, 3);
     }
+
+    // ── Additional tests for robust coverage ───────────────────
+
+    #[test]
+    fn test_cdf_values_are_valid() {
+        let path = create_temp_file_path();
+        let mut table = CompactRegretTable::new(2, 3);
+        // Set regrets such that strategy is non-uniform
+        table.add_regret(0, 0, 20);
+        table.add_regret(0, 1, 10);
+        table.add_regret(1, 2, 5);
+        let keys: Vec<u64> = vec![10, 20];
+        write_blueprint(path.to_str().unwrap(), &table, &keys);
+
+        let mut file = fs::File::open(&path).unwrap();
+        // CDF starts after header (32) + fmph packed (64) + displacements (bucket_count*4).
+        // keys len=2, bucket_count = max(1,1)=1 → displacements=4 bytes
+        file.seek(SeekFrom::Start(32 + 64 + 4)).unwrap();
+        let cdf_len = 2 * 3; // 2 infosets, 3 actions each
+        let mut cdf = vec![0u8; cdf_len];
+        file.read_exact(&mut cdf).unwrap();
+        // Last action's CDF for each infoset must be 255 (cumulative sum to 1.0)
+        assert_eq!(cdf[2], 255, "last action of infoset 0 should be 255");
+        assert_eq!(cdf[5], 255, "last action of infoset 1 should be 255");
+        // First action of infoset 0 should be >0 because positive regret exists
+        assert!(cdf[0] > 0, "first action cdf should be >0");
+    }
+
+    #[test]
+    fn test_zero_capacity_table_handled() {
+        let path = create_temp_file_path();
+        let table = CompactRegretTable::new(0, 2);
+        // keys must be non-empty for build_fmph
+        let keys = vec![1u64];
+        write_blueprint(path.to_str().unwrap(), &table, &keys);
+
+        let metadata = fs::metadata(&path).unwrap();
+        // infoset_count=0, max_actions_k=2, no cdf bytes
+        let expected = 32 + 64 + 4 + 0 + 16;
+        assert_eq!(metadata.len(), expected as u64);
+    }
 }
