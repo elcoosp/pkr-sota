@@ -24,7 +24,7 @@ impl CompactRegretTable {
     pub fn add_regret(&mut self, infoset_idx: usize, action_idx: usize, delta: i32) {
         let offset = infoset_idx * self.num_actions + action_idx;
         let current = self.regrets[offset] as i32;
-        let new_val = (current + delta).clamp(0, 255);
+        let new_val = current.saturating_add(delta).clamp(0, 255);
         self.regrets[offset] = new_val as u8;
     }
 
@@ -60,7 +60,11 @@ impl CompactRegretTable {
 
     /// Returns the total number of information sets this table can hold.
     pub fn capacity(&self) -> usize {
-        self.regrets.len() / self.num_actions
+        if self.num_actions == 0 {
+            0
+        } else {
+            self.regrets.len() / self.num_actions
+        }
     }
 }
 
@@ -95,14 +99,14 @@ mod tests {
     #[test]
     fn quantisation_clamps_to_zero() {
         let mut table = CompactRegretTable::new(1, 2);
-        table.add_regret(0, 0, -200); // should clamp to 0
+        table.add_regret(0, 0, -200);
         assert_eq!(table.get_regret(0, 0), 0);
     }
 
     #[test]
     fn quantisation_clamps_to_255() {
         let mut table = CompactRegretTable::new(1, 2);
-        table.add_regret(0, 0, 200); // should clamp to 255
+        table.add_regret(0, 0, 200);
         assert_eq!(table.get_regret(0, 0), 255);
     }
 
@@ -120,13 +124,11 @@ mod tests {
     #[test]
     fn strategy_positive_regret_increases_probability() {
         let mut table = CompactRegretTable::new(1, 2);
-        // Action 0 gets positive regret, action 1 stays at zero.
         table.add_regret(0, 0, 10);
         let strat = table.get_strategy(0);
         assert!(
             strat[0] > strat[1],
-            "Action 0 should have higher probability, got {:?}",
-            strat
+            "Action 0 should have higher probability"
         );
     }
 
@@ -134,7 +136,7 @@ mod tests {
     fn strategy_sums_to_one() {
         let mut table = CompactRegretTable::new(1, 3);
         table.add_regret(0, 0, 5);
-        table.add_regret(0, 1, -3); // negative, ignored in positive sum
+        table.add_regret(0, 1, -3);
         table.add_regret(0, 2, 0);
         let strat = table.get_strategy(0);
         let sum: f32 = strat.iter().sum();
@@ -150,24 +152,22 @@ mod tests {
         let strat = table.get_strategy(0);
         let expected = 1.0 / 3.0;
         for p in strat {
-            assert!((p - expected).abs() < 1e-6, "expected {expected}, got {p}");
+            assert!((p - expected).abs() < 1e-6);
         }
     }
 
     #[test]
     fn strategy_proportional_to_positive_regret() {
         let mut table = CompactRegretTable::new(1, 3);
-        // Only action 0 and 2 have positive regret.
         table.add_regret(0, 0, 20);
         table.add_regret(0, 1, -100);
         table.add_regret(0, 2, 40);
         let strat = table.get_strategy(0);
-        // Action 0: regret 20, action2: 40 -> probabilities: 20/60 = 0.333..., 40/60 = 0.666...
-        assert!((strat[0] - (20.0 / 60.0)).abs() < 1e-6, "action0");
-        assert!((strat[1] - 0.0).abs() < 1e-6, "action1 should be 0");
-        assert!((strat[2] - (40.0 / 60.0)).abs() < 1e-6, "action2");
+        assert!((strat[0] - (20.0 / 60.0)).abs() < 1e-6);
+        assert!((strat[1] - 0.0).abs() < 1e-6);
+        assert!((strat[2] - (40.0 / 60.0)).abs() < 1e-6);
         let sum: f32 = strat.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-6, "sum should be 1");
+        assert!((sum - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -175,7 +175,7 @@ mod tests {
         let mut table = CompactRegretTable::new(1, 2);
         table.add_regret(0, 0, 10);
         table.add_regret(0, 0, 5);
-        assert_eq!(table.get_regret(0, 0), 143); // 128 + 15
+        assert_eq!(table.get_regret(0, 0), 143);
     }
 
     #[test]
@@ -193,65 +193,50 @@ mod tests {
         table.add_regret(1, 2, -5);
         table.add_regret(2, 0, 20);
         assert_eq!(table.get_regret(0, 1), 138);
-        assert_eq!(table.get_regret(0, 2), 128); // unchanged
+        assert_eq!(table.get_regret(0, 2), 128);
         assert_eq!(table.get_regret(1, 2), 123);
-        assert_eq!(table.get_regret(1, 0), 128); // unchanged
+        assert_eq!(table.get_regret(1, 0), 128);
         assert_eq!(table.get_regret(2, 0), 148);
     }
 
     #[test]
     fn storage_size_matches_capacity_times_actions() {
-        let cap = 5;
-        let acts = 7;
-        let table = CompactRegretTable::new(cap, acts);
-        assert_eq!(table.capacity(), cap);
-        assert_eq!(table.num_actions(), acts);
-        // Access last element to ensure no out-of-bounds.
-        let _ = table.get_regret(cap - 1, acts - 1);
+        let table = CompactRegretTable::new(5, 7);
+        assert_eq!(table.capacity(), 5);
+        assert_eq!(table.num_actions(), 7);
+        let _ = table.get_regret(4, 6);
     }
 
     #[test]
     fn get_strategy_returns_vector_of_correct_length() {
         let table = CompactRegretTable::new(1, 4);
-        let strat = table.get_strategy(0);
-        assert_eq!(strat.len(), 4);
+        assert_eq!(table.get_strategy(0).len(), 4);
     }
 
     #[test]
     fn one_byte_per_action_per_infoset() {
-        // Verify that each stored value is a u8 (size_of == 1)
         assert_eq!(std::mem::size_of::<u8>(), 1);
-        // Verify internal vector length matches capacity * num_actions
         let table = CompactRegretTable::new(10, 4);
-        // capacity() gives 10, num_actions() gives 4, so total bytes = 40
         assert_eq!(table.capacity() * table.num_actions(), 40);
     }
 
     #[test]
     fn extreme_positive_regret_gives_probability_one() {
         let mut table = CompactRegretTable::new(1, 3);
-        // Make action 1 dominant, others at midpoint (zero regret).
-        table.add_regret(0, 1, 127); // max positive without clamp to 255? 128+127=255, regret=127
+        table.add_regret(0, 1, 127);
         let strat = table.get_strategy(0);
-        assert!(
-            (strat[1] - 1.0).abs() < 1e-6,
-            "action 1 should have probability 1.0, got {}",
-            strat[1]
-        );
-        assert!((strat[0] - 0.0).abs() < 1e-6, "action 0 should be 0");
-        assert!((strat[2] - 0.0).abs() < 1e-6, "action 2 should be 0");
+        assert!((strat[1] - 1.0).abs() < 1e-6);
+        assert!((strat[0] - 0.0).abs() < 1e-6);
+        assert!((strat[2] - 0.0).abs() < 1e-6);
     }
 
     #[test]
     fn clamped_value_can_be_reduced() {
         let mut table = CompactRegretTable::new(1, 1);
-        // Clamp to 255
         table.add_regret(0, 0, 200);
         assert_eq!(table.get_regret(0, 0), 255);
-        // Reduce by 10 -> 245
         table.add_regret(0, 0, -10);
         assert_eq!(table.get_regret(0, 0), 245);
-        // Clamp to 0 then increase
         table.add_regret(0, 0, -300);
         assert_eq!(table.get_regret(0, 0), 0);
         table.add_regret(0, 0, 15);
@@ -263,12 +248,10 @@ mod tests {
         let cap = 1000;
         let acts = 10;
         let mut table = CompactRegretTable::new(cap, acts);
-        // Set and retrieve some values at boundaries
         table.add_regret(0, 0, 50);
         table.add_regret(cap - 1, acts - 1, -30);
-        assert_eq!(table.get_regret(0, 0), 178); // 128+50
-        assert_eq!(table.get_regret(cap - 1, acts - 1), 98); // 128-30
-        // Middle infoset untouched -> midpoint
+        assert_eq!(table.get_regret(0, 0), 178);
+        assert_eq!(table.get_regret(cap - 1, acts - 1), 98);
         assert_eq!(table.get_regret(500, 5), 128);
     }
 
@@ -294,15 +277,86 @@ mod tests {
     #[test]
     fn regret_never_exceeds_u8_range() {
         let mut table = CompactRegretTable::new(1, 1);
-        // Multiple large positive additions
         for _ in 0..10 {
             table.add_regret(0, 0, 100);
         }
-        assert!(table.get_regret(0, 0) <= 255);
-        // Multiple large negative additions
+        assert_eq!(table.get_regret(0, 0), 255);
         for _ in 0..10 {
             table.add_regret(0, 0, -100);
         }
-        assert!(table.get_regret(0, 0) >= 0);
+        assert_eq!(table.get_regret(0, 0), 0);
+    }
+
+    #[test]
+    fn strategy_with_only_one_positive_regret_works() {
+        let mut table = CompactRegretTable::new(1, 4);
+        table.add_regret(0, 2, 50);
+        let strat = table.get_strategy(0);
+        assert!((strat[2] - 1.0).abs() < 1e-6);
+        assert!((strat[0] - 0.0).abs() < 1e-6);
+        assert!((strat[1] - 0.0).abs() < 1e-6);
+        assert!((strat[3] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn add_regret_with_delta_exceeding_i32_range_should_clamp() {
+        let mut table = CompactRegretTable::new(1, 1);
+        table.add_regret(0, 0, i32::MAX);
+        assert_eq!(table.get_regret(0, 0), 255);
+        let mut table = CompactRegretTable::new(1, 1);
+        table.add_regret(0, 0, i32::MIN);
+        assert_eq!(table.get_regret(0, 0), 0);
+    }
+
+    #[test]
+    fn strategy_probabilities_are_non_negative() {
+        let mut table = CompactRegretTable::new(1, 3);
+        table.add_regret(0, 0, 10);
+        table.add_regret(0, 1, -5);
+        table.add_regret(0, 2, 20);
+        let strat = table.get_strategy(0);
+        for &p in &strat {
+            assert!(p >= 0.0, "probability {p} should be non-negative");
+        }
+    }
+
+    #[test]
+    fn zero_capacity_table_has_correct_dimensions() {
+        let table = CompactRegretTable::new(0, 5);
+        assert_eq!(table.capacity(), 0);
+        assert_eq!(table.num_actions(), 5);
+    }
+
+    #[test]
+    fn zero_capacity_zero_actions_table_creation_does_not_panic() {
+        let table = CompactRegretTable::new(0, 0);
+        assert_eq!(table.capacity(), 0);
+        assert_eq!(table.num_actions(), 0);
+    }
+
+    #[test]
+    fn get_strategy_with_different_infosets_is_independent() {
+        let mut table = CompactRegretTable::new(3, 2);
+        table.add_regret(0, 0, 30);
+        table.add_regret(1, 1, -10);
+        table.add_regret(2, 0, 10);
+        let s0 = table.get_strategy(0);
+        let s1 = table.get_strategy(1);
+        let s2 = table.get_strategy(2);
+        assert!(s0[0] > s0[1]);
+        assert!((s1[0] - 0.5).abs() < 1e-6 && (s1[1] - 0.5).abs() < 1e-6);
+        assert!(s2[0] > s2[1]);
+    }
+
+    #[test]
+    fn strategy_all_zero_after_reset_to_midpoint() {
+        let mut table = CompactRegretTable::new(1, 4);
+        table.add_regret(0, 1, 50);
+        table.add_regret(0, 1, -50);
+        let strat = table.get_strategy(0);
+        let expected = 1.0 / 4.0;
+        for p in &strat {
+            assert!((p - expected).abs() < 1e-6);
+        }
     }
 }
