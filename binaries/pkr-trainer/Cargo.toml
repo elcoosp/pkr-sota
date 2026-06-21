@@ -9,9 +9,8 @@ name = "pkr-trainer"
 path = "src/main.rs"
 
 [dependencies]
+pkr-contracts = { workspace = true }
 pkr-core = { workspace = true }
-pkr-eval = { workspace = true }
-pkr-abstraction = { workspace = true }
 pkr-cfr = { workspace = true }
 pkr-export = { workspace = true }
 clap = { workspace = true }
