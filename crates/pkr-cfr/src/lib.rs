@@ -145,4 +145,126 @@ mod trainer_tests {
             "Regret should change after iteration, but was still 128"
         );
     }
+
+    #[test]
+    fn trainer_initial_state() {
+        let rules = Box::new(TestRules);
+        let abstraction = Box::new(TestAbstraction);
+        let evaluator = Box::new(TestEvaluator);
+        let trainer = Trainer::new(rules, abstraction, evaluator, 2);
+        let table = trainer.get_table();
+        assert_eq!(table.capacity(), 2);
+        assert_eq!(table.num_actions(), 4);
+        for i in 0..table.capacity() {
+            for a in 0..table.num_actions() {
+                assert_eq!(table.get_regret(i, a), 128);
+            }
+        }
+    }
+
+    #[test]
+    fn trainer_multiple_iterations() {
+        let rules = Box::new(TestRules);
+        let abstraction = Box::new(TestAbstraction);
+        let evaluator = Box::new(TestEvaluator);
+        let mut trainer = Trainer::new(rules, abstraction, evaluator, 2);
+        let hole = vec![0u8, 0];
+        let mut rng = StdRng::seed_from_u64(123);
+        for _ in 0..10 {
+            trainer.run_iteration(&hole, &mut rng);
+        }
+        let table = trainer.get_table();
+        let mut changed = false;
+        for i in 0..table.capacity() {
+            for a in 0..table.num_actions() {
+                if table.get_regret(i, a) != 128 {
+                    changed = true;
+                }
+            }
+        }
+        assert!(changed, "Regrets should have changed after 10 iterations");
+    }
+
+    #[test]
+    fn trainer_get_table_returns_consistent_reference() {
+        let rules = Box::new(TestRules);
+        let abstraction = Box::new(TestAbstraction);
+        let evaluator = Box::new(TestEvaluator);
+        let mut trainer = Trainer::new(rules, abstraction, evaluator, 2);
+        let hole = vec![0u8, 0];
+        let mut rng = StdRng::seed_from_u64(42);
+        trainer.run_iteration(&hole, &mut rng);
+        let table = trainer.get_table();
+        let regret = table.get_regret(0, 0);
+        assert_eq!(trainer.get_table().get_regret(0, 0), regret);
+    }
+
+    #[test]
+    fn trainer_different_capacity() {
+        let rules = Box::new(TestRules);
+        let abstraction = Box::new(TestAbstraction);
+        let evaluator = Box::new(TestEvaluator);
+        let mut trainer = Trainer::new(rules, abstraction, evaluator, 4);
+        let hole = vec![0u8, 0];
+        let mut rng = StdRng::seed_from_u64(1);
+        trainer.run_iteration(&hole, &mut rng);
+        // No panic; just check table dimensions
+        let table = trainer.get_table();
+        assert_eq!(table.capacity(), 4);
+        assert_eq!(table.num_actions(), 4);
+    }
+
+    #[test]
+    fn trainer_empty_hole_does_not_panic() {
+        let rules = Box::new(TestRules);
+        let abstraction = Box::new(TestAbstraction);
+        let evaluator = Box::new(TestEvaluator);
+        let mut trainer = Trainer::new(rules, abstraction, evaluator, 2);
+        let mut rng = StdRng::seed_from_u64(999);
+        trainer.run_iteration(&[], &mut rng);
+        // Should not panic
+    }
+
+    #[test]
+    fn trainer_determinism_with_seed() {
+        let run = |seed: u64| -> Vec<f32> {
+            let rules = Box::new(TestRules);
+            let abstraction = Box::new(TestAbstraction);
+            let evaluator = Box::new(TestEvaluator);
+            let mut trainer = Trainer::new(rules, abstraction, evaluator, 2);
+            let hole = vec![0u8, 0];
+            let mut rng = StdRng::seed_from_u64(seed);
+            for _ in 0..100 {
+                trainer.run_iteration(&hole, &mut rng);
+            }
+            trainer.get_table().get_strategy(0)
+        };
+        let strat1 = run(111);
+        let strat2 = run(111);
+        assert_eq!(strat1.len(), strat2.len());
+        for (a, b) in strat1.iter().zip(strat2.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn trainer_num_actions_matches_rules() {
+        struct FiveActionRules;
+        impl GameRules for FiveActionRules {
+            fn max_actions_per_node(&self) -> u8 {
+                5
+            }
+            fn deck_size(&self) -> usize {
+                52
+            }
+            fn hand_size(&self) -> usize {
+                2
+            }
+        }
+        let rules = Box::new(FiveActionRules);
+        let abstraction = Box::new(TestAbstraction);
+        let evaluator = Box::new(TestEvaluator);
+        let trainer = Trainer::new(rules, abstraction, evaluator, 1);
+        assert_eq!(trainer.get_table().num_actions(), 5);
+    }
 }
