@@ -370,8 +370,10 @@ name = "pkr-export"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "foldhash",
  "pkr-cfr",
  "pkr-contracts",
+ "rand",
  "rayon",
  "thiserror",
 ]
