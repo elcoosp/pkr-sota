@@ -80,7 +80,7 @@ fn eval_mph(
         let h = hash_key(key, level_seed);
         let bucket = (h % max_level_size as u64) as usize;
         // Each level is stored as contiguous u32 values.
-        let offset = l as usize * max_level_size + bucket;
+        let offset = l * max_level_size + bucket;
         let byte_offset = offset * 4;
         let d = u32::from_le_bytes(fmph_data[byte_offset..byte_offset + 4].try_into().unwrap());
         acc = acc.wrapping_add(d as u64);
@@ -415,7 +415,7 @@ mod tests {
                 let level_seed = seed.wrapping_add(l as u64 * 0x9E3779B97F4A7C15);
                 let h = hash_key(key, level_seed);
                 let bucket = (h % max_level_size as u64) as usize;
-                let offset = l as usize * max_level_size + bucket;
+                let offset = l * max_level_size + bucket;
                 let d = displacements[offset] as u64;
                 acc = acc.wrapping_add(d);
             }
