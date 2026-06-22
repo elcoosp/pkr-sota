@@ -6,19 +6,20 @@ use crate::table::CompactRegretTable;
 use crate::traversal::traverse;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::GameState;
-use rand::Rng;
+use rayon::prelude::*;
+use std::sync::Arc;
 
 pub struct Trainer {
-    abstraction: Box<dyn AbstractionBuilder>,
-    evaluator: Box<dyn Evaluator>,
+    abstraction: Arc<dyn AbstractionBuilder>,
+    evaluator: Arc<dyn Evaluator>,
     table: CompactRegretTable,
     iteration: u32,
 }
 
 impl Trainer {
     pub fn new(
-        abstraction: Box<dyn AbstractionBuilder>,
-        evaluator: Box<dyn Evaluator>,
+        abstraction: Arc<dyn AbstractionBuilder>,
+        evaluator: Arc<dyn Evaluator>,
         num_actions: usize,
     ) -> Self {
         Self {
@@ -29,38 +30,56 @@ impl Trainer {
         }
     }
 
-    pub fn run_iteration(
+    pub fn run_iterations_parallel(
         &mut self,
         state: &GameState,
         chance_cards: &[Vec<u8>; 3],
-        rng: &mut impl Rng,
+        num_iterations: u32,
+        num_threads: usize,
     ) {
-        self.iteration += 1;
-        let state_copy = state.clone();
-        traverse(
-            &state_copy,
-            &mut self.table,
-            &*self.abstraction,
-            &*self.evaluator,
-            rng,
-            self.iteration,
-            0,
-            1.0,
-            1.0,
-            chance_cards,
-        );
-        traverse(
-            &state_copy,
-            &mut self.table,
-            &*self.abstraction,
-            &*self.evaluator,
-            rng,
-            self.iteration,
-            1,
-            1.0,
-            1.0,
-            chance_cards,
-        );
+        let abstraction = Arc::clone(&self.abstraction);
+        let evaluator = Arc::clone(&self.evaluator);
+        let tables: Vec<CompactRegretTable> = (0..num_threads)
+            .into_par_iter()
+            .map(|_| {
+                let mut thread_table = CompactRegretTable::new(self.table.num_actions());
+                let mut rng = rand::rng();
+                let state_copy = state.clone();
+                let chance_copy = chance_cards.clone();
+                for _ in 0..num_iterations {
+                    traverse(
+                        &state_copy,
+                        &mut thread_table,
+                        &*abstraction,
+                        &*evaluator,
+                        &mut rng,
+                        1,
+                        0,
+                        1.0,
+                        1.0,
+                        &chance_copy,
+                    );
+                    traverse(
+                        &state_copy,
+                        &mut thread_table,
+                        &*abstraction,
+                        &*evaluator,
+                        &mut rng,
+                        1,
+                        1,
+                        1.0,
+                        1.0,
+                        &chance_copy,
+                    );
+                }
+                thread_table
+            })
+            .collect();
+
+        for t in tables {
+            self.table.merge(&t);
+        }
+        self.iteration += num_iterations * num_threads as u32;
     }
 
     pub fn get_table(&self) -> &CompactRegretTable {

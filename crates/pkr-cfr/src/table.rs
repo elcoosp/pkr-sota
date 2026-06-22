@@ -66,4 +66,25 @@ impl CompactRegretTable {
     pub fn get_keys(&self) -> Vec<u64> {
         self.strategy_sum.keys().copied().collect()
     }
+
+    pub fn merge(&mut self, other: &CompactRegretTable) {
+        for (key, vec) in &other.regrets {
+            let entry = self
+                .regrets
+                .entry(*key)
+                .or_insert_with(|| vec![0.0; self.num_actions]);
+            for (i, &v) in vec.iter().enumerate() {
+                entry[i] += v;
+            }
+        }
+        for (key, vec) in &other.strategy_sum {
+            let entry = self
+                .strategy_sum
+                .entry(*key)
+                .or_insert_with(|| vec![0.0; self.num_actions]);
+            for (i, &v) in vec.iter().enumerate() {
+                entry[i] += v;
+            }
+        }
+    }
 }

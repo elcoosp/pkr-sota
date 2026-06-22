@@ -57,7 +57,13 @@ pub fn traverse(
         ActionKind::Check | ActionKind::Call => 1,
         ActionKind::Bet(_) => 2,
     }).collect();
-    let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes);
+    let street_code = match current.street {
+        Street::Preflop => 0,
+        Street::Flop => 1,
+        Street::Turn => 2,
+        Street::River => 3,
+    };
+    let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
 
     let strategy = table.get_strategy(infoset_hash);
 

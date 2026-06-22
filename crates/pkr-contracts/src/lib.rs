@@ -25,5 +25,6 @@ pub trait Evaluator: Send + Sync {
 }
 
 pub trait AbstractionBuilder: Send + Sync {
-    fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8]) -> u64;
+    /// street encoded as: 0=Preflop, 1=Flop, 2=Turn, 3=River
+    fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8], street: u8) -> u64;
 }
