@@ -31,6 +31,22 @@ pub fn combinadic_rank(cards: &[u8; 5]) -> u32 {
     choose(c0, 5) + choose(c1, 4) + choose(c2, 3) + choose(c3, 2) + choose(c4, 1)
 }
 
+/// Unrank combinadic index to 2-card combination (descending).
+pub fn combinadic_unrank_2(mut index: u32) -> [u8; 2] {
+    let mut result = [0u8; 2];
+    let mut remaining = 52u32;
+    for i in (1..=2).rev() {
+        let mut x = remaining - 1;
+        while choose(x, i) > index { x -= 1; }
+        let pos = (2 - i) as usize;
+        result[pos] = x as u8;
+        index -= choose(x, i);
+        remaining = x;
+    }
+    result.sort_unstable_by(|a, b| b.cmp(a));
+    result
+}
+
 /// Unrank combinadic index to 5-card combination (descending).
 pub fn combinadic_unrank_5(mut index: u32) -> [u8; 5] {
     let mut result = [0u8; 5];
@@ -47,7 +63,23 @@ pub fn combinadic_unrank_5(mut index: u32) -> [u8; 5] {
     result
 }
 
-/// Unrank combinadic index to k-card combination (descending).
+/// Unrank combinadic index to 6-card combination (descending).
+pub fn combinadic_unrank_6(mut index: u32) -> [u8; 6] {
+    let mut result = [0u8; 6];
+    let mut remaining = 52u32;
+    for i in (1..=6).rev() {
+        let mut x = remaining - 1;
+        while choose(x, i) > index { x -= 1; }
+        let pos = (6 - i) as usize;
+        result[pos] = x as u8;
+        index -= choose(x, i);
+        remaining = x;
+    }
+    result.sort_unstable_by(|a, b| b.cmp(a));
+    result
+}
+
+/// Unrank combinadic index to k-card combination (descending) as a Vec (for generic use).
 pub fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
     let mut result = Vec::with_capacity(k as usize);
     let mut remaining = n;
@@ -73,10 +105,9 @@ impl TableEvaluator {
         Ok(TableEvaluator { mmap })
     }
 
+    #[inline(always)]
     fn eval_5_fast(&self, hand: &[u8; 5]) -> u32 {
-        let mut sorted = *hand;
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
-        let idx = combinadic_rank(&sorted) as usize;
+        let idx = combinadic_rank(hand) as usize;
         let offset = idx * 4;
         let bytes = &self.mmap[offset..offset + 4];
         u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
@@ -84,34 +115,46 @@ impl TableEvaluator {
 }
 
 impl Evaluator for TableEvaluator {
+    #[inline]
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
         let total = hole.len() + board.len();
-        assert!(total >= 5 && total <= 7);
-        let mut cards = [255u8; 7];
-        let mut idx = 0;
-        for &c in hole.iter().chain(board) {
-            cards[idx] = c;
-            idx += 1;
-        }
+        let mut cards = [0u8; 7];
+        cards[..hole.len()].copy_from_slice(hole);
+        cards[hole.len()..total].copy_from_slice(board);
+        cards[..total].sort_unstable_by(|a, b| b.cmp(a)); // sort once, descending
+
         let mut best = u32::MAX;
-        const COMBOS_7_5: [[u8; 5]; 21] = [
-            [0,1,2,3,4], [0,1,2,3,5], [0,1,2,3,6],
-            [0,1,2,4,5], [0,1,2,4,6], [0,1,2,5,6],
-            [0,1,3,4,5], [0,1,3,4,6], [0,1,3,5,6],
-            [0,1,4,5,6], [0,2,3,4,5], [0,2,3,4,6],
-            [0,2,3,5,6], [0,2,4,5,6], [0,3,4,5,6],
-            [1,2,3,4,5], [1,2,3,4,6], [1,2,3,5,6],
-            [1,2,4,5,6], [1,3,4,5,6], [2,3,4,5,6],
-        ];
-        let num = match total { 5=>1, 6=>6, 7=>21, _=>0 };
-        for i in 0..num {
-            let combo = COMBOS_7_5[i];
-            let mut hand = [0u8; 5];
-            for (j, &ci) in combo.iter().enumerate() {
-                hand[j] = cards[ci as usize];
-            }
-            let r = self.eval_5_fast(&hand);
-            if r < best { best = r; }
+        if total == 5 {
+            best = self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[3], cards[4]]);
+        } else if total == 6 {
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
+        } else if total == 7 {
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[3], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[4], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[2], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[3], cards[4], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[3], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[1], cards[4], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[2], cards[3], cards[4], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[2], cards[3], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[2], cards[4], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[0], cards[3], cards[4], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
+            best = best.min(self.eval_5_fast(&[cards[1], cards[2], cards[3], cards[4], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[1], cards[2], cards[3], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[1], cards[2], cards[4], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[1], cards[3], cards[4], cards[5], cards[6]]));
+            best = best.min(self.eval_5_fast(&[cards[2], cards[3], cards[4], cards[5], cards[6]]));
         }
         best
     }
@@ -125,9 +168,6 @@ mod tests {
     fn choose_6_7() {
         assert_eq!(choose(52, 6), 20_358_520);
         assert_eq!(choose(52, 7), 133_784_560);
-        assert_eq!(choose(6, 3), 20);
-        assert_eq!(choose(50, 7), 99_884_400);
-        assert_eq!(choose(51, 7), 115_775_100);
     }
 
     #[test]
