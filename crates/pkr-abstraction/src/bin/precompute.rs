@@ -1,5 +1,6 @@
 use pkr_abstraction::{calculate_ehs, load_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
+use pkr_eval::lookup::TableEvaluator;
 use pkr_eval::slow::NlheEvaluator;
 use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
@@ -27,8 +28,9 @@ fn main() {
         }
         "abstraction" => {
             let centroids_path = args.get(2).expect("centroids file required");
-            let output = args.get(3).cloned().unwrap_or("abstraction.bin".to_string());
-            generate_abstraction_table(centroids_path, &output);
+            let rank_table_path = args.get(3).expect("hand ranks table file required");
+            let output = args.get(4).cloned().unwrap_or("abstraction.bin".to_string());
+            generate_abstraction_table(centroids_path, rank_table_path, &output);
         }
         _ => eprintln!("Unknown command"),
     }
@@ -75,34 +77,25 @@ fn generate_rank_table(output: &str) {
     println!("Generated rank table with {} entries -> {}", total, output);
 }
 
-fn generate_abstraction_table(centroids_path: &str, output: &str) {
+fn generate_abstraction_table(centroids_path: &str, rank_table_path: &str, output: &str) {
     let store = load_centroids(centroids_path).expect("Failed to load centroids");
     let centroids = &store.centroids;
-    let evaluator = NlheEvaluator;
+    let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
 
-    // Number of distinct 5-card combinations (hole+board)
     let total_combos = 2_598_960u64;
-    // For each 5-card set, there are C(5,2)=10 ways to assign hole vs board.
     let entries = total_combos as usize * 10;
     let mut table: Vec<u8> = vec![0u8; entries];
 
-    // Precompute hole_mask -> index offset for a given 5-card set.
-    let hole_masks: Vec<(u8, [usize; 2])> = {
-        let mut masks = Vec::new();
-        for i in 0..5u8 {
-            for j in (i+1)..5 {
-                masks.push((masks.len() as u8, [i as usize, j as usize]));
-            }
-        }
-        masks
-    };
+    let hole_masks: Vec<[usize; 2]> = vec![
+        [0,1], [0,2], [0,3], [0,4],
+        [1,2], [1,3], [1,4], [2,3], [2,4], [3,4],
+    ];
 
     table.par_iter_mut().enumerate().for_each(|(flat_idx, slot)| {
         let combo_idx = (flat_idx / 10) as u32;
         let mask_idx = flat_idx % 10;
         let cards = combinadic_unrank(combo_idx, 5, 52);
-        // Select hole cards according to mask
-        let (_, pos) = &hole_masks[mask_idx];
+        let pos = &hole_masks[mask_idx];
         let hole = [cards[pos[0]], cards[pos[1]]];
         let board: Vec<u8> = (0..5).filter(|i| !pos.contains(i)).map(|i| cards[i]).collect();
         let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
@@ -131,9 +124,7 @@ fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn std::
 }
 
 fn choose(n: u32, k: u32) -> u32 {
-    if k > n {
-        return 0;
-    }
+    if k > n { return 0; }
     match k {
         0 => 1,
         1 => n,
