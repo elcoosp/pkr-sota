@@ -3,7 +3,7 @@ use rand::rng;
 use rand::seq::SliceRandom;
 
 /// Number of Monte Carlo iterations for EHS calculation.
-const NUM_SAMPLES: usize = 1000;
+const NUM_SAMPLES: usize = 100; // reduced for precomputation; runtime uses precomputed table
 
 /// Calculates Expected Hand Strength (EHS) and EHS² for a given situation.
 pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f32, f32) {
