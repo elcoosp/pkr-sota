@@ -1,4 +1,6 @@
 use pkr_contracts::Evaluator;
+// Card encoding: 0=2, 1=3, ..., 8=T, 9=J, 10=Q, 11=K, 12=A. Suit order: 0=Spade,1=Heart,2=Diamond,3=Club.
+// Hand rank uses inverted bits (lower = better), so best hand has smallest u32 after `!raw`.
 
 fn card_suit_rank(c: u8) -> (usize, usize) {
     let suit = (c / 13) as usize;

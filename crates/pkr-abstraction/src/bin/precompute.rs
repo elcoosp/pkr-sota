@@ -1,6 +1,6 @@
 use pkr_abstraction::{calculate_ehs, load_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
-use pkr_eval::lookup::{choose, TableEvaluator};
+use pkr_eval::lookup::{choose, combinadic_unrank, combinadic_unrank_5, TableEvaluator};
 use pkr_eval::slow::NlheEvaluator;
 use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
@@ -12,7 +12,7 @@ use std::io::Write;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: pkr-abstraction-precompute <centroids|table|abstraction|turn_table> [args...]");
+        eprintln!("Usage: pkr-abstraction-precompute <centroids|table|abstraction|turn_table|preflop_table> [args...]");
         std::process::exit(1);
     }
     match args[1].as_str() {
@@ -166,41 +166,38 @@ fn generate_turn_table(centroids_path: &str, rank_table_path: &str, output: &str
     println!("Generated turn table with {} entries -> {}", entries, output);
 }
 
+fn generate_preflop_table(centroids_path: &str, rank_table_path: &str, output: &str) {
+    let store = load_centroids(centroids_path).expect("Failed to load centroids");
+    assert!(store.centroids.len() <= 255, "centroid count must be ≤ 255 for u8 ids");
+    let centroids = &store.centroids;
+    let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
+    let total = choose(52, 2) as usize;
+    let mut table: Vec<u8> = vec![0u8; total];
+    table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
+        let cards = combinadic_unrank(idx as u32, 2, 52);
+        let hole = [cards[0], cards[1]];
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &[], &evaluator);
+        let cluster_id = centroids.iter()
+            .enumerate()
+            .min_by(|a, b| {
+                let c1 = a.1; let c2 = b.1;
+                let dx1 = ehs - c1.0; let dy1 = ehs_sq - c1.1;
+                let dx2 = ehs - c2.0; let dy2 = ehs_sq - c2.1;
+                (dx1*dx1 + dy1*dy1).total_cmp(&(dx2*dx2 + dy2*dy2))
+            })
+            .map(|(idx, _)| idx as u8)
+            .unwrap_or(0);
+        *slot = cluster_id;
+    });
+    let mut file = File::create(output).expect("failed to create preflop table");
+    file.write_all(&table).unwrap();
+    println!("Generated preflop table with {} entries -> {}", total, output);
+}
+
 fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::create(path)?;
     bincode::serialize_into(file, store)?;
     Ok(())
-}
-
-/// Combinadic rank for any k up to 7.
-fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
-    let mut result = Vec::with_capacity(k as usize);
-    let mut remaining = n;
-    for i in (1..=k).rev() {
-        let mut x = remaining - 1;
-        while choose(x, i) > index { x -= 1; }
-        result.push(x as u8);
-        index -= choose(x, i);
-        remaining = x;
-    }
-    result.sort_unstable_by(|a, b| b.cmp(a));
-    result
-}
-
-/// Specialized 5-card unranking (avoids heap allocation).
-fn combinadic_unrank_5(mut index: u32) -> [u8; 5] {
-    let mut result = [0u8; 5];
-    let mut remaining = 52u32;
-    for i in (1..=5).rev() {
-        let mut x = remaining - 1;
-        while choose(x, i) > index { x -= 1; }
-        let pos = (5 - i) as usize;
-        result[pos] = x as u8;
-        index -= choose(x, i);
-        remaining = x;
-    }
-    result.sort_unstable_by(|a, b| b.cmp(a));
-    result
 }
 
 fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)> {
@@ -244,33 +241,4 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
         if !changed { break; }
     }
     centroids
-}
-
-fn generate_preflop_table(centroids_path: &str, rank_table_path: &str, output: &str) {
-    let store = load_centroids(centroids_path).expect("Failed to load centroids");
-    assert!(store.centroids.len() <= 255, "centroid count must be ≤ 255 for u8 ids");
-    let centroids = &store.centroids;
-    let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
-    // C(52,2) = 1326 hole card combinations
-    let total = choose(52, 2) as usize;
-    let mut table: Vec<u8> = vec![0u8; total];
-    table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
-        let cards = combinadic_unrank(idx as u32, 2, 52);
-        let hole = [cards[0], cards[1]];
-        let (ehs, ehs_sq) = calculate_ehs(&hole, &[], &evaluator);
-        let cluster_id = centroids.iter()
-            .enumerate()
-            .min_by(|a, b| {
-                let c1 = a.1; let c2 = b.1;
-                let dx1 = ehs - c1.0; let dy1 = ehs_sq - c1.1;
-                let dx2 = ehs - c2.0; let dy2 = ehs_sq - c2.1;
-                (dx1*dx1 + dy1*dy1).total_cmp(&(dx2*dx2 + dy2*dy2))
-            })
-            .map(|(idx, _)| idx as u8)
-            .unwrap_or(0);
-        *slot = cluster_id;
-    });
-    let mut file = File::create(output).expect("failed to create preflop table");
-    file.write_all(&table).unwrap();
-    println!("Generated preflop table with {} entries -> {}", total, output);
 }

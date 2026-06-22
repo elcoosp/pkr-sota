@@ -1,9 +1,8 @@
-pub mod cluster;
 pub mod ehs;
 pub use ehs::calculate_ehs;
 
 use pkr_contracts::{AbstractionBuilder, Evaluator};
-use pkr_eval::lookup::combinadic_rank;
+use pkr_eval::lookup::{choose, combinadic_rank};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -11,7 +10,6 @@ use std::io::BufReader;
 use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 use std::sync::{Arc, OnceLock};
 use memmap2::Mmap;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CentroidStore {
@@ -34,7 +32,7 @@ pub fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn s
 pub struct KMeansAbstraction {
     centroids: HashMap<u8, Vec<(f32, f32)>>,
     default_centroids: Vec<(f32, f32)>,
-    tables: HashMap<u8, OnceLock<Mmap>>,
+    tables: HashMap<u8, OnceLock<Mmap>>, // street codes 0..3
     evaluator: Arc<dyn Evaluator>,
 }
 
@@ -44,7 +42,7 @@ impl KMeansAbstraction {
         evaluator: Arc<dyn Evaluator>,
     ) -> Self {
         let mut tables = HashMap::new();
-        for s in [1u8,2,3] {
+        for s in 0u8..=3 {
             tables.insert(s, OnceLock::new());
         }
         KMeansAbstraction {
@@ -73,10 +71,19 @@ impl KMeansAbstraction {
         Ok(())
     }
 
+    /// Preflop: hole cards only, index = combinadic_rank_2(hole)
+    fn flat_index_preflop(hole: &[u8]) -> usize {
+        assert_eq!(hole.len(), 2);
+        assert_ne!(hole[0], hole[1]);
+        let mut cards = [hole[0], hole[1]];
+        cards.sort_unstable_by(|a, b| b.cmp(a));
+        choose(cards[0] as u32, 2) as usize + choose(cards[1] as u32, 1) as usize
+    }
+
     fn flat_index_flop(hole: &[u8], board: &[u8]) -> usize {
         assert_eq!(hole.len(), 2);
         assert_eq!(board.len(), 3);
-        assert_ne!(hole[0], hole[1], "hole cards must be distinct");
+        assert_ne!(hole[0], hole[1]);
         let mut all = [0u8; 5];
         all[0] = hole[0]; all[1] = hole[1];
         all[2] = board[0]; all[3] = board[1]; all[4] = board[2];
@@ -97,7 +104,7 @@ impl KMeansAbstraction {
                 break;
             }
         }
-        assert!(found, "hole cards not found in 5-card set");
+        assert!(found, "hole not found in 5-card set");
         combo_idx * 10 + mask_idx
     }
 
@@ -129,7 +136,6 @@ impl KMeansAbstraction {
 }
 
 fn combinadic_rank_6(cards: &[u8; 6]) -> u64 {
-    use pkr_eval::lookup::choose;
     let c0 = cards[0] as u32; let c1 = cards[1] as u32;
     let c2 = cards[2] as u32; let c3 = cards[3] as u32;
     let c4 = cards[4] as u32; let c5 = cards[5] as u32;
@@ -143,10 +149,19 @@ impl AbstractionBuilder for KMeansAbstraction {
             .unwrap_or(&self.default_centroids);
 
         let cluster_id = match board.len() {
+            0 => {
+                if let Some(table) = self.tables.get(&0u8).and_then(|l| l.get()) {
+                    let idx = Self::flat_index_preflop(hole) as usize;
+                    table[idx] as u64
+                } else {
+                    let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
+                    nearest_centroid(ehs, ehs_sq, centroids)
+                }
+            },
             3 => {
                 if let Some(table) = self.tables.get(&1u8).and_then(|l| l.get()) {
-                    Self::flat_index_flop(hole, board);
-                    table[Self::flat_index_flop(hole, board)] as u64
+                    let idx = Self::flat_index_flop(hole, board);
+                    table[idx] as u64
                 } else {
                     let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
                     nearest_centroid(ehs, ehs_sq, centroids)
@@ -154,7 +169,8 @@ impl AbstractionBuilder for KMeansAbstraction {
             },
             4 => {
                 if let Some(table) = self.tables.get(&2u8).and_then(|l| l.get()) {
-                    table[Self::flat_index_turn(hole, board)] as u64
+                    let idx = Self::flat_index_turn(hole, board);
+                    table[idx] as u64
                 } else {
                     let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
                     nearest_centroid(ehs, ehs_sq, centroids)
@@ -193,7 +209,6 @@ fn nearest_centroid(ehs: f32, ehs_sq: f32, centroids: &[(f32, f32)]) -> u64 {
 mod tests {
     use super::*;
     use pkr_contracts::Evaluator;
-
     struct MockEvaluator;
     impl Evaluator for MockEvaluator {
         fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 { 0u32 }
@@ -211,8 +226,16 @@ mod tests {
     fn test_flat_index_flop() {
         let idx = KMeansAbstraction::flat_index_flop(&[0,1], &[2,3,4]);
         assert!(idx < 25_989_600);
-        // same cards different order should give same index
         let idx2 = KMeansAbstraction::flat_index_flop(&[1,0], &[2,3,4]);
+        assert_eq!(idx, idx2);
+    }
+
+    #[test]
+    fn test_preflop_index() {
+        // choose(1,2)+choose(0,1) for hole [1,0] sorted to [1,0]
+        let idx = KMeansAbstraction::flat_index_preflop(&[1,0]);
+        assert_eq!(idx, 0); // first combo
+        let idx2 = KMeansAbstraction::flat_index_preflop(&[0,1]);
         assert_eq!(idx, idx2);
     }
 }

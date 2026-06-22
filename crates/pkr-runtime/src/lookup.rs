@@ -38,6 +38,9 @@ impl SolverHandle {
         }
 
         let max_actions = fh.max_actions_k as usize;
+        if max_actions > 16 {
+            return None; // actions exceed fixed array size
+        }
         let cdf_start = idx * max_actions;
         let cdf_end = cdf_start + max_actions;
         let cdf_slice = self.mmap.cdf_data();
@@ -46,8 +49,12 @@ impl SolverHandle {
             return None;
         }
 
+        let mut prob_array = [0u8; 16];
+        prob_array[..max_actions].copy_from_slice(&cdf_slice[cdf_start..cdf_end]);
+
         Some(SotaAdvice {
-            cdf_probabilities: cdf_slice[cdf_start..cdf_end].to_vec(),
+            cdf_probabilities: prob_array,
+            len: max_actions as u8,
         })
     }
 }

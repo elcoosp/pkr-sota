@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 pkr-contracts = { workspace = true }
 memmap2 = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

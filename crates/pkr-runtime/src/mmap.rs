@@ -37,8 +37,6 @@ pub struct MmapReader {
     len_cdf: usize,
 }
 
-unsafe impl Send for MmapReader {}
-unsafe impl Sync for MmapReader {}
 
 impl MmapReader {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, MmapError> {

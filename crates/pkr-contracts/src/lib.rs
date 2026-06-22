@@ -1,5 +1,3 @@
-/// Defines the rules of a poker variant.
-/// All implementors must be thread‑safe (`Send + Sync`).
 pub trait GameRules: Send + Sync {
     fn max_actions_per_node(&self) -> u8;
     fn deck_size(&self) -> usize;
@@ -12,7 +10,8 @@ pub struct InfoSet {
 }
 
 pub struct SotaAdvice {
-    pub cdf_probabilities: Vec<u8>,
+    pub cdf_probabilities: [u8; 16], // max 16 actions
+    pub len: u8,
 }
 
 pub trait BlueprintProvider: Send + Sync {
@@ -20,11 +19,9 @@ pub trait BlueprintProvider: Send + Sync {
 }
 
 pub trait Evaluator: Send + Sync {
-    /// Returns a u32 rank. Lower is better.
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32;
 }
 
 pub trait AbstractionBuilder: Send + Sync {
-    /// street encoded as: 0=Preflop, 1=Flop, 2=Turn, 3=River
     fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8], street: u8) -> u64;
 }

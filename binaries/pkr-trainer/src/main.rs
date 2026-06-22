@@ -28,6 +28,9 @@ struct Cli {
     river_centroids: Option<PathBuf>,
 
     #[arg(long)]
+    #[arg(long)]
+    preflop_table: Option<PathBuf>,
+
     flop_table: Option<PathBuf>,
 
     #[arg(long)]
@@ -66,6 +69,11 @@ fn main() {
     }
 
     // Load tables using &self init_table
+    if let Some(path) = &cli.preflop_table {
+        abstraction.init_table(0, path.to_str().unwrap())
+            .expect("Failed to load preflop table");
+    }
+
     if let Some(path) = &cli.flop_table {
         abstraction.init_table(1, path.to_str().unwrap())
             .expect("Failed to load flop table");
