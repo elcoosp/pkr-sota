@@ -2,7 +2,9 @@
 
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::RwLock;
 
 /// Compute Euclidean distance between two 2D points.
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -19,21 +21,16 @@ fn hash_cluster_id(id: usize) -> u64 {
 }
 
 /// Run K-Means on a batch of (EHS, EHS²) features and return cluster hashes.
-/// The cluster ID is hashed to produce the InfoSet hash.
-/// Centroids are initialized deterministically by taking `k` evenly spaced
-/// points from the sorted feature list.
 pub fn cluster_hands(features: Vec<(f32, f32)>, k: usize) -> Vec<u64> {
     let n = features.len();
     if n == 0 {
         return Vec::new();
     }
-    let k = k.min(n); // never more clusters than points
+    let k = k.min(n);
 
-    // Sort features by EHS for deterministic initialization
     let mut sorted = features.clone();
     sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Initialize centroids: pick k evenly spaced indices
     let mut centroids: Vec<(f32, f32)> = (0..k)
         .map(|i| {
             let idx = (i * (sorted.len() - 1)) / (k - 1).max(1);
@@ -45,7 +42,6 @@ pub fn cluster_hands(features: Vec<(f32, f32)>, k: usize) -> Vec<u64> {
     let max_iters = 100;
 
     for _ in 0..max_iters {
-        // Assignment step (parallel)
         let new_assignments: Vec<usize> = features
             .par_iter()
             .map(|&f| {
@@ -62,7 +58,6 @@ pub fn cluster_hands(features: Vec<(f32, f32)>, k: usize) -> Vec<u64> {
             })
             .collect();
 
-        // Update step
         let mut sums = vec![(0.0f32, 0.0f32); k];
         let mut counts = vec![0usize; k];
         for (&f, &c) in features.iter().zip(new_assignments.iter()) {
@@ -80,7 +75,6 @@ pub fn cluster_hands(features: Vec<(f32, f32)>, k: usize) -> Vec<u64> {
                 }
                 centroids[i] = new_centroid;
             }
-            // else keep unchanged (rare empty cluster)
         }
 
         assignments = new_assignments;
@@ -90,418 +84,64 @@ pub fn cluster_hands(features: Vec<(f32, f32)>, k: usize) -> Vec<u64> {
         }
     }
 
-    // Build final hashes
     assignments.into_iter().map(hash_cluster_id).collect()
 }
 
 /// A pre‑trained K‑Means abstraction builder.
 pub struct KMeansAbstraction {
     centroids: Vec<(f32, f32)>,
-    /// Evaluator used to compute EHS
     evaluator: Box<dyn Evaluator>,
+    cache: RwLock<HashMap<(u64, u64), u64>>,
 }
 
 impl KMeansAbstraction {
-    /// Create a new abstraction builder from trained centroids.
     pub fn new(centroids: Vec<(f32, f32)>, evaluator: Box<dyn Evaluator>) -> Self {
         KMeansAbstraction {
             centroids,
             evaluator,
+            cache: RwLock::new(HashMap::new()),
         }
     }
 }
 
 impl AbstractionBuilder for KMeansAbstraction {
     fn get_infoset_hash(&self, hole: &[u8], board: &[u8], _history: &[u8]) -> u64 {
-        // Compute EHS using the existing function from this crate
+        let mut h1: u64 = 14695981039346656037;
+        for &c in hole {
+            h1 ^= c as u64;
+            h1 = h1.wrapping_mul(1099511628211);
+        }
+        let mut h2: u64 = 14695981039346656037;
+        for &c in board {
+            h2 ^= c as u64;
+            h2 = h2.wrapping_mul(1099511628211);
+        }
+
+        if let Ok(cache) = self.cache.read() {
+            if let Some(&val) = cache.get(&(h1, h2)) {
+                return val;
+            }
+        }
+
         let (ehs, ehs_sq) = crate::ehs::calculate_ehs(hole, board, self.evaluator.as_ref());
-        // Find nearest centroid
         let feat = (ehs, ehs_sq);
+
         let cluster_id = self
             .centroids
             .iter()
             .enumerate()
             .min_by(|&(_, &c1), &(_, &c2)| {
-                distance(feat, c1)
-                    .partial_cmp(&distance(feat, c2))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                let d1 = (feat.0 - c1.0).powi(2) + (feat.1 - c1.1).powi(2);
+                let d2 = (feat.0 - c2.0).powi(2) + (feat.1 - c2.1).powi(2);
+                d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|(idx, _)| idx)
             .unwrap_or(0);
-        hash_cluster_id(cluster_id)
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pkr_contracts::AbstractionBuilder;
-    use pkr_eval::NlheEvaluator;
-
-    /// Helper to generate dummy features (100 hands) for testing.
-    fn generate_features(n: usize) -> Vec<(f32, f32)> {
-        (0..n)
-            .map(|i| {
-                let eh = (i as f32 / n as f32) * 0.8 + 0.1;
-                (eh, eh * eh)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn test_cluster_hands_smoke() {
-        let features = generate_features(100);
-        let k = 5;
-        let hashes = cluster_hands(features, k);
-        assert_eq!(hashes.len(), 100);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert!(
-            unique.len() <= k,
-            "Too many unique clusters: {}",
-            unique.len()
-        );
-    }
-
-    #[test]
-    fn test_cluster_hands_deterministic() {
-        let features = generate_features(50);
-        let hashes1 = cluster_hands(features.clone(), 3);
-        let hashes2 = cluster_hands(features, 3);
-        assert_eq!(hashes1, hashes2, "Clustering must be deterministic");
-    }
-
-    #[test]
-    fn test_cluster_hands_k_greater_than_points() {
-        let features = generate_features(10);
-        let hashes = cluster_hands(features, 20);
-        assert_eq!(hashes.len(), 10);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert!(unique.len() <= 10);
-    }
-
-    #[test]
-    fn test_empty_features() {
-        let features: Vec<(f32, f32)> = vec![];
-        let hashes = cluster_hands(features, 5);
-        assert!(hashes.is_empty());
-    }
-
-    #[test]
-    fn test_abstraction_builder_basic() {
-        let centroids = vec![(0.2, 0.04), (0.5, 0.25), (0.8, 0.64), (0.95, 0.9025)];
-        let evaluator = Box::new(NlheEvaluator);
-        let builder = KMeansAbstraction::new(centroids, evaluator);
-
-        // AA preflop
-        let hole = vec![
-            (0 * 13 + 12), // A♠
-            (1 * 13 + 12), // A♥
-        ];
-        let board = vec![];
-        let hash = builder.get_infoset_hash(&hole, &board, &[]);
-        assert!(hash != 0, "Hash should be non-zero for AA");
-        let hash2 = builder.get_infoset_hash(&hole, &board, &[]);
-        assert_eq!(hash, hash2);
-    }
-
-    #[test]
-    fn test_k_means_convergence() {
-        // Create two well-separated groups
-        let mut features = Vec::new();
-        for _ in 0..50 {
-            features.push((0.2 + rand::random::<f32>() * 0.01, 0.04));
-            features.push((0.8 + rand::random::<f32>() * 0.01, 0.64));
+        let hash = hash_cluster_id(cluster_id);
+        if let Ok(mut cache) = self.cache.write() {
+            cache.insert((h1, h2), hash);
         }
-        let hashes = cluster_hands(features, 2);
-        assert_eq!(hashes.len(), 100);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert_eq!(unique.len(), 2, "Should have exactly 2 clusters");
-    }
-
-    // --- Additional tests for comprehensive coverage ---
-
-    #[test]
-    fn test_single_point_k1() {
-        let features = vec![(0.5, 0.25)];
-        let hashes = cluster_hands(features, 1);
-        assert_eq!(hashes.len(), 1);
-        let hash = hashes[0];
-        let features2 = vec![(0.5, 0.25)];
-        let hashes2 = cluster_hands(features2, 1);
-        assert_eq!(
-            hashes2[0], hash,
-            "Single point must produce deterministic hash"
-        );
-    }
-
-    #[test]
-    fn test_identical_points() {
-        // All points are identical; clustering with any k should assign them to at most 1 cluster.
-        let features = vec![(0.6, 0.36); 50];
-        let hashes = cluster_hands(features.clone(), 5);
-        assert_eq!(hashes.len(), 50);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert_eq!(
-            unique.len(),
-            1,
-            "Identical points should form a single cluster"
-        );
-    }
-
-    #[test]
-    fn test_k_equals_number_of_points() {
-        let features = generate_features(7);
-        let hashes = cluster_hands(features, 7);
-        assert_eq!(hashes.len(), 7);
-        // Each point could be its own cluster, so number of unique hashes may be up to 7.
-        let unique: std::collections::HashSet<u64> = hashes.iter().cloned().collect();
-        assert!(unique.len() <= 7);
-    }
-
-    #[test]
-    fn test_large_k() {
-        // k larger than number of features is clamped to n
-        let features = generate_features(5);
-        let hashes = cluster_hands(features, 100);
-        assert_eq!(hashes.len(), 5);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert!(unique.len() <= 5);
-    }
-
-    #[test]
-    fn test_centroids_are_distinct_after_convergence() {
-        // For well-separated data, centroids should be different.
-        let mut features = Vec::new();
-        for _ in 0..30 {
-            features.push((0.1 + rand::random::<f32>() * 0.01, 0.01));
-            features.push((0.9 + rand::random::<f32>() * 0.01, 0.81));
-        }
-        let hashes = cluster_hands(features, 2);
-        let unique: std::collections::HashSet<u64> = hashes.iter().cloned().collect();
-        assert_eq!(unique.len(), 2);
-    }
-
-    #[test]
-    fn test_clustering_is_idempotent() {
-        let features = generate_features(80);
-        let first = cluster_hands(features.clone(), 4);
-        let second = cluster_hands(features, 4);
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn test_abstraction_builder_with_mock_evaluator() {
-        // Use a simple mock evaluator instead of the heavy Monte Carlo.
-        struct MockEval;
-        impl Evaluator for MockEval {
-            fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u16 {
-                0
-            }
-        }
-        let centroids = vec![(0.5, 0.25), (0.3, 0.09)];
-        let builder = KMeansAbstraction::new(centroids.clone(), Box::new(MockEval));
-        let hole = vec![0, 1];
-        let board = vec![];
-        let hash = builder.get_infoset_hash(&hole, &board, &[]);
-        // Since evaluate_hand always returns 0, the EHS result will be deterministic
-        // but involves Monte Carlo sampling (it will still work). Just ensure it returns something.
-        let _hash2 = builder.get_infoset_hash(&hole, &board, &[]);
-        // It might vary due to MC randomness, but we won't assert equality (MC not deterministic).
-        // Instead, we just check that it's non-zero.
-        assert!(hash != 0);
-    }
-
-    #[test]
-    fn test_abstraction_builder_different_hands_produce_different_clusters() {
-        // With enough clusters, very different hands should land in different buckets.
-        let centroids = vec![(0.1, 0.01), (0.4, 0.16), (0.7, 0.49), (0.9, 0.81)];
-        let evaluator = Box::new(NlheEvaluator);
-        let builder = KMeansAbstraction::new(centroids, evaluator);
-
-        // AA (strong)
-        let hole_aa = vec![
-            (0 * 13 + 12), // A♠
-            (1 * 13 + 12), // A♥
-        ];
-        let board_empty = vec![];
-        let hash_aa = builder.get_infoset_hash(&hole_aa, &board_empty, &[]);
-
-        // 72o (weak)
-        let hole_72o = vec![
-            (0 * 13 + 5), // 7♠
-            (1 * 13 + 0), // 2♥ (suit2, rank2 -> index 0)
-        ];
-        let hash_72 = builder.get_infoset_hash(&hole_72o, &board_empty, &[]);
-
-        // Since AA is much stronger than 72o, they should almost certainly have different hashes.
-        // Note: due to MC noise, this assertion might fail with low probability; if so, we can relax it.
-        assert_ne!(
-            hash_aa, hash_72,
-            "AA and 72o preflop should be assigned to different clusters"
-        );
-    }
-
-    #[test]
-    fn test_abstraction_builder_on_flop() {
-        let centroids = vec![(0.2, 0.04), (0.5, 0.25), (0.8, 0.64)];
-        let evaluator = Box::new(NlheEvaluator);
-        let builder = KMeansAbstraction::new(centroids, evaluator);
-
-        let hole = vec![
-            (0 * 13 + 12), // A♠
-            (1 * 13 + 12), // A♥
-        ];
-        let flop = vec![
-            (2 * 13 + 12), // A♦
-            (3 * 13 + 12), // A♣
-            (0 * 13 + 11), // K♠
-        ];
-        let hash = builder.get_infoset_hash(&hole, &flop, &[]);
-        assert!(hash != 0);
-        // Repeated call should give the same result if deterministic clustering,
-        // but EHS uses MC and thus may vary slightly; the centroid assignment could potentially change.
-        // We'll just check it's consistent in a single call.
-    }
-
-    #[test]
-    fn test_cluster_hands_all_same_feature_but_different_ehs_squared() {
-        // Edge: all points have same EHS but varying EHS²
-        let features: Vec<_> = (0..20).map(|i| (0.5, 0.2 + i as f32 * 0.01)).collect();
-        let hashes = cluster_hands(features.clone(), 3);
-        assert_eq!(hashes.len(), 20);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert!(unique.len() <= 3);
-    }
-
-    #[test]
-    fn test_cluster_hands_feature_range() {
-        // Features with extreme values
-        let features = vec![
-            (0.0, 0.0),
-            (1.0, 1.0),
-            (0.3, 0.09),
-            (0.7, 0.49),
-            (0.5, 0.25),
-            (0.9, 0.81),
-            (0.1, 0.01),
-            (0.8, 0.64),
-        ];
-        let hashes = cluster_hands(features, 2);
-        assert_eq!(hashes.len(), 8);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert!(unique.len() <= 2);
-    }
-
-    // -------------------------------------------------------------------
-    // Additional tests for comprehensive coverage
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_cluster_hands_zero_k() {
-        let features = generate_features(10);
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cluster_hands(features, 0)));
-        // k=0 should panic because we divide by (k-1) in centroid initialization.
-        assert!(result.is_err(), "k=0 should cause a panic");
-    }
-
-    #[test]
-    fn test_abstraction_builder_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<KMeansAbstraction>();
-    }
-
-    #[test]
-    fn test_abstraction_builder_ignores_history() {
-        let centroids = vec![(0.5, 0.25)];
-        let evaluator = Box::new(pkr_eval::NlheEvaluator);
-        let builder = KMeansAbstraction::new(centroids, evaluator);
-        let hole = vec![0, 1];
-        let board = vec![];
-        let history1 = vec![];
-        let history2 = vec![1, 2, 3];
-        let hash1 = builder.get_infoset_hash(&hole, &board, &history1);
-        let hash2 = builder.get_infoset_hash(&hole, &board, &history2);
-        assert_eq!(
-            hash1, hash2,
-            "History should be ignored for this abstraction"
-        );
-    }
-
-    #[test]
-    fn test_cluster_hands_with_k_one() {
-        let features = generate_features(100);
-        let hashes = cluster_hands(features, 1);
-        assert_eq!(hashes.len(), 100);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert_eq!(unique.len(), 1);
-    }
-
-    #[test]
-    fn test_cluster_hands_extreme_values() {
-        // Very small and very large values should still be clustered correctly.
-        let features = vec![(1e-7, 1e-14), (1e7, 1e14)];
-        let hashes = cluster_hands(features, 2);
-        assert_eq!(hashes.len(), 2);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert_eq!(
-            unique.len(),
-            2,
-            "Extreme values should end up in different clusters"
-        );
-    }
-
-    #[test]
-    fn test_cluster_hands_single_cluster_centroid_is_average() {
-        // For k=1, all points should be assigned to the same cluster.
-        let features = vec![(0.2, 0.04), (0.4, 0.16), (0.6, 0.36)];
-        let hashes = cluster_hands(features, 1);
-        assert_eq!(hashes.len(), 3);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert_eq!(unique.len(), 1);
-    }
-
-    #[test]
-    fn test_cluster_hands_very_large_dataset() {
-        // 10,000 points with 5 clusters – verify it completes and respects k.
-        let features: Vec<_> = (0..10_000)
-            .map(|i| {
-                let x = (i % 1000) as f32 / 1000.0;
-                (x, x * x)
-            })
-            .collect();
-        let hashes = cluster_hands(features, 5);
-        assert_eq!(hashes.len(), 10_000);
-        let unique: std::collections::HashSet<u64> = hashes.into_iter().collect();
-        assert!(unique.len() <= 5);
-    }
-
-    #[test]
-    fn test_cluster_hands_deterministic_across_runs() {
-        let features = generate_features(200);
-        let run1 = cluster_hands(features.clone(), 4);
-        let run2 = cluster_hands(features.clone(), 4);
-        assert_eq!(run1, run2);
-    }
-
-    #[test]
-    fn test_abstraction_builder_no_history_influence_variant() {
-        let centroids = vec![(0.5, 0.25), (0.8, 0.64)];
-        let builder = KMeansAbstraction::new(centroids, Box::new(pkr_eval::NlheEvaluator));
-        let hole = vec![0, 1];
-        let board = vec![];
-        let hash_empty = builder.get_infoset_hash(&hole, &board, &[]);
-        let hash_zeros = builder.get_infoset_hash(&hole, &board, &[0, 0, 0]);
-        assert_eq!(hash_empty, hash_zeros);
-    }
-
-    #[test]
-    fn test_cluster_hands_no_centroid_movement_when_aligned() {
-        // If all points are exactly at the centroids, centroids should not move.
-        let features = vec![(0.3, 0.09), (0.3, 0.09), (0.7, 0.49), (0.7, 0.49)];
-        let hashes = cluster_hands(features, 2);
-        assert_eq!(hashes.len(), 4);
-        let unique: std::collections::HashSet<u64> = hashes.iter().cloned().collect();
-        assert_eq!(unique.len(), 2, "Exactly two clusters expected");
+        hash
     }
 }

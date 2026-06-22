@@ -422,6 +422,7 @@ dependencies = [
 name = "pkr-trainer"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "clap",
  "pkr-abstraction",
  "pkr-cfr",
@@ -429,6 +430,7 @@ dependencies = [
  "pkr-core",
  "pkr-eval",
  "pkr-export",
+ "rand",
  "tracing",
  "tracing-subscriber",
 ]

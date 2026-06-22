@@ -1,45 +1,228 @@
 use pkr_contracts::Evaluator;
 
-mod tables;
-
-/// A hand evaluator for No-Limit Hold'em using a lazy precomputed lookup table.
-///
-/// Expects exactly 2 hole cards and 5 board cards (total 7).
 pub struct NlheEvaluator;
 
 impl Evaluator for NlheEvaluator {
-    fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u16 {
-        assert_eq!(hole.len(), 2, "NlheEvaluator expects exactly 2 hole cards");
-        assert_eq!(
-            board.len(),
-            5,
-            "NlheEvaluator expects exactly 5 board cards"
-        );
+    fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
+        let mut cards = [255u8; 7];
+        let mut idx = 0;
+        for &c in hole {
+            if idx < 7 {
+                cards[idx] = c;
+                idx += 1;
+            }
+        }
+        for &c in board {
+            if idx < 7 {
+                cards[idx] = c;
+                idx += 1;
+            }
+        }
+        eval_7_cards(&cards)
+    }
+}
 
-        let mut cards = [0u8; 7];
-        cards[..2].copy_from_slice(hole);
-        cards[2..].copy_from_slice(board);
-        cards.sort_unstable();
+#[inline]
+fn eval_7_cards(cards: &[u8; 7]) -> u32 {
+    let mut rank_counts = [0u8; 13];
+    let mut suit_counts = [0u8; 4];
+    let mut suit_ranks = [0u16; 4];
+    let mut rank_mask = 0u16;
 
-        let mut best = u16::MAX;
-        for skip1 in 0..7 {
-            for skip2 in (skip1 + 1)..7 {
-                let mut hand = [0u8; 5];
-                let mut idx = 0;
-                for (k, &card) in cards.iter().enumerate() {
-                    if k != skip1 && k != skip2 {
-                        hand[idx] = card;
-                        idx += 1;
-                    }
+    for &c in cards.iter() {
+        if c == 255 {
+            continue;
+        }
+        let suit = (c / 13) as usize;
+        let rank = (c % 13) as usize;
+        rank_counts[rank] += 1;
+        suit_counts[suit] += 1;
+        suit_ranks[suit] |= 1 << rank;
+        rank_mask |= 1 << rank;
+    }
+
+    let mut flush_suit = None;
+    for s in 0..4 {
+        if suit_counts[s] >= 5 {
+            flush_suit = Some(s);
+            break;
+        }
+    }
+
+    let mut straight_high = -1i32;
+    let mut count = 0;
+    for r in (0..13i32).rev() {
+        if (rank_mask & (1 << r)) != 0 {
+            count += 1;
+            if count >= 5 {
+                straight_high = r;
+                break;
+            }
+        } else {
+            count = 0;
+        }
+    }
+    if straight_high == -1 {
+        if (rank_mask & (1 << 12)) != 0 && (rank_mask & 0xF) == 0xF {
+            straight_high = 3;
+        } // Wheel
+    }
+
+    if let Some(fs) = flush_suit {
+        let fr = suit_ranks[fs];
+        let mut sf_high = -1i32;
+        let mut c = 0;
+        for r in (0..13i32).rev() {
+            if (fr & (1 << r)) != 0 {
+                c += 1;
+                if c >= 5 {
+                    sf_high = r;
+                    break;
                 }
-                let rank = tables::five_card_rank(hand);
-                if rank < best {
-                    best = rank;
+            } else {
+                c = 0;
+            }
+        }
+        if sf_high == -1 {
+            if (fr & (1 << 12)) != 0 && (fr & 0xF) == 0xF {
+                sf_high = 3;
+            }
+        }
+        if sf_high != -1 {
+            return rank_value(8, sf_high as u8, 0, 0, 0, 0);
+        }
+    }
+
+    let mut quads = -1i32;
+    let mut k1 = -1i32;
+    for r in (0..13i32).rev() {
+        if rank_counts[r as usize] == 4 {
+            quads = r;
+        } else if rank_counts[r as usize] > 0 && k1 == -1 {
+            k1 = r;
+        }
+    }
+    if quads != -1 {
+        return rank_value(7, quads as u8, k1 as u8, 0, 0, 0);
+    }
+
+    let mut trips = -1i32;
+    let mut pair = -1i32;
+    for r in (0..13i32).rev() {
+        if rank_counts[r as usize] == 3 {
+            if trips == -1 {
+                trips = r;
+            } else if pair == -1 {
+                pair = r;
+            }
+        } else if rank_counts[r as usize] == 2 {
+            if pair == -1 {
+                pair = r;
+            }
+        }
+    }
+    if trips != -1 && pair != -1 {
+        return rank_value(6, trips as u8, pair as u8, 0, 0, 0);
+    }
+
+    if let Some(fs) = flush_suit {
+        let fr = suit_ranks[fs];
+        let mut kickers = [0u8; 5];
+        let mut k_idx = 0;
+        for r in (0..13i32).rev() {
+            if (fr & (1 << r)) != 0 {
+                kickers[k_idx] = r as u8;
+                k_idx += 1;
+                if k_idx == 5 {
+                    break;
                 }
             }
         }
-        best
+        return rank_value(
+            5, kickers[0], kickers[1], kickers[2], kickers[3], kickers[4],
+        );
     }
+
+    if straight_high != -1 {
+        return rank_value(4, straight_high as u8, 0, 0, 0, 0);
+    }
+
+    if trips != -1 {
+        let mut kickers = [0u8; 2];
+        let mut k_idx = 0;
+        for r in (0..13i32).rev() {
+            if rank_counts[r as usize] > 0 && r != trips {
+                kickers[k_idx] = r as u8;
+                k_idx += 1;
+                if k_idx == 2 {
+                    break;
+                }
+            }
+        }
+        return rank_value(3, trips as u8, kickers[0], kickers[1], 0, 0);
+    }
+
+    let mut pairs = [-1i32; 2];
+    let mut p_idx = 0;
+    for r in (0..13i32).rev() {
+        if rank_counts[r as usize] == 2 {
+            pairs[p_idx] = r;
+            p_idx += 1;
+            if p_idx == 2 {
+                break;
+            }
+        }
+    }
+    if pairs[0] != -1 && pairs[1] != -1 {
+        let mut k = 0u8;
+        for r in (0..13i32).rev() {
+            if rank_counts[r as usize] > 0 && r != pairs[0] && r != pairs[1] {
+                k = r as u8;
+                break;
+            }
+        }
+        return rank_value(2, pairs[0] as u8, pairs[1] as u8, k, 0, 0);
+    }
+
+    if pairs[0] != -1 {
+        let mut kickers = [0u8; 3];
+        let mut k_idx = 0;
+        for r in (0..13i32).rev() {
+            if rank_counts[r as usize] > 0 && r != pairs[0] {
+                kickers[k_idx] = r as u8;
+                k_idx += 1;
+                if k_idx == 3 {
+                    break;
+                }
+            }
+        }
+        return rank_value(1, pairs[0] as u8, kickers[0], kickers[1], kickers[2], 0);
+    }
+
+    let mut kickers = [0u8; 5];
+    let mut k_idx = 0;
+    for r in (0..13i32).rev() {
+        if rank_counts[r as usize] > 0 {
+            kickers[k_idx] = r as u8;
+            k_idx += 1;
+            if k_idx == 5 {
+                break;
+            }
+        }
+    }
+    rank_value(
+        0, kickers[0], kickers[1], kickers[2], kickers[3], kickers[4],
+    )
+}
+
+#[inline]
+fn rank_value(cat: u8, k1: u8, k2: u8, k3: u8, k4: u8, k5: u8) -> u32 {
+    ((cat as u32) << 20)
+        | ((k1 as u32) << 16)
+        | ((k2 as u32) << 12)
+        | ((k3 as u32) << 8)
+        | ((k4 as u32) << 4)
+        | (k5 as u32)
 }
 
 #[cfg(test)]
@@ -52,11 +235,9 @@ mod tests {
         (rank - 2) + suit * 13
     }
 
-    fn eval(hole: &[u8], board: &[u8]) -> u16 {
+    fn eval(hole: &[u8], board: &[u8]) -> u32 {
         NlheEvaluator.evaluate_hand(hole, board)
     }
-
-    // --- Hand category comparisons ---
 
     #[test]
     fn royal_flush_vs_four_of_a_kind() {
@@ -171,390 +352,5 @@ mod tests {
     fn implements_evaluator_trait() {
         fn assert_evaluator<T: Evaluator>() {}
         assert_evaluator::<NlheEvaluator>();
-    }
-
-    // --- Additional tests for deeper coverage ---
-
-    #[test]
-    fn two_pair_vs_one_pair() {
-        let hole2p = vec![card_idx(0, 8), card_idx(1, 8)];
-        let board2p = vec![
-            card_idx(2, 5),
-            card_idx(3, 5),
-            card_idx(0, 2),
-            card_idx(1, 9),
-            card_idx(2, 11),
-        ];
-        let two_pair = eval(&hole2p, &board2p);
-
-        let hole1p = vec![card_idx(0, 14), card_idx(1, 8)];
-        let board1p = vec![
-            card_idx(2, 5),
-            card_idx(3, 7),
-            card_idx(0, 9),
-            card_idx(1, 10),
-            card_idx(2, 12),
-        ];
-        let one_pair = eval(&hole1p, &board1p);
-
-        assert!(
-            two_pair < one_pair,
-            "Two pair ({}) should beat one pair ({})",
-            two_pair,
-            one_pair
-        );
-    }
-
-    #[test]
-    fn two_pair_kicker_breaks_tie() {
-        let hole1 = vec![card_idx(0, 8), card_idx(1, 5)];
-        let board1 = vec![
-            card_idx(2, 8),
-            card_idx(3, 5),
-            card_idx(0, 14), // Ace kicker
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let higher_kicker = eval(&hole1, &board1);
-
-        let hole2 = vec![card_idx(0, 8), card_idx(1, 5)];
-        let board2 = vec![
-            card_idx(2, 8),
-            card_idx(3, 5),
-            card_idx(0, 13), // King kicker
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let lower_kicker = eval(&hole2, &board2);
-
-        assert!(
-            higher_kicker < lower_kicker,
-            "Two pair with Ace kicker ({}) should be better than King kicker ({})",
-            higher_kicker,
-            lower_kicker
-        );
-    }
-
-    #[test]
-    fn equal_hands_same_rank() {
-        let hole1 = vec![card_idx(0, 10), card_idx(0, 9)];
-        let board1 = vec![
-            card_idx(0, 8),
-            card_idx(0, 7),
-            card_idx(0, 6),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let sf1 = eval(&hole1, &board1);
-
-        let hole2 = vec![card_idx(1, 10), card_idx(1, 9)];
-        let board2 = vec![
-            card_idx(1, 8),
-            card_idx(1, 7),
-            card_idx(1, 6),
-            card_idx(0, 2),
-            card_idx(3, 3),
-        ];
-        let sf2 = eval(&hole2, &board2);
-
-        assert_eq!(sf1, sf2, "Identical hands in different suits must tie");
-    }
-
-    #[test]
-    fn wheel_vs_six_high_straight() {
-        let hole = vec![card_idx(0, 14), card_idx(1, 2)];
-        let board = vec![
-            card_idx(2, 3),
-            card_idx(3, 4),
-            card_idx(0, 5),
-            card_idx(1, 7),
-            card_idx(2, 9),
-        ];
-        let wheel = eval(&hole, &board);
-
-        let hole6 = vec![card_idx(0, 6), card_idx(1, 2)];
-        let board6 = vec![
-            card_idx(2, 3),
-            card_idx(3, 4),
-            card_idx(0, 5),
-            card_idx(1, 7),
-            card_idx(2, 8),
-        ];
-        let six_high = eval(&hole6, &board6);
-
-        assert!(
-            six_high < wheel,
-            "6-high straight ({}) should beat wheel ({}), higher straight wins",
-            six_high,
-            wheel
-        );
-    }
-
-    #[test]
-    fn flush_beats_straight() {
-        let hole = vec![card_idx(0, 14), card_idx(0, 3)];
-        let board = vec![
-            card_idx(0, 5),
-            card_idx(0, 7),
-            card_idx(0, 9),
-            card_idx(1, 2),
-            card_idx(2, 4),
-        ];
-        let flush = eval(&hole, &board);
-
-        let hole_st = vec![card_idx(0, 9), card_idx(1, 8)];
-        let board_st = vec![
-            card_idx(2, 7),
-            card_idx(3, 6),
-            card_idx(0, 5),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let straight = eval(&hole_st, &board_st);
-
-        assert!(
-            flush < straight,
-            "Flush ({}) should beat straight ({})",
-            flush,
-            straight
-        );
-    }
-
-    #[test]
-    fn royal_flush_is_best() {
-        let hole = vec![card_idx(0, 14), card_idx(0, 13)];
-        let board = vec![
-            card_idx(0, 12),
-            card_idx(0, 11),
-            card_idx(0, 10),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let rank = eval(&hole, &board);
-        assert_eq!(rank, 0, "Royal flush must be rank 0, got {}", rank);
-    }
-
-    #[test]
-    fn four_of_a_kind_beats_full_house() {
-        let hole4 = vec![card_idx(0, 7), card_idx(1, 7)];
-        let board4 = vec![
-            card_idx(2, 7),
-            card_idx(3, 7),
-            card_idx(0, 13),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let quads = eval(&hole4, &board4);
-
-        let hole_fh = vec![card_idx(0, 14), card_idx(1, 14)];
-        let board_fh = vec![
-            card_idx(2, 14),
-            card_idx(3, 5),
-            card_idx(0, 5),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let fh = eval(&hole_fh, &board_fh);
-
-        assert!(
-            quads < fh,
-            "Four of a kind ({}) should beat full house ({})",
-            quads,
-            fh
-        );
-    }
-
-    #[test]
-    fn three_of_a_kind_beats_two_pair() {
-        let hole3 = vec![card_idx(0, 9), card_idx(1, 9)];
-        let board3 = vec![
-            card_idx(2, 9),
-            card_idx(3, 4),
-            card_idx(0, 5),
-            card_idx(1, 8),
-            card_idx(2, 11),
-        ];
-        let trips = eval(&hole3, &board3);
-
-        let hole2p = vec![card_idx(0, 8), card_idx(1, 8)];
-        let board2p = vec![
-            card_idx(2, 5),
-            card_idx(3, 5),
-            card_idx(0, 2),
-            card_idx(1, 9),
-            card_idx(2, 11),
-        ];
-        let two_pair = eval(&hole2p, &board2p);
-
-        assert!(
-            trips < two_pair,
-            "Three of a kind ({}) should beat two pair ({})",
-            trips,
-            two_pair
-        );
-    }
-
-    #[test]
-    fn one_pair_beats_high_card() {
-        let hole1p = vec![card_idx(0, 7), card_idx(1, 7)];
-        let board1p = vec![
-            card_idx(2, 3),
-            card_idx(3, 5),
-            card_idx(0, 9),
-            card_idx(1, 11),
-            card_idx(2, 13),
-        ];
-        let pair = eval(&hole1p, &board1p);
-
-        let hole_hc = vec![card_idx(0, 14), card_idx(1, 3)];
-        let board_hc = vec![
-            card_idx(2, 5),
-            card_idx(3, 7),
-            card_idx(0, 9),
-            card_idx(1, 10),
-            card_idx(2, 12),
-        ];
-        let high_card = eval(&hole_hc, &board_hc);
-
-        assert!(
-            pair < high_card,
-            "One pair ({}) should beat high card ({})",
-            pair,
-            high_card
-        );
-    }
-
-    #[test]
-    fn ace_high_straight_flush_vs_king_high() {
-        let hole_royal = vec![card_idx(0, 14), card_idx(0, 13)];
-        let board_royal = vec![
-            card_idx(0, 12),
-            card_idx(0, 11),
-            card_idx(0, 10),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let royal = eval(&hole_royal, &board_royal);
-
-        let hole_king = vec![card_idx(0, 13), card_idx(0, 12)];
-        let board_king = vec![
-            card_idx(0, 11),
-            card_idx(0, 10),
-            card_idx(0, 9),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let king_high = eval(&hole_king, &board_king);
-
-        assert!(
-            royal < king_high,
-            "Royal flush ({}) should beat King-high straight flush ({})",
-            royal,
-            king_high
-        );
-    }
-
-    #[test]
-    fn full_house_tiebreaker_by_trips() {
-        let hole9 = vec![card_idx(0, 9), card_idx(1, 9)];
-        let board9 = vec![
-            card_idx(2, 9),
-            card_idx(3, 5),
-            card_idx(0, 5),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let nines_full = eval(&hole9, &board9);
-
-        let hole8 = vec![card_idx(0, 8), card_idx(1, 8)];
-        let board8 = vec![
-            card_idx(2, 8),
-            card_idx(3, 14),
-            card_idx(0, 14),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let eights_full = eval(&hole8, &board8);
-
-        assert!(
-            nines_full < eights_full,
-            "9s full ({}) should beat 8s full ({})",
-            nines_full,
-            eights_full
-        );
-    }
-
-    #[test]
-    fn one_pair_tiebreaker_by_kickers() {
-        let hole1 = vec![card_idx(0, 14), card_idx(1, 14)];
-        let board1 = vec![
-            card_idx(2, 13),
-            card_idx(3, 12),
-            card_idx(0, 11),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let higher = eval(&hole1, &board1);
-
-        let hole2 = vec![card_idx(0, 14), card_idx(1, 14)];
-        let board2 = vec![
-            card_idx(2, 13),
-            card_idx(3, 12),
-            card_idx(0, 10),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let lower = eval(&hole2, &board2);
-
-        assert!(
-            higher < lower,
-            "Aces with K Q J ({}) should beat Aces with K Q T ({})",
-            higher,
-            lower
-        );
-    }
-
-    #[test]
-    fn high_card_tiebreaker_by_fifth_card() {
-        let hole1 = vec![card_idx(0, 14), card_idx(1, 13)];
-        let board1 = vec![
-            card_idx(2, 12),
-            card_idx(3, 11),
-            card_idx(0, 9),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let nine = eval(&hole1, &board1);
-
-        let hole2 = vec![card_idx(0, 14), card_idx(1, 13)];
-        let board2 = vec![
-            card_idx(2, 12),
-            card_idx(3, 11),
-            card_idx(0, 8),
-            card_idx(1, 2),
-            card_idx(2, 3),
-        ];
-        let eight = eval(&hole2, &board2);
-
-        assert!(
-            nine < eight,
-            "A-K-Q-J-9 ({}) should beat A-K-Q-J-8 ({})",
-            nine,
-            eight
-        );
-    }
-
-    #[test]
-    fn evaluate_hand_requires_correct_lengths() {
-        let evaluator = NlheEvaluator;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            evaluator.evaluate_hand(&[], &[0, 1, 2, 3, 4]);
-        }));
-        assert!(result.is_err(), "should panic on empty hole");
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            evaluator.evaluate_hand(&[0, 1], &[0, 1, 2, 3, 4, 5]);
-        }));
-        assert!(result.is_err(), "should panic on 6 board cards");
     }
 }

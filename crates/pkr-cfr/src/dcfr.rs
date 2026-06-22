@@ -10,26 +10,19 @@
 /// The current regret is stored as an unsigned byte with midpoint 128
 /// representing zero.  The offset (current - 128) is discounted, added to
 /// `delta`, and finally re-centred and clamped to [0, 255].
-pub fn update_regret(current: u8, iteration: u32, delta: f32, is_positive: bool) -> u8 {
-    let offset = current as f32 - 128.0;
+pub fn update_regret(current: f32, iteration: u32, delta: f32, is_positive: bool) -> f32 {
     let t = iteration as f32;
-
     let factor = if t == 0.0 {
-        0.0 // limit of t^a/(t^a+1) as t→0
+        0.0
     } else {
         let alpha = if is_positive { 1.5 } else { 0.0 };
         let pow = t.powf(alpha);
         pow / (pow + 1.0)
     };
 
-    let discounted_offset = offset * factor;
-    let new_offset = discounted_offset + delta;
-    let new_val = 128.0 + new_offset;
-
-    // Clamp to u8 range and round to nearest integer
-    (new_val.round() as i32).clamp(0, 255) as u8
+    let discounted_offset = current * factor;
+    discounted_offset + delta
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
