@@ -211,23 +211,39 @@ fn generate_preflop_table(centroids_path: &str, rank_table_path: &str, output: &
 }
 
 fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) {
+    
+    use pkr_eval::lookup::combinadic_unrank_3;
+
     let evaluator = TableEvaluator::new(rank_table_path).expect("load hand_ranks.bin");
     let total_flops = choose(52, 3) as usize;
     let features: Vec<[f32; 10]> = (0..total_flops)
         .into_par_iter()
         .map(|flop_idx| {
-            let flop = combinadic_unrank(flop_idx as u32, 3, 52);
+            let flop = combinadic_unrank_3(flop_idx as u32);
             let mut histogram = [0.0f32; 10];
             let mut rng = rand::rng();
-            let mut deck: Vec<u8> = (0..52).filter(|c| !flop.contains(c)).collect();
+
+            // Stack array for deck (avoids Vec allocation per flop)
+            let mut deck = [0u8; 49];
+            let mut d_idx = 0;
+            for c in 0..52u8 {
+                if !flop.contains(&c) {
+                    deck[d_idx] = c;
+                    d_idx += 1;
+                }
+            }
+
+            // Pre-allocate board array on stack (avoids 22.1 million Vec allocations)
+            let mut board_cards = [0u8; 5];
+            board_cards[..3].copy_from_slice(&flop);
+
             for _ in 0..100 {
-                deck.partial_shuffle(&mut rng, 6); // 2 opp hole + 2 turn/river
+                // Must shuffle 6 to properly shuffle turn/river cards
+                deck.partial_shuffle(&mut rng, 6);
                 let hole = [deck[0], deck[1]];
                 let opp_hole = [deck[2], deck[3]];
-                let board_cards: Vec<u8> = flop.iter()
-                    .chain(&deck[4..6]) // turn and river after opponent hole
-                    .copied()
-                    .collect();
+                board_cards[3..5].copy_from_slice(&deck[4..6]);
+
                 let hero_rank = evaluator.evaluate_hand(&hole, &board_cards);
                 let opp_rank = evaluator.evaluate_hand(&opp_hole, &board_cards);
                 let equity = if hero_rank < opp_rank { 1.0 } else if hero_rank == opp_rank { 0.5 } else { 0.0 };
@@ -238,6 +254,7 @@ fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) {
             histogram
         })
         .collect();
+
     let centroids = kmeans_10d(&features, k, 50);
     let mut buckets: Vec<u8> = vec![0; total_flops];
     buckets.par_iter_mut().enumerate().for_each(|(idx, bucket)| {

@@ -1,5 +1,4 @@
 use pkr_contracts::Evaluator;
-use rand::rng;
 use rand::seq::SliceRandom;
 use std::sync::OnceLock;
 
@@ -23,7 +22,6 @@ pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f
 
     let samples = num_samples();
 
-    // Stack array for remaining cards
     let mut remaining = [0u8; 50];
     let mut rem_len = 0;
     for c in 0..52u8 {
@@ -33,7 +31,7 @@ pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f
         }
     }
 
-    let mut rng = rng();
+    let mut rng = rand::rng();
     let mut sum_equity: f64 = 0.0;
     let mut sum_sq: f64 = 0.0;
 

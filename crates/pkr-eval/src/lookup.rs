@@ -47,6 +47,22 @@ pub fn combinadic_unrank_2(mut index: u32) -> [u8; 2] {
     result
 }
 
+/// Unrank combinadic index to 3-card combination (descending).
+pub fn combinadic_unrank_3(mut index: u32) -> [u8; 3] {
+    let mut result = [0u8; 3];
+    let mut remaining = 52u32;
+    for i in (1..=3).rev() {
+        let mut x = remaining - 1;
+        while choose(x, i) > index { x -= 1; }
+        let pos = (3 - i) as usize;
+        result[pos] = x as u8;
+        index -= choose(x, i);
+        remaining = x;
+    }
+    result.sort_unstable_by(|a, b| b.cmp(a));
+    result
+}
+
 /// Unrank combinadic index to 5-card combination (descending).
 pub fn combinadic_unrank_5(mut index: u32) -> [u8; 5] {
     let mut result = [0u8; 5];
