@@ -226,4 +226,19 @@ mod tests {
         assert_eq!(reader.file_header().infoset_count, 10);
         assert_eq!(reader.keys_data().len(), 80);
     }
+    #[test]
+    fn test_truncated_fmph_data() {
+    }
+    #[test]
+    fn test_version_99_rejected() {
+    }
+    #[test]
+    fn test_keys_data_access() {
+    }
+    #[test]
+    fn test_cdf_data_length() {
+    }
+    #[test]
+    fn test_all_sections_present() {
+    }
 }

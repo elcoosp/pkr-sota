@@ -68,3 +68,54 @@ mod tests {
         assert_evaluator::<NlheEvaluator>();
     }
 }
+#[cfg(test)]
+mod extended_tests {
+    use crate::slow::NlheEvaluator;
+    use pkr_contracts::Evaluator;
+
+    fn card(suit: u8, rank: u8) -> u8 { (rank - 2) + suit * 13 }
+
+    #[test]
+    fn test_two_pair_vs_one_pair() {
+        // Board: K K 2 5 8 – no straight possible, two pair AAKK vs one pair KKA
+        let tp = NlheEvaluator.evaluate_hand(&[card(0,14), card(1,14)], &[card(2,13), card(3,13), card(0,2), card(1,5), card(2,8)]);
+        let op = NlheEvaluator.evaluate_hand(&[card(0,14), card(1,6)], &[card(2,13), card(3,13), card(0,2), card(1,5), card(2,8)]);
+        assert!(tp < op, "Two pair should beat one pair");
+    }
+
+    #[test]
+    fn test_flush_vs_straight() {
+        let fl = NlheEvaluator.evaluate_hand(&[card(0,14), card(0,3)], &[card(0,5), card(0,7), card(0,9), card(1,2), card(2,4)]);
+        let st = NlheEvaluator.evaluate_hand(&[card(1,9), card(2,8)], &[card(3,7), card(0,6), card(1,5), card(2,2), card(3,3)]);
+        assert!(fl < st, "Flush should beat straight");
+    }
+
+    #[test]
+    fn test_wheel_straight() {
+        // A-2-3-4-5 wheel vs 3-4-5-6-7 straight (7-high). Wheel loses.
+        let wheel = NlheEvaluator.evaluate_hand(&[card(0,14), card(1,2)], &[card(2,3), card(3,4), card(0,5), card(1,9), card(2,10)]);
+        let straight7 = NlheEvaluator.evaluate_hand(&[card(0,6), card(1,7)], &[card(2,3), card(3,4), card(0,5), card(1,9), card(2,10)]);
+        assert!(wheel > straight7, "Wheel (5-high) should lose to 7-high straight");
+    }
+
+    #[test]
+    fn test_quads_vs_full_house() {
+        let q = NlheEvaluator.evaluate_hand(&[card(0,8), card(1,8)], &[card(2,8), card(3,8), card(0,14), card(1,2), card(2,3)]);
+        let fh = NlheEvaluator.evaluate_hand(&[card(0,14), card(1,14)], &[card(2,14), card(3,8), card(0,8), card(1,2), card(2,3)]);
+        assert!(q < fh, "Quads should beat full house");
+    }
+
+    #[test]
+    fn test_kicker_matters() {
+        let r1 = NlheEvaluator.evaluate_hand(&[card(0,14), card(1,13)], &[card(2,5), card(3,7), card(0,9), card(1,2), card(2,3)]);
+        let r2 = NlheEvaluator.evaluate_hand(&[card(0,14), card(1,12)], &[card(2,5), card(3,7), card(0,9), card(1,2), card(2,3)]);
+        assert!(r1 < r2, "AK should beat AQ");
+    }
+
+    #[test]
+    fn test_same_hand_ties() {
+        let r1 = NlheEvaluator.evaluate_hand(&[card(0,14), card(1,13)], &[card(0,5), card(1,7), card(2,9), card(3,2), card(0,3)]);
+        let r2 = NlheEvaluator.evaluate_hand(&[card(2,14), card(3,13)], &[card(0,5), card(1,7), card(2,9), card(3,2), card(0,3)]);
+        assert_eq!(r1, r2, "Same hand should tie");
+    }
+}

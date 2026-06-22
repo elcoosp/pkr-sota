@@ -245,3 +245,79 @@ mod tests {
         assert_ne!(h1, h2);
     }
 }
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+    use pkr_contracts::Evaluator;
+    use std::sync::Arc;
+    struct TestEval;
+    impl Evaluator for TestEval { fn evaluate_hand(&self, _: &[u8], _: &[u8]) -> u32 { 0 } }
+
+    #[test]
+    fn test_flat_index_preflop_boundaries() {
+        assert_eq!(KMeansAbstraction::flat_index_preflop(&[0,1]), 0);
+        assert_eq!(KMeansAbstraction::flat_index_preflop(&[50,51]), 1325);
+    }
+
+    #[test]
+    fn test_flat_index_flop_consistency() {
+        let idx1 = KMeansAbstraction::flat_index_flop(&[10,20], &[30,40,50]);
+        let idx2 = KMeansAbstraction::flat_index_flop(&[20,10], &[50,30,40]);
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_flat_index_turn_consistency() {
+        let idx1 = KMeansAbstraction::flat_index_turn(&[5,15], &[25,35,45,51]);
+        let idx2 = KMeansAbstraction::flat_index_turn(&[15,5], &[51,35,25,45]);
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn test_centroid_save_and_load() {
+        let store = CentroidStore { centroids: vec![(0.1,0.01),(0.5,0.25),(0.9,0.81)] };
+        let tmp = std::env::temp_dir().join("test_centroids.bin");
+        save_centroids(tmp.to_str().unwrap(), &store).unwrap();
+        let loaded = load_centroids(tmp.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.centroids.len(), 3);
+        assert!((loaded.centroids[1].0 - 0.5).abs() < 0.001);
+        std::fs::remove_file(tmp).ok();
+    }
+
+    #[test]
+    fn test_hash_changes_with_street() {
+        let builder = KMeansAbstraction::new(vec![(0.5,0.25)], Arc::new(TestEval));
+        let h1 = builder.get_infoset_hash(&[0,1], &[], &[], 0);
+        let h2 = builder.get_infoset_hash(&[0,1], &[2,3,4], &[], 1);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_hash_changes_with_history_length() {
+        let builder = KMeansAbstraction::new(vec![(0.5,0.25)], Arc::new(TestEval));
+        let h1 = builder.get_infoset_hash(&[0,1], &[2,3,4], &[0], 1);
+        let h2 = builder.get_infoset_hash(&[0,1], &[2,3,4], &[0,1], 1);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_flop_bucket_default_zero() {
+        let builder = KMeansAbstraction::new(vec![(0.5,0.25)], Arc::new(TestEval));
+        let h = builder.get_infoset_hash(&[0,1], &[2,3,4], &[], 1);
+        assert!(h != 0);
+    }
+
+    #[test]
+    fn test_abstraction_is_thread_safe() {
+        use std::thread;
+        let builder = Arc::new(KMeansAbstraction::new(vec![(0.3,0.09),(0.7,0.49)], Arc::new(TestEval)));
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let b = Arc::clone(&builder);
+            handles.push(thread::spawn(move || {
+                for _ in 0..100 { assert!(b.get_infoset_hash(&[0,1], &[2,3,4], &[0,1], 1) != 0); }
+            }));
+        }
+        for h in handles { h.join().unwrap(); }
+    }
+}

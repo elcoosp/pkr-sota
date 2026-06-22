@@ -211,3 +211,91 @@ fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummyEvaluator;
+    impl Evaluator for DummyEvaluator {
+        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 { 0 }
+    }
+
+    #[test]
+    fn test_initial_state() {
+        let state = GameState::new(200.0, 1.0, 2.0);
+        assert_eq!(state.pot, 3.0);
+        assert_eq!(state.stacks, [199.0, 198.0]);
+        assert_eq!(state.street, Street::Preflop);
+        assert_eq!(state.actor, 0);
+        assert_eq!(state.folded, [false, false]);
+    }
+
+    #[test]
+    fn test_preflop_betting() {
+        let state = GameState::new(200.0, 1.0, 2.0);
+        assert_eq!(state.bet_to_call(), 1.0);
+        let actions = state.legal_actions();
+        assert!(actions.iter().any(|a| matches!(a.kind, ActionKind::Fold)));
+        assert!(actions.iter().any(|a| matches!(a.kind, ActionKind::Call)));
+    }
+
+    #[test]
+    fn test_fold_ends_hand() {
+        let mut state = GameState::new(200.0, 1.0, 2.0);
+        state = state.apply_action(&Action { player: 0, kind: ActionKind::Fold });
+        assert!(state.folded[0]);
+        assert!(state.is_terminal());
+    }
+
+    #[test]
+    fn test_check_check_completes_street() {
+        let mut state = GameState::new(200.0, 1.0, 2.0);
+        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
+        assert_eq!(state.actor, 1);
+        state = state.apply_action(&Action { player: 1, kind: ActionKind::Check });
+        assert!(state.is_street_complete());
+    }
+
+    #[test]
+    fn test_advance_street() {
+        let mut state = GameState::new(200.0, 1.0, 2.0);
+        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
+        state = state.apply_action(&Action { player: 1, kind: ActionKind::Check });
+        assert!(state.is_street_complete());
+        state.advance_street(&[10, 11, 12]);
+        assert_eq!(state.street, Street::Flop);
+        assert_eq!(state.board, vec![10, 11, 12]);
+        assert_eq!(state.street_bets, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_showdown_payoff() {
+        let mut state = GameState::new(200.0, 1.0, 2.0);
+        state.set_hole_cards([0, 1], [2, 3]);
+        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
+        state = state.apply_action(&Action { player: 1, kind: ActionKind::Check });
+        state.board = vec![4,5,6,7,8];
+        state.street = Street::River;
+        let eval = DummyEvaluator;
+        let payoff = state.terminal_payoff(0, &eval);
+        assert!((payoff - (state.pot/2.0 - state.total_invested[0])).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_bet_sizing() {
+        let mut state = GameState::new(200.0, 1.0, 2.0);
+        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
+        let actions = state.legal_actions();
+        let bet_actions: Vec<_> = actions.iter().filter(|a| matches!(a.kind, ActionKind::Bet(_))).collect();
+        assert!(!bet_actions.is_empty());
+    }
+
+    #[test]
+    fn test_terminal_payoff_fold() {
+        let mut state = GameState::new(200.0, 1.0, 2.0);
+        state = state.apply_action(&Action { player: 0, kind: ActionKind::Fold });
+        let eval = DummyEvaluator;
+        assert!(state.terminal_payoff(0, &eval) < 0.0);
+        assert!(state.terminal_payoff(1, &eval) > 0.0);
+    }
+}

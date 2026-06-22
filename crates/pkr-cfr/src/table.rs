@@ -125,3 +125,111 @@ impl CompactRegretTable {
 
     pub fn merge(&self, _other: &CompactRegretTable) {}
 }
+
+mod tests {
+    use crate::CompactRegretTable;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_new_table_empty_strategy() {
+        let table = CompactRegretTable::new();
+        let mut out = [0.0f32; 6];
+        table.get_strategy_into(42, &mut out);
+        assert!((out.iter().sum::<f32>() - 1.0).abs() < 0.001);
+        for v in out.iter() {
+            assert!((*v - 1.0/6.0).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_set_and_get_regret() {
+        let table = CompactRegretTable::new();
+        table.apply_regret_update(100, 2, 1, 5.0);
+        let r = table.get_regret(100, 2);
+        assert!(r > 0.0);
+        assert!(r < 10.0);
+    }
+
+    #[test]
+    fn test_strategy_from_positive_regrets() {
+        let table = CompactRegretTable::new();
+        // Set high regret for action 0, zero for others
+        for _ in 0..10 {
+            table.apply_regret_update(1, 0, 1, 10.0);
+        }
+        let mut out = [0.0f32; 6];
+        table.get_strategy_into(1, &mut out);
+        // Action 0 should have highest probability
+        assert!(out[0] > out[1]);
+        assert!(out[0] > 0.5);
+    }
+
+    #[test]
+    fn test_strategy_sum_and_average() {
+        let table = CompactRegretTable::new();
+        // Accumulate strategy sum favoring action 3
+        for _ in 0..100 {
+            table.add_strategy_sum(7, 3, 0.8);
+            table.add_strategy_sum(7, 0, 0.2);
+        }
+        let mut out = [0.0f32; 6];
+        table.get_average_strategy_into(7, &mut out);
+        assert!(out[3] > 0.7);
+        assert!(out[0] < 0.3);
+    }
+
+    #[test]
+    fn test_keys_collection() {
+        let table = CompactRegretTable::new();
+        table.add_strategy_sum(10, 0, 0.5);
+        table.add_strategy_sum(20, 1, 0.5);
+        table.add_strategy_sum(10, 2, 0.3);
+        let keys = table.get_keys();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&10));
+        assert!(keys.contains(&20));
+    }
+
+    #[test]
+    fn test_get_average_strategy_slice() {
+        let table = CompactRegretTable::new();
+        table.add_strategy_sum(42, 1, 100.0);
+        let slice = table.get_average_strategy_slice(42).unwrap();
+        assert!(slice[1] > 0.9);
+        assert!(table.get_average_strategy_slice(99).is_none());
+    }
+
+    #[test]
+    fn test_multiple_regret_updates_converge() {
+        let table = CompactRegretTable::new();
+        // Regret for action 0 increases, others decrease
+        for t in 1..=100 {
+            table.apply_regret_update(5, 0, t, 1.0);
+            table.apply_regret_update(5, 1, t, -0.5);
+        }
+        let r0 = table.get_regret(5, 0);
+        let r1 = table.get_regret(5, 1);
+        assert!(r0 > r1, "Action 0 regret should exceed action 1");
+    }
+
+    #[test]
+    fn test_thread_safety() {
+        use std::sync::Arc;
+        use std::thread;
+        let table = Arc::new(CompactRegretTable::new());
+        let mut handles = vec![];
+        for t in 0..4 {
+            let t_clone = Arc::clone(&table);
+            handles.push(thread::spawn(move || {
+                for i in 0..100 {
+                    t_clone.apply_regret_update(1, t, i, 1.0);
+                    t_clone.add_strategy_sum(1, t, 0.25);
+                }
+            }));
+        }
+        for h in handles { h.join().unwrap(); }
+        let mut out = [0.0f32; 6];
+        table.get_strategy_into(1, &mut out);
+        assert!((out.iter().sum::<f32>() - 1.0).abs() < 0.01);
+    }
+}
