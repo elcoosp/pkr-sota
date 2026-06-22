@@ -1,25 +1,61 @@
 use std::collections::HashMap;
 
+const K: usize = 6; // abstract actions
+
 pub struct CompactRegretTable {
-    num_actions: usize,
-    regrets: HashMap<u64, Vec<f32>>,
-    strategy_sum: HashMap<u64, Vec<f32>>,
+    regrets: HashMap<u64, [f32; K]>,
+    strategy_sum: HashMap<u64, [f32; K]>,
 }
 
 impl CompactRegretTable {
-    pub fn new(num_actions: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            num_actions,
             regrets: HashMap::new(),
             strategy_sum: HashMap::new(),
         }
+    }
+
+    /// Write strategy into a provided stack buffer (no allocations).
+    pub fn get_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
+        if let Some(r) = self.regrets.get(&infoset_hash) {
+            let mut sum = 0.0f32;
+            for i in 0..K {
+                out[i] = r[i].max(0.0);
+                sum += out[i];
+            }
+            if sum > 0.0 {
+                let inv = 1.0 / sum;
+                for i in 0..K {
+                    out[i] *= inv;
+                }
+            } else {
+                out.fill(1.0 / K as f32);
+            }
+        } else {
+            out.fill(1.0 / K as f32);
+        }
+    }
+
+    /// Write average strategy into a provided stack buffer.
+    pub fn get_average_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
+        if let Some(s) = self.strategy_sum.get(&infoset_hash) {
+            let sum: f32 = s.iter().sum();
+            if sum > 0.0 {
+                let inv = 1.0 / sum;
+                for i in 0..K {
+                    out[i] = s[i] * inv;
+                }
+                return;
+            }
+        }
+        out.fill(1.0 / K as f32);
     }
 
     pub fn set_regret(&mut self, infoset_hash: u64, action_idx: usize, val: f32) {
         let entry = self
             .regrets
             .entry(infoset_hash)
-            .or_insert_with(|| vec![0.0; self.num_actions]);
+            .or_insert([0.0; K]);
         entry[action_idx] = val;
     }
 
@@ -27,63 +63,38 @@ impl CompactRegretTable {
         let entry = self
             .strategy_sum
             .entry(infoset_hash)
-            .or_insert_with(|| vec![0.0; self.num_actions]);
+            .or_insert([0.0; K]);
         entry[action_idx] += prob;
     }
 
-    pub fn get_strategy(&self, infoset_hash: u64) -> Vec<f32> {
-        if let Some(r) = self.regrets.get(&infoset_hash) {
-            let positive: Vec<f32> = r.iter().map(|&x| if x > 0.0 { x } else { 0.0 }).collect();
-            let sum: f32 = positive.iter().sum();
-            if sum > 0.0 {
-                return positive.iter().map(|&p| p / sum).collect();
-            }
-        }
-        vec![1.0 / self.num_actions as f32; self.num_actions]
-    }
-
-    pub fn get_average_strategy(&self, infoset_hash: u64) -> Vec<f32> {
-        if let Some(s) = self.strategy_sum.get(&infoset_hash) {
-            let sum: f32 = s.iter().sum();
-            if sum > 0.0 {
-                return s.iter().map(|&p| p / sum).collect();
-            }
-        }
-        vec![1.0 / self.num_actions as f32; self.num_actions]
+    /// Returns reference to average strategy as slice (for export).
+    pub fn get_average_strategy_slice(&self, infoset_hash: u64) -> Option<&[f32; K]> {
+        self.strategy_sum.get(&infoset_hash)
     }
 
     pub fn get_regret(&self, infoset_hash: u64, action_idx: usize) -> f32 {
-        if let Some(r) = self.regrets.get(&infoset_hash) {
-            return r[action_idx];
-        }
-        0.0
+        self.regrets
+            .get(&infoset_hash)
+            .map_or(0.0, |r| r[action_idx])
     }
 
-    pub fn num_actions(&self) -> usize {
-        self.num_actions
-    }
-
+    /// Returns all infoset hashes present in the strategy_sum.
     pub fn get_keys(&self) -> Vec<u64> {
         self.strategy_sum.keys().copied().collect()
     }
 
+    /// Merge another table into this one (summing regrets and strategy sums).
     pub fn merge(&mut self, other: &CompactRegretTable) {
-        for (key, vec) in &other.regrets {
-            let entry = self
-                .regrets
-                .entry(*key)
-                .or_insert_with(|| vec![0.0; self.num_actions]);
-            for (i, &v) in vec.iter().enumerate() {
-                entry[i] += v;
+        for (&key, arr) in &other.regrets {
+            let entry = self.regrets.entry(key).or_insert([0.0; K]);
+            for i in 0..K {
+                entry[i] += arr[i];
             }
         }
-        for (key, vec) in &other.strategy_sum {
-            let entry = self
-                .strategy_sum
-                .entry(*key)
-                .or_insert_with(|| vec![0.0; self.num_actions]);
-            for (i, &v) in vec.iter().enumerate() {
-                entry[i] += v;
+        for (&key, arr) in &other.strategy_sum {
+            let entry = self.strategy_sum.entry(key).or_insert([0.0; K]);
+            for i in 0..K {
+                entry[i] += arr[i];
             }
         }
     }

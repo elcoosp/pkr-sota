@@ -105,7 +105,7 @@ fn main() {
     let abstraction = Arc::new(abstraction);
 
     // 3. Trainer no longer takes num_threads; it uses the global Rayon pool.
-    let mut trainer = Trainer::new(abstraction, evaluator, 6);
+    let mut trainer = Trainer::new(abstraction, evaluator);
 
     for i in 0..cli.iterations {
         if i % 1000 == 0 {

@@ -1,46 +1,43 @@
-/// Discounted CFR regret update using f32.
-/// Applies factor = t^alpha / (t^alpha + 1) to current regret and adds delta.
-/// alpha = 1.5 for positive delta, 0.0 for negative delta.
-pub fn update_regret(current: f32, iteration: u32, delta: f32, is_positive: bool) -> f32 {
+/// Discounted CFR regret update (Brown & Sandholm 2019).
+/// Separates current regret into positive and negative parts,
+/// applies discount factors, then adds delta.
+pub fn update_regret(current: f32, iteration: u32, delta: f32) -> f32 {
     let t = iteration as f32;
-    let factor = if t == 0.0 {
-        0.0
-    } else {
-        let alpha = if is_positive { 1.5 } else { 0.0 };
-        let pow = t.powf(alpha);
-        pow / (pow + 1.0)
-    };
-    current * factor + delta
+    if t == 0.0 {
+        return current + delta;
+    }
+    let r_pos = current.max(0.0);
+    let r_neg = current.min(0.0);
+    let alpha = 1.5f32;
+    let beta = 0.0f32;
+    let t_a = t.powf(alpha);
+    let t_b = t.powf(beta);
+    let w_pos = t_a / (t_a + 1.0);
+    let w_neg = t_b / (t_b + 1.0);
+    w_pos * r_pos + w_neg * r_neg + delta
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn discount_factor(t: u32, alpha: f32) -> f32 {
-        if t == 0 { return 0.0; }
-        let t_f = t as f32;
-        let pow = t_f.powf(alpha);
-        pow / (pow + 1.0)
+    #[test]
+    fn positive_discount_preserves_sign() {
+        let r = update_regret(10.0, 2, 5.0);
+        assert!(r > 5.0);
+        assert!(r < 15.0);
     }
 
     #[test]
-    fn positive_delta_discounted() {
-        let r = update_regret(10.0, 2, 5.0, true);
-        let expected = 10.0 * discount_factor(2, 1.5) + 5.0;
-        assert!((r - expected).abs() < 1e-5);
+    fn negative_discount_shrinks() {
+        let r = update_regret(-10.0, 2, -3.0);
+        assert!(r < -3.0);
+        assert!(r > -13.0);
     }
 
     #[test]
-    fn negative_delta_discounted() {
-        let r = update_regret(-5.0, 2, -3.0, false);
-        let expected = -5.0 * discount_factor(2, 0.0) + -3.0;
-        assert!((r - expected).abs() < 1e-5);
-    }
-
-    #[test]
-    fn zero_iteration_factor_zero() {
-        assert_eq!(update_regret(10.0, 0, 5.0, true), 5.0);
-        assert_eq!(update_regret(10.0, 0, -5.0, false), -5.0);
+    fn zero_iteration_no_discount() {
+        assert_eq!(update_regret(10.0, 0, 5.0), 15.0);
+        assert_eq!(update_regret(-10.0, 0, -5.0), -15.0);
     }
 }
