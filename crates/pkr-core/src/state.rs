@@ -40,7 +40,7 @@ pub struct GameState {
 
 impl GameState {
     pub fn new(start_stack: f32, sb: f32, bb: f32) -> Self {
-        let mut state = Self {
+        let state = Self {
             hole: [[0; 2]; 2],
             board: Vec::new(),
             pot: sb + bb,

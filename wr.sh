@@ -3,38 +3,42 @@ set -uo pipefail
 COMPILE_OK=true
 INCOMPLETE=false
 
-echo "Patching traversal.rs: add use rand::RngExt and fix unused variable"
+echo "Fixing mmap.rs test: replace seed with seed1 and seed2 in FmphHeader construction"
 
-# Add the import after the existing 'use rand::Rng;' line
-sed -i '' '/^use rand::Rng;$/a\
-use rand::RngExt;
-' crates/pkr-cfr/src/traversal.rs
-if [ $? -ne 0 ]; then
-  echo "ERROR: sed import insertion failed"
-fi
-
-# Replace ActionKind::Bet(amt) with ActionKind::Bet(_) to silence warning
 OLD_TMP=$(mktemp) || { echo "ERROR: cannot create temp file"; exit 1; }
 NEW_TMP=$(mktemp)
-cat > "$OLD_TMP" << 'OLD_AMT'
-        ActionKind::Bet(amt) => {
-OLD_AMT
-cat > "$NEW_TMP" << 'NEW_AMT'
-        ActionKind::Bet(_) => {
-NEW_AMT
-if python3 - "$OLD_TMP" "$NEW_TMP" crates/pkr-cfr/src/traversal.rs << 'PYAMT'
+cat > "$OLD_TMP" << 'OLD_FMPH_TEST_BLOCK'
+        let fmp_hdr = FmphHeader {
+            num_keys: infoset_count,
+            seed: 42,
+            max_level_size: fmph_max_level_size,
+            level_count: fmph_level_count,
+            _padding: [0; 4],
+        };
+OLD_FMPH_TEST_BLOCK
+cat > "$NEW_TMP" << 'NEW_FMPH_TEST_BLOCK'
+        let fmp_hdr = FmphHeader {
+            num_keys: infoset_count,
+            seed1: 42,
+            seed2: 0,
+            max_level_size: fmph_max_level_size,
+            level_count: fmph_level_count,
+            _padding: [0; 4],
+        };
+NEW_FMPH_TEST_BLOCK
+if python3 - "$OLD_TMP" "$NEW_TMP" crates/pkr-runtime/src/mmap.rs << 'PYFMPH'
 import sys
 with open(sys.argv[1]) as f: old = f.read()
 with open(sys.argv[2]) as f: new = f.read()
 with open(sys.argv[3], 'r') as f: content = f.read()
 content = content.replace(old, new)
 with open(sys.argv[3], 'w') as f: f.write(content)
-PYAMT
+PYFMPH
 then
-  echo "Unused variable patched"
+  echo "FmphHeader construction patched"
   rm "$OLD_TMP" "$NEW_TMP"
 else
-  echo "ERROR: patch failed for amt"
+  echo "ERROR: patch failed for mmap.rs"
   rm -f "$OLD_TMP" "$NEW_TMP"
 fi
 
@@ -49,12 +53,12 @@ if [ "$INCOMPLETE" = true ] || [ "$COMPILE_OK" = false ]; then
   exit 1
 fi
 
-echo "Running tests"
-cargo test -p pkr-cfr -p pkr-eval -p pkr-core
+echo "Running full test suite"
+cargo test --workspace
 if [ $? -eq 0 ]; then
   echo "All tests passed. Committing."
   git add -A
-  git commit -m "fix(cfr): add missing RngExt import and silence unused variable"
+  git commit -m "fix(runtime): correct FmphHeader fields in test (seed1/seed2)"
 else
   echo "Tests failed. Fix errors then run the next script."
   exit 1

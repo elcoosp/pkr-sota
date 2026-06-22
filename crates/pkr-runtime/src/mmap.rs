@@ -234,7 +234,8 @@ mod tests {
         // FmphHeader
         let fmp_hdr = FmphHeader {
             num_keys: infoset_count,
-            seed: 42,
+            seed1: 42,
+            seed2: 0,
             max_level_size: fmph_max_level_size,
             level_count: fmph_level_count,
             _padding: [0; 4],

@@ -41,8 +41,8 @@ mod tests {
     /// A simple mock evaluator for testing that always returns 0.
     struct MockEvaluator;
     impl Evaluator for MockEvaluator {
-        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u16 {
-            0
+        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 {
+            0u32
         }
     }
 
