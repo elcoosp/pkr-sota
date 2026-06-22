@@ -1,7 +1,17 @@
-target
-wr.sh
-hand_ranks.bin
+
+# Generated assets
+# IDE
+# OS files
+# Release build artifacts
+*.bin
+.DS_Store
+.idea/
+.vscode/
 blueprint.bin
 centroids.bin
-preflop_abstraction.bin
 flop_buckets.bin
+hand_ranks.bin
+preflop_abstraction.bin
+target
+target/
+wr.sh
