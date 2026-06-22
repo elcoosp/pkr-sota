@@ -1,5 +1,7 @@
 pub mod dcfr;
 pub mod table;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod traversal;
 
 use crate::table::CompactRegretTable;

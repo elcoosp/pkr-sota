@@ -5,8 +5,23 @@ use crate::dcfr;
 const K: usize = 6;
 pub(crate) const SCALE: f32 = 1000.0;
 
+// Pack regret and momentum into adjacent atomics for cache locality
+pub struct RegretState {
+    pub regret: AtomicI32,
+    pub momentum: AtomicI32,
+}
+
+impl RegretState {
+    fn new() -> Self {
+        Self {
+            regret: AtomicI32::new(0),
+            momentum: AtomicI32::new(0),
+        }
+    }
+}
+
 pub struct CompactRegretTable {
-    regrets: DashMap<u64, [AtomicI32; K]>,
+    regrets: DashMap<u64, [RegretState; K]>,
     strategy_sum: DashMap<u64, [AtomicI32; K]>,
 }
 
@@ -18,11 +33,12 @@ impl CompactRegretTable {
         }
     }
 
+    /// Writes normalized strategy into a stack buffer.
     pub fn get_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
         if let Some(r) = self.regrets.get(&infoset_hash) {
             let mut sum = 0.0f32;
             for i in 0..K {
-                let raw = r[i].load(Ordering::Relaxed);
+                let raw = r[i].regret.load(Ordering::Relaxed);
                 let val = (raw as f32).max(0.0);
                 out[i] = val;
                 sum += val;
@@ -59,22 +75,29 @@ impl CompactRegretTable {
         entry[action_idx].fetch_add((prob * SCALE) as i32, Ordering::Relaxed);
     }
 
-    /// Thread-safe CAS regret update.
+    /// PCFR+ regret update using CAS loop on regret and storing momentum.
     pub fn apply_regret_update(&self, infoset_hash: u64, action_idx: usize, iteration: u32, delta: f32) {
         let entry = self.regrets.entry(infoset_hash).or_insert_with(|| {
-            [(); K].map(|_| AtomicI32::new(0))
+            [(); K].map(|_| RegretState::new())
         });
-        let atomic_val = &entry[action_idx];
+        let state = &entry[action_idx];
 
         loop {
-            let cur_i = atomic_val.load(Ordering::Relaxed);
-            let cur_f = cur_i as f32 / SCALE;
-            let new_f = dcfr::update_regret(cur_f, iteration, delta);
-            let new_i = (new_f * SCALE) as i32;
+            let cur_i = state.regret.load(Ordering::Relaxed);
+            let mom_i = state.momentum.load(Ordering::Relaxed);
 
-            if atomic_val.compare_exchange_weak(
+            let cur_f = cur_i as f32 / SCALE;
+            let mom_f = mom_i as f32 / SCALE;
+
+            let (new_f, new_mom_f) = dcfr::update_regret_pfr_plus(cur_f, mom_f, iteration, delta);
+            let new_i = (new_f * SCALE) as i32;
+            let new_mom_i = (new_mom_f * SCALE) as i32;
+
+            // CAS on regret; if it succeeds, store momentum and break.
+            if state.regret.compare_exchange_weak(
                 cur_i, new_i, Ordering::Relaxed, Ordering::Relaxed
             ).is_ok() {
+                state.momentum.store(new_mom_i, Ordering::Relaxed);
                 break;
             }
         }
@@ -82,7 +105,7 @@ impl CompactRegretTable {
 
     pub fn get_regret(&self, infoset_hash: u64, action_idx: usize) -> f32 {
         self.regrets.get(&infoset_hash)
-            .map(|r| r[action_idx].load(Ordering::Relaxed) as f32 / SCALE)
+            .map(|r| r[action_idx].regret.load(Ordering::Relaxed) as f32 / SCALE)
             .unwrap_or(0.0)
     }
 
@@ -100,7 +123,5 @@ impl CompactRegretTable {
         })
     }
 
-    pub fn merge(&self, _other: &CompactRegretTable) {
-        // shared state, no merge needed
-    }
+    pub fn merge(&self, _other: &CompactRegretTable) {}
 }
