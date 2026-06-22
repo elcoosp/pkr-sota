@@ -221,14 +221,15 @@ fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) {
             let mut rng = rand::rng();
             let mut deck: Vec<u8> = (0..52).filter(|c| !flop.contains(c)).collect();
             for _ in 0..100 {
-                deck.shuffle(&mut rng);
+                deck.partial_shuffle(&mut rng, 4); // 2 opp hole + 2 turn/river
                 let hole = [deck[0], deck[1]];
+                let opp_hole = [deck[2], deck[3]];
                 let board_cards: Vec<u8> = flop.iter()
-                    .chain(&deck[2..4])
+                    .chain(&deck[4..6]) // turn and river after opponent hole
                     .copied()
                     .collect();
                 let hero_rank = evaluator.evaluate_hand(&hole, &board_cards);
-                let opp_rank = evaluator.evaluate_hand(&deck[2..4], &board_cards);
+                let opp_rank = evaluator.evaluate_hand(&opp_hole, &board_cards);
                 let equity = if hero_rank < opp_rank { 1.0 } else if hero_rank == opp_rank { 0.5 } else { 0.0 };
                 let bin = f32::min(equity * 10.0, 9.0) as usize;
                 histogram[bin] += 1.0;

@@ -36,6 +36,8 @@ pub struct GameState {
     pub history: Vec<Action>,
     pub folded: [bool; 2],
     actions_this_street: usize,
+    /// Abstract action bucket (0..5) for each action in `history`, used for infoset hashing.
+    pub abstract_history: Vec<u8>,
 }
 
 impl GameState {
@@ -53,6 +55,7 @@ impl GameState {
             history: Vec::new(),
             folded: [false; 2],
             actions_this_street: 0,
+            abstract_history: Vec::new(),
         };
         state
     }
@@ -102,8 +105,13 @@ impl GameState {
         actions
     }
 
+    /// Apply an action, returning the new state. Also records the abstract action bucket in `abstract_history`.
     pub fn apply_action(&self, action: &Action) -> Self {
         let mut new = self.clone();
+        // Compute abstract action bucket BEFORE applying (using current state)
+        let bucket = abstract_action_index_static(&action.kind, &self);
+        new.abstract_history.push(bucket);
+
         let actor = self.actor;
         match action.kind {
             ActionKind::Fold => {
@@ -130,19 +138,11 @@ impl GameState {
         new.history.push(*action);
         new.actions_this_street += 1;
         let next = 1 - actor;
-        if new.folded[next] {
-            // other player folded – terminal handled by is_terminal
-        }
         new.actor = next;
         new
     }
 
     pub fn is_street_complete(&self) -> bool {
-        // Street is complete if no pending bet and at least 2 actions have occurred this street
-        // (both players have had at least one chance to act). Exception: preflop after blinds
-        // we start with actions_this_street = 0 but blinds are already posted. We need both
-        // players to act at least once after the start. So actions_this_street >= 2 and
-        // bet_to_call == 0 for the current actor.
         self.bet_to_call() == 0.0 && self.actions_this_street >= 2
     }
 
@@ -150,7 +150,6 @@ impl GameState {
         if self.folded.iter().any(|&f| f) {
             return true;
         }
-        // After River, if street complete, terminal
         if self.street == Street::River && self.is_street_complete() {
             return true;
         }
@@ -189,5 +188,26 @@ impl GameState {
         self.street_bets = [0.0; 2];
         self.actor = 1 - self.dealer;
         self.actions_this_street = 0;
+    }
+}
+
+/// Map action kind to abstract bucket (0..5) given the state before the action.
+fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
+    match kind {
+        ActionKind::Fold => 0,
+        ActionKind::Check | ActionKind::Call => 1,
+        ActionKind::Bet(amount) => {
+            let pot = state.pot.max(1.0);
+            let fraction = amount / pot;
+            if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
+                5 // all-in
+            } else if fraction < 0.5 {
+                2
+            } else if fraction < 1.0 {
+                3
+            } else {
+                4
+            }
+        }
     }
 }

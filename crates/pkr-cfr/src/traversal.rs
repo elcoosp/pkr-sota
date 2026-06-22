@@ -53,15 +53,10 @@ pub fn traverse(
         }
     }
 
+    // Use precomputed abstract history bytes (includes bet size encoding)
+    let hist_len = current.abstract_history.len().min(32);
     let mut history_bytes = [0u8; 32];
-    let hist_len = current.history.len().min(32);
-    for (i, a) in current.history.iter().take(32).enumerate() {
-        history_bytes[i] = match a.kind {
-            ActionKind::Fold => 0,
-            ActionKind::Check | ActionKind::Call => 1,
-            ActionKind::Bet(_) => 2,
-        };
-    }
+    history_bytes[..hist_len].copy_from_slice(&current.abstract_history[..hist_len]);
 
     let hole = &current.hole[acting_player];
     let board = &current.board;
