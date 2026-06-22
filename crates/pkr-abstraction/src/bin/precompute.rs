@@ -1,4 +1,4 @@
-use pkr_abstraction::{calculate_ehs, save_centroids, CentroidStore};
+use pkr_abstraction::{calculate_ehs, load_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
 use pkr_eval::slow::NlheEvaluator;
 use rand::prelude::IndexedRandom;
@@ -11,7 +11,7 @@ use std::io::Write;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: pkr-abstraction-precompute <centroids|table> [args...]");
+        eprintln!("Usage: pkr-abstraction-precompute <centroids|table|abstraction> [args...]");
         std::process::exit(1);
     }
     match args[1].as_str() {
@@ -24,6 +24,11 @@ fn main() {
         "table" => {
             let output = args.get(2).cloned().unwrap_or("hand_ranks.bin".to_string());
             generate_rank_table(&output);
+        }
+        "abstraction" => {
+            let centroids_path = args.get(2).expect("centroids file required");
+            let output = args.get(3).cloned().unwrap_or("abstraction.bin".to_string());
+            generate_abstraction_table(centroids_path, &output);
         }
         _ => eprintln!("Unknown command"),
     }
@@ -70,16 +75,73 @@ fn generate_rank_table(output: &str) {
     println!("Generated rank table with {} entries -> {}", total, output);
 }
 
-/// Binomial coefficient C(n, k) for small k.
+fn generate_abstraction_table(centroids_path: &str, output: &str) {
+    let store = load_centroids(centroids_path).expect("Failed to load centroids");
+    let centroids = &store.centroids;
+    let evaluator = NlheEvaluator;
+
+    // Number of distinct 5-card combinations (hole+board)
+    let total_combos = 2_598_960u64;
+    // For each 5-card set, there are C(5,2)=10 ways to assign hole vs board.
+    let entries = total_combos as usize * 10;
+    let mut table: Vec<u8> = vec![0u8; entries];
+
+    // Precompute hole_mask -> index offset for a given 5-card set.
+    let hole_masks: Vec<(u8, [usize; 2])> = {
+        let mut masks = Vec::new();
+        for i in 0..5u8 {
+            for j in (i+1)..5 {
+                masks.push((masks.len() as u8, [i as usize, j as usize]));
+            }
+        }
+        masks
+    };
+
+    table.par_iter_mut().enumerate().for_each(|(flat_idx, slot)| {
+        let combo_idx = (flat_idx / 10) as u32;
+        let mask_idx = flat_idx % 10;
+        let cards = combinadic_unrank(combo_idx, 5, 52);
+        // Select hole cards according to mask
+        let (_, pos) = &hole_masks[mask_idx];
+        let hole = [cards[pos[0]], cards[pos[1]]];
+        let board: Vec<u8> = (0..5).filter(|i| !pos.contains(i)).map(|i| cards[i]).collect();
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+        let cluster_id = centroids.iter()
+            .enumerate()
+            .min_by(|a, b| {
+                let c1 = a.1; let c2 = b.1;
+                let d1 = (ehs - c1.0).powi(2) + (ehs_sq - c1.1).powi(2);
+                let d2 = (ehs - c2.0).powi(2) + (ehs_sq - c2.1).powi(2);
+                d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(idx, _)| idx as u8)
+            .unwrap_or(0);
+        *slot = cluster_id;
+    });
+
+    let mut file = File::create(output).expect("failed to create abstraction table");
+    file.write_all(&table).unwrap();
+    println!("Generated abstraction table with {} entries -> {}", entries, output);
+}
+
+fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn std::error::Error>> {
+    let file = File::create(path)?;
+    bincode::serialize_into(file, store)?;
+    Ok(())
+}
+
 fn choose(n: u32, k: u32) -> u32 {
-    match (n, k) {
-        (_, 0) => 1,
-        (n, 1) => n,
-        (n, 2) => n * (n - 1) / 2,
-        (n, 3) => n * (n - 1) * (n - 2) / 6,
-        (n, 4) => n * (n - 1) * (n - 2) * (n - 3) / 24,
-        (n, 5) => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) / 120,
-        _ => panic!("unsupported k"),
+    if k > n {
+        return 0;
+    }
+    match k {
+        0 => 1,
+        1 => n,
+        2 => n * (n - 1) / 2,
+        3 => n * (n - 1) * (n - 2) / 6,
+        4 => n * (n - 1) * (n - 2) * (n - 3) / 24,
+        5 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) / 120,
+        _ => panic!("k > 5 not supported"),
     }
 }
 

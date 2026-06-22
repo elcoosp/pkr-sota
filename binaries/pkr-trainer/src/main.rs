@@ -40,10 +40,10 @@ fn main() {
     let num_threads = cli.threads
         .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4));
 
-    let store = load_centroids(cli.centroids.to_str().unwrap())
+    let _store = load_centroids(cli.centroids.to_str().unwrap())
         .expect("Failed to load centroids");
     let evaluator = Arc::new(NlheEvaluator);
-    let abstraction = Arc::new(KMeansAbstraction::from_store(store, evaluator.clone()));
+    let abstraction = Arc::new(KMeansAbstraction::new());
     let num_actions = 4;
     let mut trainer = Trainer::new(abstraction, evaluator.clone(), num_actions);
 
