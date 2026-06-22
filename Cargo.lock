@@ -325,6 +325,7 @@ name = "pkr-abstraction"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bytemuck",
  "memmap2",
  "pkr-contracts",
  "pkr-core",

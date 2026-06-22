@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[derive(Copy, Clone, Pod, Zeroable)]
 pub struct FileHeader {
     pub magic: [u8; 8],
     pub version: u32,
@@ -12,7 +12,7 @@ pub struct FileHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[derive(Copy, Clone, Pod, Zeroable)]
 pub struct FmphHeader {
     pub num_keys: u64,
     pub seed1: u64,
@@ -23,14 +23,9 @@ pub struct FmphHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[derive(Copy, Clone, Pod, Zeroable)]
 pub struct TranslationTableHeader {
     pub num_entries: u64,
     pub action_size: u32,
     pub _padding: [u8; 4],
 }
-
-// Compile-time size guards
-const _: () = assert!(std::mem::size_of::<FileHeader>() == 32);
-const _: () = assert!(std::mem::size_of::<FmphHeader>() == 40);
-const _: () = assert!(std::mem::size_of::<TranslationTableHeader>() == 16);

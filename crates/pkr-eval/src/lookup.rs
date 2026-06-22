@@ -3,22 +3,25 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
 
-/// Binomial coefficient (n choose k), safe for n<k.
+/// Binomial coefficient C(n,k), safe for 0≤k≤7. Uses u64 for intermediates.
 pub fn choose(n: u32, k: u32) -> u32 {
     if k > n { return 0; }
-    match k {
+    let n = n as u64;
+    let result: u64 = match k {
         0 => 1,
         1 => n,
         2 => n * (n - 1) / 2,
         3 => n * (n - 1) * (n - 2) / 6,
         4 => n * (n - 1) * (n - 2) * (n - 3) / 24,
         5 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) / 120,
-        _ => panic!("k>5 unsupported"),
-    }
+        6 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) * (n - 5) / 720,
+        7 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) * (n - 5) * (n - 6) / 5040,
+        _ => panic!("k>7 unsupported"),
+    };
+    result as u32
 }
 
-/// Combinadic rank of a 5-card combination sorted *descending*.
-/// Returns a number in 0..2,598,960.
+/// Combinadic rank of a 5-card combination sorted descending.
 pub fn combinadic_rank(cards: &[u8; 5]) -> u32 {
     let c0 = cards[0] as u32; // largest
     let c1 = cards[1] as u32;
@@ -80,5 +83,25 @@ impl Evaluator for TableEvaluator {
             if r < best { best = r; }
         }
         best
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn choose_6_7() {
+        assert_eq!(choose(52, 6), 20_358_520);
+        assert_eq!(choose(52, 7), 133_784_560);
+        assert_eq!(choose(6, 3), 20);
+        assert_eq!(choose(50, 7), 99_884_400);
+        assert_eq!(choose(51, 7), 115_775_100);
+    }
+
+    #[test]
+    fn combinadic_roundtrip_5() {
+        assert_eq!(combinadic_rank(&[4,3,2,1,0]), 0);
+        assert_eq!(combinadic_rank(&[51,50,49,48,47]), 2_598_959);
     }
 }

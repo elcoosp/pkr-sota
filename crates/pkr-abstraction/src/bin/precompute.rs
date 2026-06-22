@@ -1,6 +1,6 @@
 use pkr_abstraction::{calculate_ehs, load_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
-use pkr_eval::lookup::TableEvaluator;
+use pkr_eval::lookup::{choose, TableEvaluator};
 use pkr_eval::slow::NlheEvaluator;
 use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
@@ -30,14 +30,12 @@ fn main() {
             let centroids_path = args.get(2).expect("centroids file required");
             let rank_table_path = args.get(3).expect("hand ranks table file required");
             let output = args.get(4).cloned().unwrap_or("abstraction.bin".to_string());
-            let samples: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(100);
             generate_abstraction_table(centroids_path, rank_table_path, &output);
         }
         "turn_table" => {
             let centroids_path = args.get(2).expect("centroids file required");
             let rank_table_path = args.get(3).expect("hand ranks table file required");
             let output = args.get(4).cloned().unwrap_or("turn_abstraction.bin".to_string());
-            let samples: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(100);
             generate_turn_table(centroids_path, rank_table_path, &output);
         }
         _ => eprintln!("Unknown command"),
@@ -45,6 +43,7 @@ fn main() {
 }
 
 fn generate_centroids(num_samples: usize, k: usize, output: &str) {
+    assert!(k <= 255, "centroid count must be ≤ 255 for u8 cluster ids");
     let evaluator = NlheEvaluator;
     let deck: Vec<u8> = (0..52).collect();
     let features: Vec<(f32, f32)> = (0..num_samples)
@@ -69,17 +68,18 @@ fn generate_rank_table(output: &str) {
     let total = 2_598_960usize;
     let mut table: Vec<u32> = vec![0u32; total];
     table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
-        let cards = combinadic_unrank(idx as u32, 5, 52);
+        let cards = combinadic_unrank_5(idx as u32);
         let rank = evaluator.evaluate_hand(&[], &cards);
         *slot = rank;
     });
     let mut file = File::create(output).expect("failed to create rank table file");
-    for rank in table { file.write_all(&rank.to_le_bytes()).unwrap(); }
+    file.write_all(bytemuck::cast_slice(&table)).unwrap();
     println!("Generated rank table with {} entries -> {}", total, output);
 }
 
 fn generate_abstraction_table(centroids_path: &str, rank_table_path: &str, output: &str) {
     let store = load_centroids(centroids_path).expect("Failed to load centroids");
+    assert!(store.centroids.len() <= 255, "centroid count must be ≤ 255 for u8 ids");
     let centroids = &store.centroids;
     let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
     let total_combos = 2_598_960u64;
@@ -94,7 +94,7 @@ fn generate_abstraction_table(centroids_path: &str, rank_table_path: &str, outpu
             let flat_idx = chunk_idx * 1024 + i;
             let combo_idx = (flat_idx / 10) as u32;
             let mask_idx = flat_idx % 10;
-            let cards = combinadic_unrank(combo_idx, 5, 52);
+            let cards = combinadic_unrank_5(combo_idx);
             let pos = &hole_masks[mask_idx];
             let hole = [cards[pos[0]], cards[pos[1]]];
             let board: Vec<u8> = (0..5).filter(|j| !pos.contains(j)).map(|j| cards[j]).collect();
@@ -103,9 +103,9 @@ fn generate_abstraction_table(centroids_path: &str, rank_table_path: &str, outpu
                 .enumerate()
                 .min_by(|a, b| {
                     let c1 = a.1; let c2 = b.1;
-                    let d1 = (ehs - c1.0).powi(2) + (ehs_sq - c1.1).powi(2);
-                    let d2 = (ehs - c2.0).powi(2) + (ehs_sq - c2.1).powi(2);
-                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                    let dx1 = ehs - c1.0; let dy1 = ehs_sq - c1.1;
+                    let dx2 = ehs - c2.0; let dy2 = ehs_sq - c2.1;
+                    (dx1*dx1 + dy1*dy1).total_cmp(&(dx2*dx2 + dy2*dy2))
                 })
                 .map(|(idx, _)| idx as u8)
                 .unwrap_or(0);
@@ -119,10 +119,11 @@ fn generate_abstraction_table(centroids_path: &str, rank_table_path: &str, outpu
 
 fn generate_turn_table(centroids_path: &str, rank_table_path: &str, output: &str) {
     let store = load_centroids(centroids_path).expect("Failed to load centroids");
+    assert!(store.centroids.len() <= 255, "centroid count must be ≤ 255 for u8 ids");
     let centroids = &store.centroids;
     let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
-    let total_combos = combinadic_max(6, 52) as u64; // C(52,6)
-    let entries = total_combos as usize * 15; // C(6,2)=15
+    let total_combos = choose(52, 6) as u64;
+    let entries = total_combos as usize * 15;
     let mut table: Vec<u8> = vec![0u8; entries];
     let hole_masks: Vec<[usize; 2]> = vec![
         [0,1],[0,2],[0,3],[0,4],[0,5],
@@ -136,7 +137,7 @@ fn generate_turn_table(centroids_path: &str, rank_table_path: &str, output: &str
             let flat_idx = chunk_idx * 1024 + i;
             let combo_idx = (flat_idx / 15) as u32;
             let mask_idx = flat_idx % 15;
-            let cards = combinadic_unrank_6(combo_idx, 6, 52);
+            let cards = combinadic_unrank(combo_idx, 6, 52);
             let pos = &hole_masks[mask_idx];
             let hole = [cards[pos[0]], cards[pos[1]]];
             let board: Vec<u8> = (0..6).filter(|j| !pos.contains(j)).map(|j| cards[j]).collect();
@@ -145,9 +146,9 @@ fn generate_turn_table(centroids_path: &str, rank_table_path: &str, output: &str
                 .enumerate()
                 .min_by(|a, b| {
                     let c1 = a.1; let c2 = b.1;
-                    let d1 = (ehs - c1.0).powi(2) + (ehs_sq - c1.1).powi(2);
-                    let d2 = (ehs - c2.0).powi(2) + (ehs_sq - c2.1).powi(2);
-                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                    let dx1 = ehs - c1.0; let dy1 = ehs_sq - c1.1;
+                    let dx2 = ehs - c2.0; let dy2 = ehs_sq - c2.1;
+                    (dx1*dx1 + dy1*dy1).total_cmp(&(dx2*dx2 + dy2*dy2))
                 })
                 .map(|(idx, _)| idx as u8)
                 .unwrap_or(0);
@@ -165,23 +166,7 @@ fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-fn choose(n: u32, k: u32) -> u32 {
-    if k > n { return 0; }
-    match k {
-        0 => 1,
-        1 => n,
-        2 => n * (n - 1) / 2,
-        3 => n * (n - 1) * (n - 2) / 6,
-        4 => n * (n - 1) * (n - 2) * (n - 3) / 24,
-        5 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) / 120,
-        _ => panic!("k>5 unsupported"),
-    }
-}
-
-fn combinadic_max(k: u32, n: u32) -> usize {
-    choose(n, k) as usize
-}
-
+/// Combinadic rank for any k up to 7.
 fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
     let mut result = Vec::with_capacity(k as usize);
     let mut remaining = n;
@@ -196,13 +181,15 @@ fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
     result
 }
 
-fn combinadic_unrank_6(mut index: u32, k: u32, n: u32) -> Vec<u8> {
-    let mut result = Vec::with_capacity(k as usize);
-    let mut remaining = n;
-    for i in (1..=k).rev() {
+/// Specialized 5-card unranking (avoids heap allocation).
+fn combinadic_unrank_5(mut index: u32) -> [u8; 5] {
+    let mut result = [0u8; 5];
+    let mut remaining = 52u32;
+    for i in (1..=5).rev() {
         let mut x = remaining - 1;
         while choose(x, i) > index { x -= 1; }
-        result.push(x as u8);
+        let pos = (5 - i) as usize;
+        result[pos] = x as u8;
         index -= choose(x, i);
         remaining = x;
     }
@@ -214,6 +201,10 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
     let n = data.len();
     if n == 0 || k == 0 { return vec![]; }
     let k = k.min(n);
+    if k == 1 {
+        let mean = data.iter().fold((0.0,0.0), |a, &p| (a.0+p.0, a.1+p.1));
+        return vec![(mean.0 / n as f32, mean.1 / n as f32)];
+    }
     let mut rng = rand::rng();
     let mut centroids: Vec<(f32, f32)> = data.sample(&mut rng, k).cloned().collect();
     for _ in 0..max_iters {
@@ -222,9 +213,9 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
                 .enumerate()
                 .min_by(|a, b| {
                     let c1 = a.1; let c2 = b.1;
-                    let d1 = (point.0 - c1.0).powi(2) + (point.1 - c1.1).powi(2);
-                    let d2 = (point.0 - c2.0).powi(2) + (point.1 - c2.1).powi(2);
-                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                    let d1 = (point.0 - c1.0)*(point.0 - c1.0) + (point.1 - c1.1)*(point.1 - c1.1);
+                    let d2 = (point.0 - c2.0)*(point.0 - c2.0) + (point.1 - c2.1)*(point.1 - c2.1);
+                    d1.total_cmp(&d2)
                 })
                 .map(|(idx, _)| idx).unwrap_or(0)
         }).collect();
