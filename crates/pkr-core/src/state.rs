@@ -13,7 +13,6 @@ pub enum ActionKind {
     Fold,
     Check,
     Call,
-    /// Total chips the player will have invested this street after this action.
     Bet(f32),
 }
 
@@ -25,22 +24,21 @@ pub struct Action {
 
 #[derive(Debug, Clone)]
 pub struct GameState {
-    pub hole: [[u8; 2]; 2],       // [hero, villain]
-    pub board: Vec<u8>,           // 0..5 community cards
+    pub hole: [[u8; 2]; 2],
+    pub board: Vec<u8>,
     pub pot: f32,
-    pub stacks: [f32; 2],         // remaining chips before current street bets
-    pub total_invested: [f32; 2], // total chips contributed to the pot from stack
+    pub stacks: [f32; 2],
+    pub total_invested: [f32; 2],
     pub street: Street,
     pub actor: usize,
-    pub dealer: usize,            // 0 = hero is SB/button (assume hero is SB)
-    pub street_bets: [f32; 2],    // chips each player has put in this street
+    pub dealer: usize,
+    pub street_bets: [f32; 2],
     pub history: Vec<Action>,
     pub folded: [bool; 2],
+    actions_this_street: usize,
 }
 
 impl GameState {
-    /// Heads-up with hero as SB/button (dealer=0), blinds sb/bb, stacks start.
-    /// Villain is BB (dealer=1). Preflop actor = dealer (SB acts first).
     pub fn new(start_stack: f32, sb: f32, bb: f32) -> Self {
         let mut state = Self {
             hole: [[0; 2]; 2],
@@ -54,9 +52,8 @@ impl GameState {
             street_bets: [sb, bb],
             history: Vec::new(),
             folded: [false; 2],
+            actions_this_street: 0,
         };
-        // After posting blinds, actor is dealer (SB) with bet_to_call = bb - sb
-        state.actor = 0;
         state
     }
 
@@ -65,13 +62,11 @@ impl GameState {
         self.hole[1] = villain;
     }
 
-    /// The amount the current player must put in to call.
     pub fn bet_to_call(&self) -> f32 {
         let opp = 1 - self.actor;
         (self.street_bets[opp] - self.street_bets[self.actor]).max(0.0)
     }
 
-    /// All legal actions for the current player.
     pub fn legal_actions(&self) -> Vec<Action> {
         if self.folded[self.actor] {
             return vec![];
@@ -80,7 +75,6 @@ impl GameState {
         let to_call = self.bet_to_call();
         if to_call == 0.0 {
             actions.push(Action { player: self.actor, kind: ActionKind::Check });
-            // Bet sizes: fractions of the pot, plus all-in
             let pot = self.pot;
             for &frac in &[0.5, 0.75, 1.0, 1.5, 2.0] {
                 let bet = pot * frac;
@@ -88,14 +82,12 @@ impl GameState {
                     actions.push(Action { player: self.actor, kind: ActionKind::Bet(bet) });
                 }
             }
-            // All-in
             if self.stacks[self.actor] > 0.0 {
                 actions.push(Action { player: self.actor, kind: ActionKind::Bet(self.stacks[self.actor]) });
             }
         } else {
             actions.push(Action { player: self.actor, kind: ActionKind::Fold });
             actions.push(Action { player: self.actor, kind: ActionKind::Call });
-            // Raise: total chips = to_call + pot * frac
             let pot = self.pot;
             for &frac in &[0.5, 0.75, 1.0, 1.5, 2.0] {
                 let raise = to_call + pot * frac;
@@ -103,7 +95,6 @@ impl GameState {
                     actions.push(Action { player: self.actor, kind: ActionKind::Bet(raise) });
                 }
             }
-            // All-in
             if self.stacks[self.actor] > 0.0 {
                 actions.push(Action { player: self.actor, kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]) });
             }
@@ -111,7 +102,6 @@ impl GameState {
         actions
     }
 
-    /// Apply an action, returning the new state.
     pub fn apply_action(&self, action: &Action) -> Self {
         let mut new = self.clone();
         let actor = self.actor;
@@ -119,9 +109,7 @@ impl GameState {
             ActionKind::Fold => {
                 new.folded[actor] = true;
             }
-            ActionKind::Check => {
-                // nothing changes in money
-            }
+            ActionKind::Check => {}
             ActionKind::Call => {
                 let to_call = self.bet_to_call();
                 let chips = to_call.min(new.stacks[actor]);
@@ -140,44 +128,48 @@ impl GameState {
             }
         }
         new.history.push(*action);
-        // Switch actor to the other non-folded player
+        new.actions_this_street += 1;
         let next = 1 - actor;
         if new.folded[next] {
-            // if other folded, terminal later
+            // other player folded – terminal handled by is_terminal
         }
         new.actor = next;
         new
+    }
+
+    pub fn is_street_complete(&self) -> bool {
+        // Street is complete if no pending bet and at least 2 actions have occurred this street
+        // (both players have had at least one chance to act). Exception: preflop after blinds
+        // we start with actions_this_street = 0 but blinds are already posted. We need both
+        // players to act at least once after the start. So actions_this_street >= 2 and
+        // bet_to_call == 0 for the current actor.
+        self.bet_to_call() == 0.0 && self.actions_this_street >= 2
     }
 
     pub fn is_terminal(&self) -> bool {
         if self.folded.iter().any(|&f| f) {
             return true;
         }
-        if self.street == Street::River && self.bet_to_call() == 0.0 {
-            // Both players have acted on river at least once
+        // After River, if street complete, terminal
+        if self.street == Street::River && self.is_street_complete() {
             return true;
         }
         false
     }
 
-    /// Compute terminal payoff for a given player (net chips gained relative to starting stack).
     pub fn terminal_payoff(&self, player: usize, evaluator: &dyn Evaluator) -> f32 {
         if self.folded[player] {
-            // player lost their total investment
             return -self.total_invested[player];
         }
         let other = 1 - player;
         if self.folded[other] {
-            // player wins pot, net gain = pot - own investment
             return self.pot - self.total_invested[player];
         }
-        // Showdown
         let hero_rank = evaluator.evaluate_hand(&self.hole[0], &self.board);
         let vill_rank = evaluator.evaluate_hand(&self.hole[1], &self.board);
         let win = hero_rank < vill_rank;
         let tie = hero_rank == vill_rank;
         if tie {
-            // each gets back half the pot
             (self.pot / 2.0) - self.total_invested[player]
         } else if (player == 0 && win) || (player == 1 && !win) {
             self.pot - self.total_invested[player]
@@ -186,7 +178,6 @@ impl GameState {
         }
     }
 
-    /// Advance to next street, adding community cards and resetting bets.
     pub fn advance_street(&mut self, cards: &[u8]) {
         self.board.extend_from_slice(cards);
         self.street = match self.street {
@@ -196,6 +187,7 @@ impl GameState {
             Street::River => unreachable!(),
         };
         self.street_bets = [0.0; 2];
-        self.actor = 1 - self.dealer; // postflop non-dealer acts first
+        self.actor = 1 - self.dealer;
+        self.actions_this_street = 0;
     }
 }

@@ -29,11 +29,14 @@ impl Trainer {
         }
     }
 
-    pub fn run_iteration(&mut self, state: &GameState, rng: &mut impl Rng) {
+    pub fn run_iteration(
+        &mut self,
+        state: &GameState,
+        chance_cards: &[Vec<u8>; 3],
+        rng: &mut impl Rng,
+    ) {
         self.iteration += 1;
-        // Traverse from perspective of both players
         let state_copy = state.clone();
-        // Resolve chance nodes (deal flop/turn/river) - already done in state
         traverse(
             &state_copy,
             &mut self.table,
@@ -44,6 +47,7 @@ impl Trainer {
             0,
             1.0,
             1.0,
+            chance_cards,
         );
         traverse(
             &state_copy,
@@ -55,6 +59,7 @@ impl Trainer {
             1,
             1.0,
             1.0,
+            chance_cards,
         );
     }
 
