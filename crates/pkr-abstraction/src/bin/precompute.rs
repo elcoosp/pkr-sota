@@ -30,7 +30,6 @@ fn main() {
             let centroids_path = args.get(2).expect("centroids file required");
             let rank_table_path = args.get(3).expect("hand ranks table file required");
             let output = args.get(4).cloned().unwrap_or("abstraction.bin".to_string());
-            let samples: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(100);
             // Set environment variable for EHS samples
             generate_abstraction_table(centroids_path, rank_table_path, &output);
         }

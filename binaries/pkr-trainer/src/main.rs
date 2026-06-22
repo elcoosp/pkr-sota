@@ -15,11 +15,33 @@ struct Cli {
     #[arg(long, default_value = "blueprint.bin")]
     output: PathBuf,
 
+    /// Default centroids (used for any street not explicitly provided)
     #[arg(long, default_value = "centroids.bin")]
     centroids: PathBuf,
 
-    #[arg(long, default_value = "abstraction.bin")]
-    abstraction_table: PathBuf,
+    /// Optional: flop-specific centroids
+    #[arg(long)]
+    flop_centroids: Option<PathBuf>,
+
+    /// Optional: turn-specific centroids
+    #[arg(long)]
+    turn_centroids: Option<PathBuf>,
+
+    /// Optional: river-specific centroids
+    #[arg(long)]
+    river_centroids: Option<PathBuf>,
+
+    /// Precomputed abstraction table for flop
+    #[arg(long)]
+    flop_table: Option<PathBuf>,
+
+    /// Precomputed abstraction table for turn
+    #[arg(long)]
+    turn_table: Option<PathBuf>,
+
+    /// Precomputed abstraction table for river
+    #[arg(long)]
+    river_table: Option<PathBuf>,
 
     #[arg(long)]
     threads: Option<usize>,
@@ -33,20 +55,42 @@ fn main() {
         .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4));
     let evaluator = Arc::new(NlheEvaluator);
 
-    // Load centroids
+    // Load default centroids
     let store = load_centroids(cli.centroids.to_str().unwrap())
-        .expect("Failed to load centroids");
+        .expect("Failed to load default centroids");
     let mut abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
 
-    // Load precomputed flop abstraction table
-    if let Err(e) = abstraction.load_table(cli.abstraction_table.to_str().unwrap()) {
-        eprintln!("Warning: couldn't load abstraction table: {}. Falling back to MC.", e);
+    // Load per-street centroids
+    if let Some(path) = &cli.flop_centroids {
+        abstraction.load_street_centroids(1, path.to_str().unwrap())
+            .expect("Failed to load flop centroids");
+    }
+    if let Some(path) = &cli.turn_centroids {
+        abstraction.load_street_centroids(2, path.to_str().unwrap())
+            .expect("Failed to load turn centroids");
+    }
+    if let Some(path) = &cli.river_centroids {
+        abstraction.load_street_centroids(3, path.to_str().unwrap())
+            .expect("Failed to load river centroids");
+    }
+
+    // Load precomputed tables
+    if let Some(path) = &cli.flop_table {
+        abstraction.load_street_table(1, path.to_str().unwrap())
+            .expect("Failed to load flop table");
+    }
+    if let Some(path) = &cli.turn_table {
+        abstraction.load_street_table(2, path.to_str().unwrap())
+            .expect("Failed to load turn table");
+    }
+    if let Some(path) = &cli.river_table {
+        abstraction.load_street_table(3, path.to_str().unwrap())
+            .expect("Failed to load river table");
     }
 
     let abstraction = Arc::new(abstraction);
-    let mut trainer = Trainer::new(abstraction, evaluator, 4);
+    let mut trainer = Trainer::new(abstraction, evaluator, 6); // K=6 abstract actions
 
-    let mut rng = rand::rng();
     for i in 0..cli.iterations {
         if i % 1000 == 0 {
             eprintln!("Iteration {}/{}", i, cli.iterations);
