@@ -6,7 +6,7 @@ use rand::distr::{Distribution, weighted::WeightedIndex};
 use crate::dcfr;
 use crate::table::CompactRegretTable;
 
-const K: usize = 4; // abstract actions: fold, check/call, bet, all-in
+const K: usize = 4;
 
 pub fn traverse(
     state: &GameState,
@@ -18,19 +18,20 @@ pub fn traverse(
     traverser: usize,
     reach_prob: f32,
     opponent_reach: f32,
-    chance_cards: &[Vec<u8>; 3], // [flop, turn, river] pre-sampled
+    deck: &mut Vec<u8>,               // remaining cards in shuffled order
 ) -> f32 {
     let mut current = state.clone();
 
-    // Handle street completion: if not terminal and street complete, advance to next street
+    // Advance streets by dealing from deck when street complete and not terminal
     while current.is_street_complete() && !current.is_terminal() {
-        let next_cards = match current.street {
-            Street::Preflop => &chance_cards[0],
-            Street::Flop => &chance_cards[1],
-            Street::Turn => &chance_cards[2],
+        let cards_needed = match current.street {
+            Street::Preflop => 3,   // flop
+            Street::Flop => 1,      // turn
+            Street::Turn => 1,      // river
             Street::River => break,
         };
-        current.advance_street(next_cards);
+        let new_cards: Vec<u8> = deck.drain(..cards_needed).collect();
+        current.advance_street(&new_cards);
     }
 
     if current.is_terminal() {
@@ -43,11 +44,12 @@ pub fn traverse(
         return 0.0;
     }
 
-    // Build mapping from abstract index to list of concrete actions
     let mut abstract_actions: [Vec<usize>; K] = [const { Vec::new() }; 4];
     for (idx, action) in num_actions.iter().enumerate() {
         let a_idx = abstract_action_index(&action.kind);
-        abstract_actions[a_idx].push(idx);
+        if a_idx < K {
+            abstract_actions[a_idx].push(idx);
+        }
     }
 
     let hole = &current.hole[acting_player];
@@ -57,17 +59,10 @@ pub fn traverse(
         ActionKind::Check | ActionKind::Call => 1,
         ActionKind::Bet(_) => 2,
     }).collect();
-    let street_code = match current.street {
-        Street::Preflop => 0,
-        Street::Flop => 1,
-        Street::Turn => 2,
-        Street::River => 3,
-    };
+    let street_code = current.street as u8;
     let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
 
     let strategy = table.get_strategy(infoset_hash);
-
-    // Accumulate average strategy
     for a in 0..K {
         table.add_strategy_sum(infoset_hash, a, strategy[a] * opponent_reach);
     }
@@ -76,63 +71,45 @@ pub fn traverse(
         let mut v = vec![0.0f32; K];
         for a in 0..K {
             if abstract_actions[a].is_empty() {
-                v[a] = 0.0; // no valid concrete action, shouldn't affect regret
+                v[a] = 0.0;
                 continue;
             }
-            // For counterfactual value of abstract action, average over concrete actions in bucket
-            // (uniform over concrete actions for now)
             let mut sum_val = 0.0;
             let count = abstract_actions[a].len() as f32;
             for &concrete_idx in &abstract_actions[a] {
                 let next_state = current.apply_action(&num_actions[concrete_idx]);
                 sum_val += traverse(
-                    &next_state,
-                    table,
-                    abstraction,
-                    evaluator,
-                    rng,
-                    iteration,
-                    traverser,
-                    reach_prob,
-                    opponent_reach,
-                    chance_cards,
+                    &next_state, table, abstraction, evaluator,
+                    rng, iteration, traverser, reach_prob, opponent_reach,
+                    deck,
                 );
             }
             v[a] = sum_val / count;
         }
 
         let v_sigma: f32 = strategy.iter().zip(v.iter()).map(|(p, u)| p * u).sum();
-
         for a in 0..K {
             let delta = v[a] - v_sigma;
-            let current_regret = table.get_regret(infoset_hash, a);
-            let is_positive = delta >= 0.0;
-            let new_regret = dcfr::update_regret(current_regret, iteration, delta, is_positive);
+            let cur = table.get_regret(infoset_hash, a);
+            let is_pos = delta >= 0.0;
+            let new_regret = dcfr::update_regret(cur, iteration, delta, is_pos);
             table.set_regret(infoset_hash, a, new_regret);
         }
-
         v_sigma
     } else {
-        let dist = WeightedIndex::new(&strategy).expect("strategy must have positive sum");
+        let dist = WeightedIndex::new(&strategy).expect("strategy non-empty");
         let sampled_abstract = dist.sample(rng);
         if abstract_actions[sampled_abstract].is_empty() {
             return 0.0;
         }
-        // Sample uniformly among concrete actions in the bucket
         let concrete_idx = abstract_actions[sampled_abstract]
             [rng.random_range(0..abstract_actions[sampled_abstract].len())];
         let next_state = current.apply_action(&num_actions[concrete_idx]);
         traverse(
-            &next_state,
-            table,
-            abstraction,
-            evaluator,
-            rng,
-            iteration,
-            traverser,
-            reach_prob,
-            opponent_reach * strategy[sampled_abstract],
-            chance_cards,
+            &next_state, table, abstraction, evaluator,
+            rng, iteration, traverser,
+            reach_prob, opponent_reach * strategy[sampled_abstract],
+            deck,
         )
     }
 }
@@ -141,11 +118,6 @@ fn abstract_action_index(kind: &ActionKind) -> usize {
     match kind {
         ActionKind::Fold => 0,
         ActionKind::Check | ActionKind::Call => 1,
-        ActionKind::Bet(_) => {
-            // Distinguish all-in (index 3) from other bets (index 2)
-            // We use a simple heuristic: if bet amount >= pot * 2, treat as all-in
-            // (this is imperfect but works for now)
-            2
-        }
+        ActionKind::Bet(_) => 2,
     }
 }

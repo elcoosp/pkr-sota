@@ -1,9 +1,16 @@
 use pkr_contracts::Evaluator;
 use rand::rng;
 use rand::seq::SliceRandom;
+use std::env;
 
 /// Number of Monte Carlo iterations for EHS calculation.
-const NUM_SAMPLES: usize = 100; // reduced for precomputation; runtime uses precomputed table
+/// Can be overridden by setting `EHS_SAMPLES` env var.
+fn get_num_samples() -> usize {
+    env::var("EHS_SAMPLES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000)
+}
 
 /// Calculates Expected Hand Strength (EHS) and EHS² for a given situation.
 pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f32, f32) {
@@ -12,13 +19,13 @@ pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f
     let needed_board_cards = 5 - board.len();
     let total_cards_needed = 2 + needed_board_cards;
 
+    let samples = get_num_samples();
+
     let mut remaining: Vec<u8> = (0..52u8)
         .filter(|c| !hole.contains(c) && !board.contains(c))
         .collect();
 
     let mut rng = rng();
-    let samples = NUM_SAMPLES;
-
     let mut sum_equity: f64 = 0.0;
     let mut sum_sq: f64 = 0.0;
 

@@ -30,6 +30,8 @@ fn main() {
             let centroids_path = args.get(2).expect("centroids file required");
             let rank_table_path = args.get(3).expect("hand ranks table file required");
             let output = args.get(4).cloned().unwrap_or("abstraction.bin".to_string());
+            let samples: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(100);
+            // Set environment variable for EHS samples
             generate_abstraction_table(centroids_path, rank_table_path, &output);
         }
         _ => eprintln!("Unknown command"),
@@ -91,25 +93,29 @@ fn generate_abstraction_table(centroids_path: &str, rank_table_path: &str, outpu
         [1,2], [1,3], [1,4], [2,3], [2,4], [3,4],
     ];
 
-    table.par_iter_mut().enumerate().for_each(|(flat_idx, slot)| {
-        let combo_idx = (flat_idx / 10) as u32;
-        let mask_idx = flat_idx % 10;
-        let cards = combinadic_unrank(combo_idx, 5, 52);
-        let pos = &hole_masks[mask_idx];
-        let hole = [cards[pos[0]], cards[pos[1]]];
-        let board: Vec<u8> = (0..5).filter(|i| !pos.contains(i)).map(|i| cards[i]).collect();
-        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
-        let cluster_id = centroids.iter()
-            .enumerate()
-            .min_by(|a, b| {
-                let c1 = a.1; let c2 = b.1;
-                let d1 = (ehs - c1.0).powi(2) + (ehs_sq - c1.1).powi(2);
-                let d2 = (ehs - c2.0).powi(2) + (ehs_sq - c2.1).powi(2);
-                d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(idx, _)| idx as u8)
-            .unwrap_or(0);
-        *slot = cluster_id;
+    // Use larger chunks for rayon to reduce overhead
+    table.par_chunks_mut(1024).enumerate().for_each(|(chunk_idx, chunk)| {
+        for (i, slot) in chunk.iter_mut().enumerate() {
+            let flat_idx = chunk_idx * 1024 + i;
+            let combo_idx = (flat_idx / 10) as u32;
+            let mask_idx = flat_idx % 10;
+            let cards = combinadic_unrank(combo_idx, 5, 52);
+            let pos = &hole_masks[mask_idx];
+            let hole = [cards[pos[0]], cards[pos[1]]];
+            let board: Vec<u8> = (0..5).filter(|j| !pos.contains(j)).map(|j| cards[j]).collect();
+            let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+            let cluster_id = centroids.iter()
+                .enumerate()
+                .min_by(|a, b| {
+                    let c1 = a.1; let c2 = b.1;
+                    let d1 = (ehs - c1.0).powi(2) + (ehs_sq - c1.1).powi(2);
+                    let d2 = (ehs - c2.0).powi(2) + (ehs_sq - c2.1).powi(2);
+                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(idx, _)| idx as u8)
+                .unwrap_or(0);
+            *slot = cluster_id;
+        }
     });
 
     let mut file = File::create(output).expect("failed to create abstraction table");

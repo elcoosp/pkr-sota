@@ -6,6 +6,7 @@ use crate::table::CompactRegretTable;
 use crate::traversal::traverse;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::GameState;
+use rand::seq::SliceRandom;
 use rayon::prelude::*;
 use std::sync::Arc;
 
@@ -30,48 +31,52 @@ impl Trainer {
         }
     }
 
-    pub fn run_iterations_parallel(
+    pub fn run_iteration_parallel(
         &mut self,
-        state: &GameState,
-        chance_cards: &[Vec<u8>; 3],
-        num_iterations: u32,
         num_threads: usize,
     ) {
-        let abstraction = Arc::clone(&self.abstraction);
-        let evaluator = Arc::clone(&self.evaluator);
         let tables: Vec<CompactRegretTable> = (0..num_threads)
             .into_par_iter()
             .map(|_| {
                 let mut thread_table = CompactRegretTable::new(self.table.num_actions());
                 let mut rng = rand::rng();
-                let state_copy = state.clone();
-                let chance_copy = chance_cards.clone();
-                for _ in 0..num_iterations {
-                    traverse(
-                        &state_copy,
-                        &mut thread_table,
-                        &*abstraction,
-                        &*evaluator,
-                        &mut rng,
-                        1,
-                        0,
-                        1.0,
-                        1.0,
-                        &chance_copy,
-                    );
-                    traverse(
-                        &state_copy,
-                        &mut thread_table,
-                        &*abstraction,
-                        &*evaluator,
-                        &mut rng,
-                        1,
-                        1,
-                        1.0,
-                        1.0,
-                        &chance_copy,
-                    );
-                }
+                // For each thread, run one iteration with a fresh deck and state
+                let mut deck: Vec<u8> = (0..52).collect();
+                deck.shuffle(&mut rng);
+                let hero = [deck[0], deck[1]];
+                let villain = [deck[2], deck[3]];
+                let mut state = GameState::new(200.0, 1.0, 2.0);
+                state.set_hole_cards(hero, villain);
+                // deck already has cards after removing hole cards
+                let mut remaining = deck[4..].to_vec(); // remaining 48 cards
+                traverse(
+                    &state,
+                    &mut thread_table,
+                    &*self.abstraction,
+                    &*self.evaluator,
+                    &mut rng,
+                    1,
+                    0,
+                    1.0,
+                    1.0,
+                    &mut remaining,
+                );
+                // Reset state for second player
+                let mut state2 = GameState::new(200.0, 1.0, 2.0);
+                state2.set_hole_cards(hero, villain);
+                let mut remaining2 = deck[4..].to_vec();
+                traverse(
+                    &state2,
+                    &mut thread_table,
+                    &*self.abstraction,
+                    &*self.evaluator,
+                    &mut rng,
+                    1,
+                    1,
+                    1.0,
+                    1.0,
+                    &mut remaining2,
+                );
                 thread_table
             })
             .collect();
@@ -79,7 +84,7 @@ impl Trainer {
         for t in tables {
             self.table.merge(&t);
         }
-        self.iteration += num_iterations * num_threads as u32;
+        self.iteration += num_threads as u32;
     }
 
     pub fn get_table(&self) -> &CompactRegretTable {
