@@ -1,31 +1,31 @@
-use crate::fmph::{build_fmph, eval_fmph, FmphData};
-use crate::header::FileHeader;
 use pkr_cfr::table::CompactRegretTable;
 use std::fs::File;
 use std::io::Write;
+use crate::header::FileHeader;
 
 const MAGIC: &[u8; 8] = b"PKRSOTA1";
 const VERSION: u32 = 1;
 const K: usize = 6;
 
 pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
-    let keys = table.get_keys();
+    let mut keys = table.get_keys();
+    keys.sort_unstable();
+
     let infoset_count = keys.len();
 
-    let fmph: FmphData = build_fmph(&keys);
+    // CDF array for each key, in sorted order
+    let mut cdf_bytes: Vec<u8> = Vec::with_capacity(infoset_count * K);
+    let mut key_bytes: Vec<u8> = Vec::with_capacity(infoset_count * 8);
 
-    let mut cdf_indexed = vec![0u8; infoset_count * K];
-    let mut key_table = vec![0u64; infoset_count];
     for &key in &keys {
-        let idx = eval_fmph(&fmph, key);
-        key_table[idx] = key;
+        key_bytes.extend_from_slice(&key.to_le_bytes());
         let strategy_slice = table.get_average_strategy_slice(key);
         let mut cumulative = 0.0f32;
         for a in 0..K {
             let prob = strategy_slice.map(|s| s[a]).unwrap_or(1.0 / K as f32);
             cumulative += prob;
             let byte = (cumulative * 255.0).round().clamp(0.0, 255.0) as u8;
-            cdf_indexed[idx * K + a] = byte;
+            cdf_bytes.push(byte);
         }
     }
 
@@ -38,20 +38,13 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
         _padding: [0u8; 7],
     };
 
-    let fmph_header = fmph.to_header();
-
-    let translation_header = crate::header::TranslationTableHeader {
-        num_entries: 0,
-        action_size: 0,
-        _padding: [0u8; 4],
-    };
-
+    // No FMPH, no translation table – we put a zero-length placeholder for format compat
     let mut file = File::create(path).expect("failed to create blueprint file");
     file.write_all(bytemuck::bytes_of(&file_header)).unwrap();
-    file.write_all(bytemuck::bytes_of(&fmph_header)).unwrap();
-    file.write_all(bytemuck::cast_slice(&fmph.displacements)).unwrap();
-    file.write_all(bytemuck::bytes_of(&translation_header)).unwrap();
-    file.write_all(bytemuck::cast_slice(&key_table)).unwrap();
-    file.write_all(&cdf_indexed).unwrap();
+    // Write key table size (u32) and CDF size (u32) for simple parsing
+    file.write_all(&(infoset_count as u32).to_le_bytes()).unwrap();
+    file.write_all(&((K * infoset_count) as u32).to_le_bytes()).unwrap();
+    file.write_all(&key_bytes).unwrap();
+    file.write_all(&cdf_bytes).unwrap();
     file.flush().unwrap();
 }

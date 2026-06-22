@@ -82,12 +82,14 @@ pub fn traverse(
             }
             let pick_idx = action_indices[a][rng.random_range(0..count)];
             let next_state = current.apply_action(&num_actions[pick_idx]);
+            // Clone deck_idx so sibling branches see the same future board cards
+            let mut local_deck_idx = *deck_idx;
             v[a] = traverse(
                 &next_state, table, abstraction, evaluator,
                 rng, global_iteration, traverser,
                 reach_prob * strategy[a],
                 opponent_reach,
-                deck, deck_idx,
+                deck, &mut local_deck_idx,
             );
         }
 
@@ -113,12 +115,14 @@ pub fn traverse(
         if count == 0 { return 0.0; }
         let pick_idx = action_indices[sampled_abstract][rng.random_range(0..count)];
         let next_state = current.apply_action(&num_actions[pick_idx]);
+        // Clone deck_idx for consistency
+        let mut local_deck_idx = *deck_idx;
         traverse(
             &next_state, table, abstraction, evaluator,
             rng, global_iteration, traverser,
             reach_prob,
             opponent_reach * strategy[sampled_abstract],
-            deck, deck_idx,
+            deck, &mut local_deck_idx,
         )
     }
 }

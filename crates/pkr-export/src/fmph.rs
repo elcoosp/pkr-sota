@@ -38,14 +38,14 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
     let n = unique.len();
     assert!(n > 0, "cannot build FMph for empty key set");
 
-    let bucket_count = (n / 2).max(1);
-    let max_displacement = (n as u64 * 8).max(128) as u32;
+    let bucket_count = (n / 3).max(1);
+    let max_displacement = (n as u64 * 32).max(512) as u32;
 
     use rand::RngExt;
     let mut rng = rand::rng();
     let mut best: Option<(FmphData, u32)> = None;
 
-    for _attempt in 0..5000 {
+    for _attempt in 0..500_000 {
         let seed1 = rng.random();
         let seed2 = rng.random();
 
