@@ -1,8 +1,9 @@
 use clap::Parser;
 use pkr_abstraction::{KMeansAbstraction, load_centroids};
 use pkr_cfr::Trainer;
-use pkr_eval::NlheEvaluator;
+use pkr_eval::lookup::TableEvaluator;
 use pkr_export::writer::write_blueprint;
+use rayon::ThreadPoolBuilder;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -28,9 +29,9 @@ struct Cli {
     river_centroids: Option<PathBuf>,
 
     #[arg(long)]
-    #[arg(long)]
     preflop_table: Option<PathBuf>,
 
+    #[arg(long)]
     flop_table: Option<PathBuf>,
 
     #[arg(long)]
@@ -38,6 +39,9 @@ struct Cli {
 
     #[arg(long)]
     river_table: Option<PathBuf>,
+
+    #[arg(long, default_value = "hand_ranks.bin")]
+    rank_table: PathBuf,
 
     #[arg(long)]
     threads: Option<usize>,
@@ -47,9 +51,21 @@ fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
+    // 1. Initialize the Rayon thread pool ONCE.
     let num_threads = cli.threads
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4));
-    let evaluator = Arc::new(NlheEvaluator);
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(8));
+
+    ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global()
+        .expect("Failed to initialize global Rayon pool");
+
+    eprintln!("Running with {} threads", num_threads);
+
+    // 2. Load the FAST evaluator instead of NlheEvaluator
+    let evaluator = Arc::new(
+        TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin")
+    );
 
     let store = load_centroids(cli.centroids.to_str().unwrap())
         .expect("Failed to load default centroids");
@@ -73,7 +89,6 @@ fn main() {
         abstraction.init_table(0, path.to_str().unwrap())
             .expect("Failed to load preflop table");
     }
-
     if let Some(path) = &cli.flop_table {
         abstraction.init_table(1, path.to_str().unwrap())
             .expect("Failed to load flop table");
@@ -88,13 +103,15 @@ fn main() {
     }
 
     let abstraction = Arc::new(abstraction);
+
+    // 3. Trainer no longer takes num_threads; it uses the global Rayon pool.
     let mut trainer = Trainer::new(abstraction, evaluator, 6);
 
     for i in 0..cli.iterations {
         if i % 1000 == 0 {
             eprintln!("Iteration {}/{}", i, cli.iterations);
         }
-        trainer.run_iteration_parallel(num_threads);
+        trainer.run_iteration_parallel();
     }
 
     let output_path = cli.output.to_str().expect("invalid output path");

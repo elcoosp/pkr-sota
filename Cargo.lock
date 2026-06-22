@@ -410,6 +410,7 @@ dependencies = [
  "pkr-eval",
  "pkr-export",
  "rand",
+ "rayon",
  "tracing",
  "tracing-subscriber",
 ]

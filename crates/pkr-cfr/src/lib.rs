@@ -32,13 +32,12 @@ impl Trainer {
         }
     }
 
-    pub fn run_iteration_parallel(
-        &mut self,
-        num_threads: usize,
-    ) {
+    /// Run one iteration of external-sampling MCCFR using all available threads.
+    /// Relies on the global Rayon thread pool (configured in main).
+    pub fn run_iteration_parallel(&mut self) {
         let global_iter = self.iteration.fetch_add(1, Ordering::Relaxed) + 1;
 
-        let tables: Vec<CompactRegretTable> = (0..num_threads)
+        let tables: Vec<CompactRegretTable> = (0..rayon::current_num_threads())
             .into_par_iter()
             .map(|_| {
                 let mut thread_table = CompactRegretTable::new(6); // K=6 abstract actions
