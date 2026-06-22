@@ -1,4 +1,4 @@
-use crate::fmph::build_fmph;
+use crate::fmph::{build_fmph, eval_fmph};
 use crate::header::FileHeader;
 use pkr_cfr::table::CompactRegretTable;
 use std::fs::File;
@@ -12,16 +12,19 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
     let infoset_count = keys.len();
     let num_actions = table.num_actions();
 
+    // Build MPH on actual infoset hashes
     let fmph = build_fmph(&keys);
 
-    let mut cdf_bytes: Vec<u8> = Vec::with_capacity(infoset_count * num_actions);
+    // Create CDF array indexed by the MPH (index order)
+    let mut cdf_indexed = vec![0u8; infoset_count * num_actions];
     for &key in &keys {
+        let idx = eval_fmph(&fmph, key);
         let strategy = table.get_average_strategy(key);
         let mut cumulative = 0.0f32;
-        for prob in strategy {
+        for (a, &prob) in strategy.iter().enumerate() {
             cumulative += prob;
             let byte = (cumulative * 255.0).round().clamp(0.0, 255.0) as u8;
-            cdf_bytes.push(byte);
+            cdf_indexed[idx * num_actions + a] = byte;
         }
     }
 
@@ -43,6 +46,7 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
         _padding: [0u8; 4],
     };
 
+    // Translation table not yet used, set zero entries
     let translation_header = crate::header::TranslationTableHeader {
         num_entries: 0,
         action_size: 0,
@@ -52,10 +56,8 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
     let mut file = File::create(path).expect("failed to create blueprint file");
     file.write_all(bytemuck::bytes_of(&file_header)).unwrap();
     file.write_all(bytemuck::bytes_of(&fmph_header)).unwrap();
-    file.write_all(bytemuck::cast_slice(&fmph.displacements))
-        .unwrap();
-    file.write_all(bytemuck::bytes_of(&translation_header))
-        .unwrap();
-    file.write_all(&cdf_bytes).unwrap();
+    file.write_all(bytemuck::cast_slice(&fmph.displacements)).unwrap();
+    file.write_all(bytemuck::bytes_of(&translation_header)).unwrap();
+    file.write_all(&cdf_indexed).unwrap();
     file.flush().unwrap();
 }

@@ -3,98 +3,75 @@ set -uo pipefail
 COMPILE_OK=true
 INCOMPLETE=false
 
-echo "Rewriting precompute.rs with corrected RNG usage"
-cat > crates/pkr-abstraction/src/bin/precompute.rs << 'PRECOMP_FINAL_2yR8kL'
-use pkr_abstraction::{calculate_ehs, save_centroids, CentroidStore};
-use pkr_eval::NlheEvaluator;
-use rand::prelude::IndexedRandom;
-use rand::seq::SliceRandom;
-use rayon::prelude::*;
-use std::env;
+echo "Rewriting pkr-export/src/writer.rs with correct MPH indexing"
+cat > crates/pkr-export/src/writer.rs << 'WRITER_NEW_4hK9mN'
+use crate::fmph::{build_fmph, eval_fmph};
+use crate::header::FileHeader;
+use pkr_cfr::table::CompactRegretTable;
+use std::fs::File;
+use std::io::Write;
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: pkr-abstraction-precompute <num_samples> <k> [output_file]");
-        std::process::exit(1);
+const MAGIC: &[u8; 8] = b"PKRSOTA1";
+const VERSION: u32 = 1;
+
+pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
+    let keys = table.get_keys();
+    let infoset_count = keys.len();
+    let num_actions = table.num_actions();
+
+    // Build MPH on actual infoset hashes
+    let fmph = build_fmph(&keys);
+
+    // Create CDF array indexed by the MPH (index order)
+    let mut cdf_indexed = vec![0u8; infoset_count * num_actions];
+    for &key in &keys {
+        let idx = eval_fmph(&fmph, key);
+        let strategy = table.get_average_strategy(key);
+        let mut cumulative = 0.0f32;
+        for (a, &prob) in strategy.iter().enumerate() {
+            cumulative += prob;
+            let byte = (cumulative * 255.0).round().clamp(0.0, 255.0) as u8;
+            cdf_indexed[idx * num_actions + a] = byte;
+        }
     }
-    let num_samples: usize = args[1].parse().unwrap_or(10_000);
-    let k: usize = args[2].parse().unwrap_or(200);
-    let output = if args.len() > 3 { args[3].clone() } else { "centroids.bin".to_string() };
 
-    let evaluator = NlheEvaluator;
-    let deck: Vec<u8> = (0..52).collect();
+    let file_header = FileHeader {
+        magic: *MAGIC,
+        version: VERSION,
+        variant_id: 0,
+        infoset_count: infoset_count as u64,
+        max_actions_k: num_actions as u8,
+        _padding: [0u8; 7],
+    };
 
-    let features: Vec<(f32, f32)> = (0..num_samples)
-        .into_par_iter()
-        .map(|_| {
-            let mut local_rng = rand::rng();
-            let mut cards = deck.clone();
-            cards.shuffle(&mut local_rng);
-            let hole = &cards[..2];
-            let board = &cards[2..5];
-            let (ehs, ehs_sq) = calculate_ehs(hole, board, &evaluator);
-            (ehs, ehs_sq)
-        })
-        .collect();
+    let fmph_header = crate::header::FmphHeader {
+        num_keys: fmph.keys_len as u64,
+        seed1: fmph.seed1,
+        seed2: fmph.seed2,
+        max_level_size: fmph.bucket_count as u64,
+        level_count: 1,
+        _padding: [0u8; 4],
+    };
 
-    let centroids = simple_kmeans(&features, k, 50);
+    // Translation table not yet used, set zero entries
+    let translation_header = crate::header::TranslationTableHeader {
+        num_entries: 0,
+        action_size: 0,
+        _padding: [0u8; 4],
+    };
 
-    let store = CentroidStore { centroids };
-    save_centroids(&output, &store).expect("Failed to save centroids");
-    println!("Saved {} centroids to {}", k, output);
+    let mut file = File::create(path).expect("failed to create blueprint file");
+    file.write_all(bytemuck::bytes_of(&file_header)).unwrap();
+    file.write_all(bytemuck::bytes_of(&fmph_header)).unwrap();
+    file.write_all(bytemuck::cast_slice(&fmph.displacements)).unwrap();
+    file.write_all(bytemuck::bytes_of(&translation_header)).unwrap();
+    file.write_all(&cdf_indexed).unwrap();
+    file.flush().unwrap();
 }
+WRITER_NEW_4hK9mN
 
-fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)> {
-    let n = data.len();
-    if n == 0 || k == 0 {
-        return vec![];
-    }
-    let k = k.min(n);
-    let mut rng = rand::rng();
-    let mut centroids: Vec<(f32, f32)> = data.sample(&mut rng, k).cloned().collect();
-
-    for _ in 0..max_iters {
-        let assignments: Vec<usize> = data.par_iter().map(|&point| {
-            centroids.iter()
-                .enumerate()
-                .min_by(|a, b| {
-                    let c1 = a.1;
-                    let c2 = b.1;
-                    let d1 = (point.0 - c1.0).powi(2) + (point.1 - c1.1).powi(2);
-                    let d2 = (point.0 - c2.0).powi(2) + (point.1 - c2.1).powi(2);
-                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(idx, _)| idx)
-                .unwrap_or(0)
-        }).collect();
-
-        let mut sums = vec![(0.0f32, 0.0f32); k];
-        let mut counts = vec![0usize; k];
-        for (&point, &cluster) in data.iter().zip(assignments.iter()) {
-            sums[cluster].0 += point.0;
-            sums[cluster].1 += point.1;
-            counts[cluster] += 1;
-        }
-
-        let mut changed = false;
-        for i in 0..k {
-            if counts[i] > 0 {
-                let new_centroid = (sums[i].0 / counts[i] as f32, sums[i].1 / counts[i] as f32);
-                if (new_centroid.0 - centroids[i].0).abs() > 1e-6 ||
-                   (new_centroid.1 - centroids[i].1).abs() > 1e-6 {
-                    changed = true;
-                }
-                centroids[i] = new_centroid;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    centroids
-}
-PRECOMP_FINAL_2yR8kL
+echo "Ensuring pkr-export/src/fmph.rs exports eval_fmph (already public, but confirm)"
+# No change needed, eval_fmph is pub fn.
 
 echo "Checking compilation"
 if ! cargo check --workspace 2>&1; then
@@ -107,12 +84,12 @@ if [ "$INCOMPLETE" = true ] || [ "$COMPILE_OK" = false ]; then
   exit 1
 fi
 
-echo "Running tests"
-cargo test -p pkr-abstraction -p pkr-cfr -p pkr-eval -p pkr-core
+echo "Running tests (pkr-export, pkr-runtime)"
+cargo test -p pkr-export -p pkr-runtime
 if [ $? -eq 0 ]; then
   echo "All tests passed. Committing."
   git add -A
-  git commit -m "fix(precompute): correct RNG calls and remove deprecated API"
+  git commit -m "feat(export,runtime): wire up real MPH indexing for blueprint export and lookup"
 else
   echo "Tests failed. Fix errors then run the next script."
   exit 1
