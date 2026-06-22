@@ -10,7 +10,7 @@ const K: usize = 6;
 
 pub fn traverse(
     state: &GameState,
-    table: &mut CompactRegretTable,
+    table: &CompactRegretTable,      // shared lock-free table
     abstraction: &dyn AbstractionBuilder,
     evaluator: &dyn Evaluator,
     rng: &mut impl Rng,
@@ -18,12 +18,12 @@ pub fn traverse(
     traverser: usize,
     reach_prob: f32,
     opponent_reach: f32,
-    deck: &[u8],                // immutable reference to remaining cards
-    deck_idx: &mut usize,       // mutable index into deck
+    deck: &[u8],
+    deck_idx: &mut usize,
 ) -> f32 {
     let mut current = state.clone();
 
-    // Advance streets by reading from deck without draining
+    // Advance streets without draining deck
     while current.is_street_complete() && !current.is_terminal() {
         let cards_needed = match current.street {
             Street::Preflop => 3,
@@ -45,9 +45,8 @@ pub fn traverse(
     let num_actions = current.legal_actions();
     if num_actions.is_empty() { return 0.0; }
 
-    // Build fixed-size abstract action mapping (stack arrays, no allocs)
     let mut action_counts = [0usize; K];
-    let mut action_indices = [[0usize; 10]; K]; // max 10 concrete actions per abstract bucket
+    let mut action_indices = [[0usize; 10]; K];
     for (idx, action) in num_actions.iter().enumerate() {
         if let Some(a) = abstract_action_index(&action.kind, &current) {
             if action_counts[a] < 10 {
@@ -57,7 +56,6 @@ pub fn traverse(
         }
     }
 
-    // History bytes on stack (max 32 actions)
     let mut history_bytes = [0u8; 32];
     let hist_len = current.history.len().min(32);
     for (i, a) in current.history.iter().take(32).enumerate() {
@@ -73,11 +71,9 @@ pub fn traverse(
     let street_code = current.street as u8;
     let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes[..hist_len], street_code);
 
-    // Get strategy into stack buffer
     let mut strategy = [0.0f32; K];
     table.get_strategy_into(infoset_hash, &mut strategy);
 
-    // Only update strategy sum for the traverser
     if acting_player == traverser {
         for a in 0..K {
             table.add_strategy_sum(infoset_hash, a, strategy[a] * reach_prob);
@@ -92,7 +88,6 @@ pub fn traverse(
                 v[a] = 0.0;
                 continue;
             }
-            // Sample ONE concrete action uniformly (unbiased)
             let pick_idx = action_indices[a][rng.random_range(0..count)];
             let next_state = current.apply_action(&num_actions[pick_idx]);
             v[a] = traverse(
@@ -108,7 +103,7 @@ pub fn traverse(
             let delta = v[a] - v_sigma;
             let cur = table.get_regret(infoset_hash, a);
             let new_regret = dcfr::update_regret(cur, global_iteration, delta);
-            table.set_regret(infoset_hash, a, new_regret);
+            table.set_regret(infoset_hash, a, new_regret); // atomic store
         }
         v_sigma
     } else {
@@ -137,11 +132,11 @@ fn abstract_action_index(kind: &ActionKind, state: &GameState) -> Option<usize> 
             if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
                 Some(5) // all-in
             } else if fraction < 0.5 {
-                Some(2) // small
+                Some(2)
             } else if fraction < 1.0 {
-                Some(3) // medium
+                Some(3)
             } else {
-                Some(4) // large
+                Some(4)
             }
         }
     }
