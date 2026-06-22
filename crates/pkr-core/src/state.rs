@@ -1,10 +1,3 @@
-#!/usr/bin/env bash
-set -uo pipefail
-COMPILE_OK=true
-INCOMPLETE=false
-
-echo "Fixing GameState: add total_invested tracking and correct terminal payoff"
-cat > crates/pkr-core/src/state.rs << 'STATE_FIX_8dG4hJ1'
 use pkr_contracts::Evaluator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,26 +199,3 @@ impl GameState {
         self.actor = 1 - self.dealer; // postflop non-dealer acts first
     }
 }
-STATE_FIX_8dG4hJ1
-
-echo "Checking compilation"
-if ! cargo check --workspace 2>&1; then
-  echo "Compilation failed – will skip commit"
-  COMPILE_OK=false
-fi
-
-if [ "$INCOMPLETE" = true ] || [ "$COMPILE_OK" = false ]; then
-  echo "Skipping tests and commit due to errors"
-  exit 1
-fi
-
-echo "Running tests for pkr-core"
-cargo test -p pkr-core
-if [ $? -eq 0 ]; then
-  echo "All tests passed. Committing."
-  git add -A
-  git commit -m "fix(core): add total_invested tracking and correct terminal payoff"
-else
-  echo "Tests failed. Fix errors then run the next script."
-  exit 1
-fi
