@@ -3,153 +3,148 @@ set -uo pipefail
 COMPILE_OK=true
 INCOMPLETE=false
 
-echo "Fixing hash function in KMeansAbstraction to produce non-zero distinct hashes"
-cat > crates/pkr-abstraction/src/lib.rs << 'LIB_FIX_9zR4qN'
-pub mod cluster;
-pub mod ehs;
-pub use ehs::calculate_ehs;
-
-use pkr_contracts::AbstractionBuilder;
+echo "Fixing precompute.rs: add missing import and choose function"
+cat > crates/pkr-abstraction/src/bin/precompute.rs << 'PRECOMP_FINAL_6yU7zA'
+use pkr_abstraction::{calculate_ehs, save_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
-use serde::{Deserialize, Serialize};
+use pkr_eval::slow::NlheEvaluator;
+use rand::prelude::IndexedRandom;
+use rand::seq::SliceRandom;
+use rayon::prelude::*;
+use std::env;
 use std::fs::File;
-use std::io::BufReader;
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
+use std::io::Write;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CentroidStore {
-    pub centroids: Vec<(f32, f32)>,
-}
-
-pub fn load_centroids(path: &str) -> Result<CentroidStore, Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let store: CentroidStore = bincode::deserialize_from(reader)?;
-    Ok(store)
-}
-
-pub fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::create(path)?;
-    bincode::serialize_into(file, store)?;
-    Ok(())
-}
-
-pub struct KMeansAbstraction {
-    centroids: Vec<(f32, f32)>,
-    evaluator: Arc<dyn Evaluator>,
-    cache: RwLock<HashMap<(u64, u64), u64>>,
-}
-
-impl KMeansAbstraction {
-    pub fn new(centroids: Vec<(f32, f32)>, evaluator: Arc<dyn Evaluator>) -> Self {
-        KMeansAbstraction {
-            centroids,
-            evaluator,
-            cache: RwLock::new(HashMap::new()),
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: pkr-abstraction-precompute <centroids|table> [args...]");
+        std::process::exit(1);
+    }
+    match args[1].as_str() {
+        "centroids" => {
+            let num_samples: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10_000);
+            let k: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
+            let output = args.get(4).cloned().unwrap_or("centroids.bin".to_string());
+            generate_centroids(num_samples, k, &output);
         }
-    }
-
-    pub fn from_store(store: CentroidStore, evaluator: Arc<dyn Evaluator>) -> Self {
-        Self::new(store.centroids, evaluator)
-    }
-
-    fn hash_cards(cards: &[u8]) -> u64 {
-        let mut h: u64 = 14695981039346656037;
-        for &c in cards {
-            h ^= c as u64;
-            h = h.wrapping_mul(1099511628211);
+        "table" => {
+            let output = args.get(2).cloned().unwrap_or("hand_ranks.bin".to_string());
+            generate_rank_table(&output);
         }
-        h
-    }
-
-    /// Combine street, history bytes and cluster_id into a single u64.
-    fn combine_hash(street: u8, history: &[u8], cluster_id: u64) -> u64 {
-        let mut h: u64 = 0x9E3779B97F4A7C15; // start non-zero
-        h ^= street as u64;
-        h = h.wrapping_mul(31);
-        for &b in history {
-            h ^= b as u64;
-            h = h.wrapping_mul(31);
-        }
-        h ^= cluster_id;
-        h
+        _ => eprintln!("Unknown command"),
     }
 }
 
-impl AbstractionBuilder for KMeansAbstraction {
-    fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8], street: u8) -> u64 {
-        let hole_hash = Self::hash_cards(hole);
-        let board_hash = Self::hash_cards(board);
+fn generate_centroids(num_samples: usize, k: usize, output: &str) {
+    let evaluator = NlheEvaluator;
+    let deck: Vec<u8> = (0..52).collect();
 
-        let cluster_id = {
-            if let Ok(cache) = self.cache.read() {
-                if let Some(&id) = cache.get(&(hole_hash, board_hash)) {
-                    id
-                } else {
-                    drop(cache);
-                    let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
-                    let id = self.centroids.iter()
-                        .enumerate()
-                        .min_by(|a, b| {
-                            let c1 = a.1;
-                            let c2 = b.1;
-                            let d1 = (ehs - c1.0).powi(2) + (ehs_sq - c1.1).powi(2);
-                            let d2 = (ehs - c2.0).powi(2) + (ehs_sq - c2.1).powi(2);
-                            d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(idx, _)| idx as u64)
-                        .unwrap_or(0);
-                    if let Ok(mut cache) = self.cache.write() {
-                        cache.insert((hole_hash, board_hash), id);
-                    }
-                    id
+    let features: Vec<(f32, f32)> = (0..num_samples)
+        .into_par_iter()
+        .map(|_| {
+            let mut local_rng = rand::rng();
+            let mut cards = deck.clone();
+            cards.shuffle(&mut local_rng);
+            let hole = &cards[..2];
+            let board = &cards[2..5];
+            let (ehs, ehs_sq) = calculate_ehs(hole, board, &evaluator);
+            (ehs, ehs_sq)
+        })
+        .collect();
+
+    let centroids = simple_kmeans(&features, k, 50);
+    let store = CentroidStore { centroids };
+    save_centroids(output, &store).expect("Failed to save centroids");
+    println!("Saved {} centroids to {}", k, output);
+}
+
+fn generate_rank_table(output: &str) {
+    let evaluator = NlheEvaluator;
+    let total = 2_598_960usize;
+    let mut table: Vec<u32> = vec![0u32; total];
+
+    table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
+        let cards = combinadic_unrank(idx as u32, 5, 52);
+        let rank = evaluator.evaluate_hand(&[], &cards);
+        *slot = rank;
+    });
+
+    let mut file = File::create(output).expect("failed to create rank table file");
+    for rank in table {
+        file.write_all(&rank.to_le_bytes()).unwrap();
+    }
+    println!("Generated rank table with {} entries -> {}", total, output);
+}
+
+/// Binomial coefficient C(n, k) for small k.
+fn choose(n: u32, k: u32) -> u32 {
+    match (n, k) {
+        (_, 0) => 1,
+        (n, 1) => n,
+        (n, 2) => n * (n - 1) / 2,
+        (n, 3) => n * (n - 1) * (n - 2) / 6,
+        (n, 4) => n * (n - 1) * (n - 2) * (n - 3) / 24,
+        (n, 5) => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) / 120,
+        _ => panic!("unsupported k"),
+    }
+}
+
+fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
+    let mut result = Vec::with_capacity(k as usize);
+    let mut remaining = n;
+    for i in (1..=k).rev() {
+        let mut x = remaining - 1;
+        while choose(x, i) > index { x -= 1; }
+        result.push(x as u8);
+        index -= choose(x, i);
+        remaining = x;
+    }
+    result.sort_unstable_by(|a, b| b.cmp(a));
+    result
+}
+
+fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)> {
+    let n = data.len();
+    if n == 0 || k == 0 { return vec![]; }
+    let k = k.min(n);
+    let mut rng = rand::rng();
+    let mut centroids: Vec<(f32, f32)> = data.sample(&mut rng, k).cloned().collect();
+    for _ in 0..max_iters {
+        let assignments: Vec<usize> = data.par_iter().map(|&point| {
+            centroids.iter()
+                .enumerate()
+                .min_by(|a, b| {
+                    let c1 = a.1; let c2 = b.1;
+                    let d1 = (point.0 - c1.0).powi(2) + (point.1 - c1.1).powi(2);
+                    let d2 = (point.0 - c2.0).powi(2) + (point.1 - c2.1).powi(2);
+                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(idx, _)| idx).unwrap_or(0)
+        }).collect();
+        let mut sums = vec![(0.0f32,0.0f32); k];
+        let mut counts = vec![0usize; k];
+        for (&point, &cluster) in data.iter().zip(assignments.iter()) {
+            sums[cluster].0 += point.0; sums[cluster].1 += point.1;
+            counts[cluster] += 1;
+        }
+        let mut changed = false;
+        for i in 0..k {
+            if counts[i] > 0 {
+                let new = (sums[i].0 / counts[i] as f32, sums[i].1 / counts[i] as f32);
+                if (new.0 - centroids[i].0).abs() > 1e-6 || (new.1 - centroids[i].1).abs() > 1e-6 {
+                    changed = true;
                 }
-            } else {
-                0
+                centroids[i] = new;
             }
-        };
-
-        Self::combine_hash(street, history, cluster_id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pkr_contracts::Evaluator;
-    use std::sync::Arc;
-
-    struct MockEvaluator;
-    impl Evaluator for MockEvaluator {
-        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 {
-            0u32
         }
+        if !changed { break; }
     }
-
-    #[test]
-    fn test_abstraction_includes_history_and_street() {
-        let centroids = vec![(0.3, 0.09), (0.7, 0.49)];
-        let builder = KMeansAbstraction::new(centroids, Arc::new(MockEvaluator));
-
-        let h1 = builder.get_infoset_hash(&[0, 1], &[], &[], 0);
-        let h2 = builder.get_infoset_hash(&[0, 1], &[], &[0], 0);
-        assert_ne!(h1, h2, "history must change hash");
-
-        let h3 = builder.get_infoset_hash(&[0, 1], &[], &[], 1);
-        assert_ne!(h1, h3, "street must change hash");
-
-        // Both h1,h2 should be non-zero
-        assert!(h1 != 0 && h2 != 0, "hashes should not be zero");
-    }
-
-    #[test]
-    fn test_abstraction_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<KMeansAbstraction>();
-    }
+    centroids
 }
-LIB_FIX_9zR4qN
+PRECOMP_FINAL_6yU7zA
+
+echo "Also add Evaluator import in lookup.rs for TableEvaluator (it's already there via pkr-contracts)"
 
 echo "Checking compilation"
 if ! cargo check --workspace 2>&1; then
@@ -163,11 +158,11 @@ if [ "$INCOMPLETE" = true ] || [ "$COMPILE_OK" = false ]; then
 fi
 
 echo "Running tests"
-cargo test -p pkr-abstraction
+cargo test -p pkr-eval -p pkr-abstraction
 if [ $? -eq 0 ]; then
   echo "All tests passed. Committing."
   git add -A
-  git commit -m "fix(abstraction): robust hash combining history, street, and cluster_id"
+  git commit -m "fix(abstraction): add missing import and choose function in precompute binary"
 else
   echo "Tests failed. Fix errors then run the next script."
   exit 1

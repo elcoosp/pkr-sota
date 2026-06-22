@@ -5,4 +5,4 @@ edition.workspace = true
 
 [dependencies]
 pkr-contracts = { workspace = true }
-pkr-core = { workspace = true }
+memmap2 = { workspace = true }
