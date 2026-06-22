@@ -3,6 +3,7 @@ use pkr_core::state::{ActionKind, GameState, Street};
 use rand::Rng;
 use rand::RngExt;
 use crate::table::CompactRegretTable;
+use pkr_abstraction::calculate_ehs;
 
 const K: usize = 6;
 
@@ -18,9 +19,11 @@ pub fn traverse(
     opponent_reach: f32,
     deck: &[u8],
     deck_idx: &mut usize,
+    batch: &mut Vec<(u64, usize, u32, f32)>,
 ) -> f32 {
     let mut current = state.clone();
 
+    // Advance streets
     while current.is_street_complete() && !current.is_terminal() {
         let cards_needed = match current.street {
             Street::Preflop => 3,
@@ -38,6 +41,16 @@ pub fn traverse(
         return current.terminal_payoff(traverser, evaluator);
     }
 
+    // *** DEPTH LIMIT: Stop at Turn or River, return heuristic leaf value ***
+    if current.street == Street::Turn || current.street == Street::River {
+        // Use EHS as leaf value estimate
+        let hole = &current.hole[traverser];
+        let board = &current.board;
+        let (ehs, _) = calculate_ehs(hole, board, evaluator);
+        // Scale EHS from [0,1] to [-1,1] payoff space (simplified)
+        return ehs * 2.0 - 1.0;
+    }
+
     let acting_player = current.actor;
     let num_actions = current.legal_actions();
     if num_actions.is_empty() { return 0.0; }
@@ -53,15 +66,10 @@ pub fn traverse(
         }
     }
 
-    // Use precomputed abstract history bytes (includes bet size encoding)
-    let hist_len = current.abstract_history.len().min(32);
-    let mut history_bytes = [0u8; 32];
-    history_bytes[..hist_len].copy_from_slice(&current.abstract_history[..hist_len]);
-
     let hole = &current.hole[acting_player];
     let board = &current.board;
     let street_code = current.street as u8;
-    let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes[..hist_len], street_code);
+    let infoset_hash = abstraction.get_infoset_hash(hole, board, &current.abstract_history[..current.abstract_history.len().min(32)], street_code);
 
     let mut strategy = [0.0f32; K];
     table.get_strategy_into(infoset_hash, &mut strategy);
@@ -70,26 +78,20 @@ pub fn traverse(
         for a in 0..K {
             table.add_strategy_sum(infoset_hash, a, strategy[a] * reach_prob);
         }
-    }
 
-    if acting_player == traverser {
         let mut v = [0.0f32; K];
         for a in 0..K {
             let count = action_counts[a];
-            if count == 0 {
-                v[a] = 0.0;
-                continue;
-            }
+            if count == 0 { v[a] = 0.0; continue; }
             let pick_idx = action_indices[a][rng.random_range(0..count)];
             let next_state = current.apply_action(&num_actions[pick_idx]);
-            // Clone deck_idx so sibling branches see the same future board cards
             let mut local_deck_idx = *deck_idx;
             v[a] = traverse(
                 &next_state, table, abstraction, evaluator,
                 rng, global_iteration, traverser,
                 reach_prob * strategy[a],
                 opponent_reach,
-                deck, &mut local_deck_idx,
+                deck, &mut local_deck_idx, batch,
             );
         }
 
@@ -97,7 +99,7 @@ pub fn traverse(
 
         for a in 0..K {
             let delta = v[a] - v_sigma;
-            table.apply_regret_update(infoset_hash, a, global_iteration, delta);
+            batch.push((infoset_hash, a, global_iteration, delta));
         }
         v_sigma
     } else {
@@ -106,23 +108,19 @@ pub fn traverse(
         let mut sampled_abstract = K - 1;
         for i in 0..K {
             acc += strategy[i];
-            if r <= acc {
-                sampled_abstract = i;
-                break;
-            }
+            if r <= acc { sampled_abstract = i; break; }
         }
         let count = action_counts[sampled_abstract];
         if count == 0 { return 0.0; }
         let pick_idx = action_indices[sampled_abstract][rng.random_range(0..count)];
         let next_state = current.apply_action(&num_actions[pick_idx]);
-        // Clone deck_idx for consistency
         let mut local_deck_idx = *deck_idx;
         traverse(
             &next_state, table, abstraction, evaluator,
             rng, global_iteration, traverser,
             reach_prob,
             opponent_reach * strategy[sampled_abstract],
-            deck, &mut local_deck_idx,
+            deck, &mut local_deck_idx, batch,
         )
     }
 }

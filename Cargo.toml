@@ -27,6 +27,7 @@ pkr-runtime = { path = "crates/pkr-runtime" }
 serde = { version = "1", features = ["derive"] }
 bytemuck = { version = "1", features = ["derive"] }
 dashmap = "6"
+papaya = "0.1"
 foldhash = "0.1"
 rand = "0.10"
 rayon = "1.10"

@@ -5,13 +5,10 @@ edition.workspace = true
 
 [dependencies]
 pkr-contracts = { workspace = true }
+pkr-abstraction = { workspace = true }
 pkr-core = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
-wgpu = { version = "0.19", optional = true }
-
-[features]
-default = []
-gpu = ["wgpu"]
+papaya = { workspace = true }
