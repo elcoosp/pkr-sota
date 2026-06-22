@@ -221,7 +221,7 @@ fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) {
             let mut rng = rand::rng();
             let mut deck: Vec<u8> = (0..52).filter(|c| !flop.contains(c)).collect();
             for _ in 0..100 {
-                deck.partial_shuffle(&mut rng, 4); // 2 opp hole + 2 turn/river
+                deck.partial_shuffle(&mut rng, 6); // 2 opp hole + 2 turn/river
                 let hole = [deck[0], deck[1]];
                 let opp_hole = [deck[2], deck[3]];
                 let board_cards: Vec<u8> = flop.iter()
