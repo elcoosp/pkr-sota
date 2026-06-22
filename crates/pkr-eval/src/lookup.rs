@@ -3,11 +3,9 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
 
-/// Binomial coefficient for combinadic indexing.
+/// Binomial coefficient (n choose k), safe for n<k.
 pub fn choose(n: u32, k: u32) -> u32 {
-    if k > n {
-        return 0;
-    }
+    if k > n { return 0; }
     match k {
         0 => 1,
         1 => n,
@@ -15,18 +13,19 @@ pub fn choose(n: u32, k: u32) -> u32 {
         3 => n * (n - 1) * (n - 2) / 6,
         4 => n * (n - 1) * (n - 2) * (n - 3) / 24,
         5 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) / 120,
-        _ => panic!("k > 5 not supported"),
+        _ => panic!("k>5 unsupported"),
     }
 }
 
-/// Combinadic rank of a 5-card combination sorted descending.
+/// Combinadic rank of a 5-card combination sorted *descending*.
+/// Returns a number in 0..2,598,960.
 pub fn combinadic_rank(cards: &[u8; 5]) -> u32 {
-    let c0 = cards[0] as u32;
+    let c0 = cards[0] as u32; // largest
     let c1 = cards[1] as u32;
     let c2 = cards[2] as u32;
     let c3 = cards[3] as u32;
-    let c4 = cards[4] as u32;
-    choose(c0, 1) + choose(c1, 2) + choose(c2, 3) + choose(c3, 4) + choose(c4, 5)
+    let c4 = cards[4] as u32; // smallest
+    choose(c0, 5) + choose(c1, 4) + choose(c2, 3) + choose(c3, 2) + choose(c4, 1)
 }
 
 pub struct TableEvaluator {
@@ -42,7 +41,7 @@ impl TableEvaluator {
 
     fn eval_5_fast(&self, hand: &[u8; 5]) -> u32 {
         let mut sorted = *hand;
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        sorted.sort_unstable_by(|a, b| b.cmp(a)); // descending
         let idx = combinadic_rank(&sorted) as usize;
         let offset = idx * 4;
         let bytes = &self.mmap[offset..offset + 4];

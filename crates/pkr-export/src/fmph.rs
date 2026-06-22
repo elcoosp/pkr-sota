@@ -1,15 +1,5 @@
-use bytemuck::{Pod, Zeroable};
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct FmphDataPacked {
-    pub keys_len: u64,
-    pub seed1: u64,
-    pub seed2: u64,
-    pub bucket_count: u64,
-    pub displacements_offset: u64,
-    pub _pad: [u8; 24],
-}
+use std::collections::HashSet;
+use crate::header::FmphHeader;
 
 #[derive(Debug, Clone)]
 pub struct FmphData {
@@ -21,16 +11,15 @@ pub struct FmphData {
 }
 
 impl FmphData {
-    pub fn pack(&self, displacement_bytes: &mut Vec<u8>) -> FmphDataPacked {
-        let offset = displacement_bytes.len() as u64;
-        displacement_bytes.extend_from_slice(bytemuck::cast_slice(&self.displacements));
-        FmphDataPacked {
-            keys_len: self.keys_len as u64,
+    /// Convert to the file header and serialize displacements separately.
+    pub fn to_header(&self) -> FmphHeader {
+        FmphHeader {
+            num_keys: self.keys_len as u64,
             seed1: self.seed1,
             seed2: self.seed2,
-            bucket_count: self.bucket_count as u64,
-            displacements_offset: offset,
-            _pad: [0u8; 24],
+            max_level_size: self.bucket_count as u64,
+            level_count: 1u32,
+            _padding: [0u8; 4],
         }
     }
 }
@@ -41,7 +30,6 @@ fn hash_key(key: u64, seed: u64) -> u64 {
 }
 
 pub fn build_fmph(keys: &[u64]) -> FmphData {
-    use std::collections::HashSet;
     let unique: Vec<u64> = {
         let mut set = HashSet::new();
         keys.iter().copied().filter(|k| set.insert(*k)).collect()
@@ -85,10 +73,11 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
             let mut found = false;
             for d in 0..max_displacement {
                 let mut indices = Vec::with_capacity(bucket.len());
+                let mut seen = HashSet::new();
                 let mut collision = false;
                 for &k in bucket {
                     let idx = hash_key(k, seed2).wrapping_add(d as u64) as usize % n;
-                    if used[idx] || indices.contains(&idx) {
+                    if used[idx] || !seen.insert(idx) {
                         collision = true;
                         break;
                     }

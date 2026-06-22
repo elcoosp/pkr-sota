@@ -1,4 +1,4 @@
-use crate::fmph::{build_fmph, eval_fmph};
+use crate::fmph::{build_fmph, eval_fmph, FmphData};
 use crate::header::FileHeader;
 use pkr_cfr::table::CompactRegretTable;
 use std::fs::File;
@@ -12,10 +12,8 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
     let infoset_count = keys.len();
     let num_actions = table.num_actions();
 
-    // Build MPH on actual infoset hashes
-    let fmph = build_fmph(&keys);
+    let fmph: FmphData = build_fmph(&keys);
 
-    // Create CDF array indexed by the MPH (index order)
     let mut cdf_indexed = vec![0u8; infoset_count * num_actions];
     for &key in &keys {
         let idx = eval_fmph(&fmph, key);
@@ -37,16 +35,8 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
         _padding: [0u8; 7],
     };
 
-    let fmph_header = crate::header::FmphHeader {
-        num_keys: fmph.keys_len as u64,
-        seed1: fmph.seed1,
-        seed2: fmph.seed2,
-        max_level_size: fmph.bucket_count as u64,
-        level_count: 1,
-        _padding: [0u8; 4],
-    };
+    let fmph_header = fmph.to_header();
 
-    // Translation table not yet used, set zero entries
     let translation_header = crate::header::TranslationTableHeader {
         num_entries: 0,
         action_size: 0,
