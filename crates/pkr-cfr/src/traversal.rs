@@ -2,7 +2,6 @@ use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{ActionKind, GameState, Street};
 use rand::Rng;
 use rand::RngExt;
-use rand::distr::{Distribution, weighted::WeightedIndex};
 use crate::dcfr;
 use crate::table::CompactRegretTable;
 
@@ -10,7 +9,7 @@ const K: usize = 6;
 
 pub fn traverse(
     state: &GameState,
-    table: &CompactRegretTable,      // shared lock-free table
+    table: &CompactRegretTable,
     abstraction: &dyn AbstractionBuilder,
     evaluator: &dyn Evaluator,
     rng: &mut impl Rng,
@@ -74,6 +73,7 @@ pub fn traverse(
     let mut strategy = [0.0f32; K];
     table.get_strategy_into(infoset_hash, &mut strategy);
 
+    // Update average strategy for traverser only, weighted by reach_prob
     if acting_player == traverser {
         for a in 0..K {
             table.add_strategy_sum(infoset_hash, a, strategy[a] * reach_prob);
@@ -92,7 +92,9 @@ pub fn traverse(
             let next_state = current.apply_action(&num_actions[pick_idx]);
             v[a] = traverse(
                 &next_state, table, abstraction, evaluator,
-                rng, global_iteration, traverser, reach_prob, opponent_reach,
+                rng, global_iteration, traverser,
+                reach_prob * strategy[a],  // <--- CRITICAL FIX: multiply by action probability
+                opponent_reach,
                 deck, deck_idx,
             );
         }
@@ -103,12 +105,21 @@ pub fn traverse(
             let delta = v[a] - v_sigma;
             let cur = table.get_regret(infoset_hash, a);
             let new_regret = dcfr::update_regret(cur, global_iteration, delta);
-            table.set_regret(infoset_hash, a, new_regret); // atomic store
+            table.set_regret(infoset_hash, a, new_regret);
         }
         v_sigma
     } else {
-        let dist = WeightedIndex::new(&strategy).expect("strategy must have positive sum");
-        let sampled_abstract = dist.sample(rng);
+        // Opponent node: sample an abstract action using allocation-free loop
+        let r = rng.random::<f32>();
+        let mut acc = 0.0;
+        let mut sampled_abstract = K - 1;
+        for i in 0..K {
+            acc += strategy[i];
+            if r <= acc {
+                sampled_abstract = i;
+                break;
+            }
+        }
         let count = action_counts[sampled_abstract];
         if count == 0 { return 0.0; }
         let pick_idx = action_indices[sampled_abstract][rng.random_range(0..count)];
@@ -116,7 +127,8 @@ pub fn traverse(
         traverse(
             &next_state, table, abstraction, evaluator,
             rng, global_iteration, traverser,
-            reach_prob, opponent_reach * strategy[sampled_abstract],
+            reach_prob,
+            opponent_reach * strategy[sampled_abstract],
             deck, deck_idx,
         )
     }
