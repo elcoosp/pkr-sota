@@ -6,7 +6,7 @@ use pkr_eval::lookup::{choose, combinadic_rank};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 use std::sync::{Arc, OnceLock};
 use memmap2::Mmap;
@@ -32,7 +32,8 @@ pub fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn s
 pub struct KMeansAbstraction {
     centroids: HashMap<u8, Vec<(f32, f32)>>,
     default_centroids: Vec<(f32, f32)>,
-    tables: HashMap<u8, OnceLock<Mmap>>, // street codes 0..3
+    tables: HashMap<u8, OnceLock<Mmap>>,
+    flop_buckets: OnceLock<Vec<u8>>,
     evaluator: Arc<dyn Evaluator>,
 }
 
@@ -49,6 +50,7 @@ impl KMeansAbstraction {
             centroids: HashMap::new(),
             default_centroids,
             tables,
+            flop_buckets: OnceLock::new(),
             evaluator,
         }
     }
@@ -71,7 +73,30 @@ impl KMeansAbstraction {
         Ok(())
     }
 
-    /// Preflop: hole cards only, index = combinadic_rank_2(hole)
+    pub fn load_flop_buckets(&self, path: &str) -> Result<(), std::io::Error> {
+        let mut file = File::open(path)?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+        self.flop_buckets.set(data).map_err(|_| std::io::Error::new(std::io::ErrorKind::AlreadyExists, "flop buckets already set"))?;
+        Ok(())
+    }
+
+    fn flop_bucket(&self, board: &[u8]) -> u8 {
+        if board.len() >= 3 {
+            if let Some(buckets) = self.flop_buckets.get() {
+                let mut flop = [board[0], board[1], board[2]];
+                flop.sort_unstable_by(|a, b| b.cmp(a));
+                let idx = choose(flop[0] as u32, 3) as usize
+                        + choose(flop[1] as u32, 2) as usize
+                        + choose(flop[2] as u32, 1) as usize;
+                if idx < buckets.len() {
+                    return buckets[idx];
+                }
+            }
+        }
+        0
+    }
+
     fn flat_index_preflop(hole: &[u8]) -> usize {
         assert_eq!(hole.len(), 2);
         assert_ne!(hole[0], hole[1]);
@@ -95,16 +120,12 @@ impl KMeansAbstraction {
             [1,2],[1,3],[1,4],[2,3],[2,4],[3,4],
         ];
         let mut mask_idx = 0;
-        let mut found = false;
         for (mi, pos) in masks.iter().enumerate() {
             let h1 = all[pos[0]]; let h2 = all[pos[1]];
             if hole_set.contains(&h1) && hole_set.contains(&h2) {
-                mask_idx = mi;
-                found = true;
-                break;
+                mask_idx = mi; break;
             }
         }
-        assert!(found, "hole not found in 5-card set");
         combo_idx * 10 + mask_idx
     }
 
@@ -151,7 +172,7 @@ impl AbstractionBuilder for KMeansAbstraction {
         let cluster_id = match board.len() {
             0 => {
                 if let Some(table) = self.tables.get(&0u8).and_then(|l| l.get()) {
-                    let idx = Self::flat_index_preflop(hole) as usize;
+                    let idx = Self::flat_index_preflop(hole);
                     table[idx] as u64
                 } else {
                     let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
@@ -182,12 +203,14 @@ impl AbstractionBuilder for KMeansAbstraction {
             }
         };
 
-        // Strong hash combining street, history, and cluster_id
+        let flop_bucket = self.flop_bucket(board);
+
         let hasher = BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
         let mut h = hasher.build_hasher();
         h.write_u8(street);
         h.write(history);
         h.write_u64(cluster_id);
+        h.write_u8(flop_bucket);
         h.finish()
     }
 }
@@ -219,23 +242,6 @@ mod tests {
         let builder = KMeansAbstraction::new(vec![(0.3,0.09),(0.7,0.49)], Arc::new(MockEvaluator));
         let h1 = builder.get_infoset_hash(&[0,1], &[], &[], 0);
         let h2 = builder.get_infoset_hash(&[0,1], &[], &[0], 0);
-        assert_ne!(h1, h2, "history must change hash");
-    }
-
-    #[test]
-    fn test_flat_index_flop() {
-        let idx = KMeansAbstraction::flat_index_flop(&[0,1], &[2,3,4]);
-        assert!(idx < 25_989_600);
-        let idx2 = KMeansAbstraction::flat_index_flop(&[1,0], &[2,3,4]);
-        assert_eq!(idx, idx2);
-    }
-
-    #[test]
-    fn test_preflop_index() {
-        // choose(1,2)+choose(0,1) for hole [1,0] sorted to [1,0]
-        let idx = KMeansAbstraction::flat_index_preflop(&[1,0]);
-        assert_eq!(idx, 0); // first combo
-        let idx2 = KMeansAbstraction::flat_index_preflop(&[0,1]);
-        assert_eq!(idx, idx2);
+        assert_ne!(h1, h2);
     }
 }

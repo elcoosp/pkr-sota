@@ -2,7 +2,6 @@ use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{ActionKind, GameState, Street};
 use rand::Rng;
 use rand::RngExt;
-use crate::dcfr;
 use crate::table::CompactRegretTable;
 
 const K: usize = 6;
@@ -22,7 +21,6 @@ pub fn traverse(
 ) -> f32 {
     let mut current = state.clone();
 
-    // Advance streets without draining deck
     while current.is_street_complete() && !current.is_terminal() {
         let cards_needed = match current.street {
             Street::Preflop => 3,
@@ -73,7 +71,6 @@ pub fn traverse(
     let mut strategy = [0.0f32; K];
     table.get_strategy_into(infoset_hash, &mut strategy);
 
-    // Update average strategy for traverser only, weighted by reach_prob
     if acting_player == traverser {
         for a in 0..K {
             table.add_strategy_sum(infoset_hash, a, strategy[a] * reach_prob);
@@ -93,7 +90,7 @@ pub fn traverse(
             v[a] = traverse(
                 &next_state, table, abstraction, evaluator,
                 rng, global_iteration, traverser,
-                reach_prob * strategy[a],  // <--- CRITICAL FIX: multiply by action probability
+                reach_prob * strategy[a],
                 opponent_reach,
                 deck, deck_idx,
             );
@@ -103,13 +100,10 @@ pub fn traverse(
 
         for a in 0..K {
             let delta = v[a] - v_sigma;
-            let cur = table.get_regret(infoset_hash, a);
-            let new_regret = dcfr::update_regret(cur, global_iteration, delta);
-            table.set_regret(infoset_hash, a, new_regret);
+            table.apply_regret_update(infoset_hash, a, global_iteration, delta);
         }
         v_sigma
     } else {
-        // Opponent node: sample an abstract action using allocation-free loop
         let r = rng.random::<f32>();
         let mut acc = 0.0;
         let mut sampled_abstract = K - 1;
@@ -142,7 +136,7 @@ fn abstract_action_index(kind: &ActionKind, state: &GameState) -> Option<usize> 
             let pot = state.pot.max(1.0);
             let fraction = amount / pot;
             if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
-                Some(5) // all-in
+                Some(5)
             } else if fraction < 0.5 {
                 Some(2)
             } else if fraction < 1.0 {

@@ -39,6 +39,9 @@ struct Cli {
 
     #[arg(long)]
     river_table: Option<PathBuf>,
+    #[arg(long)]
+    flop_buckets: Option<PathBuf>,
+
 
     #[arg(long, default_value = "hand_ranks.bin")]
     rank_table: PathBuf,
@@ -97,6 +100,11 @@ fn main() {
         abstraction.init_table(2, path.to_str().unwrap())
             .expect("Failed to load turn table");
     }
+    if let Some(path) = &cli.flop_buckets {
+        abstraction.load_flop_buckets(path.to_str().unwrap())
+            .expect("Failed to load flop buckets");
+    }
+
     if let Some(path) = &cli.river_table {
         abstraction.init_table(3, path.to_str().unwrap())
             .expect("Failed to load river table");
