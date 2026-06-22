@@ -1,26 +1,30 @@
 use pkr_contracts::Evaluator;
 use rand::rng;
 use rand::seq::SliceRandom;
-use std::env;
+use std::sync::OnceLock;
 
-/// Number of Monte Carlo iterations for EHS calculation.
-/// Can be overridden by setting `EHS_SAMPLES` env var.
-fn get_num_samples() -> usize {
-    env::var("EHS_SAMPLES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1000)
+/// Returns the configured EHS sample count, cached after first read.
+fn num_samples() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("EHS_SAMPLES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000)
+    })
 }
 
-/// Calculates Expected Hand Strength (EHS) and EHS² for a given situation.
+/// Calculates Expected Hand Strength (EHS) and EHS².
+/// Uses stack arrays and partial shuffling to avoid allocations.
 pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f32, f32) {
     assert_eq!(hole.len(), 2, "exactly 2 hole cards required");
     assert!(board.len() <= 5, "board cannot exceed 5 cards");
-    let needed_board_cards = 5 - board.len();
-    let total_cards_needed = 2 + needed_board_cards;
+    let needed_board = 5 - board.len();
+    let total_draw = 2 + needed_board; // 2 opponent cards + board completion
 
-    let samples = get_num_samples();
+    let samples = num_samples();
 
+    // Working arrays on the stack (max 7 cards needed)
     let mut remaining: Vec<u8> = (0..52u8)
         .filter(|c| !hole.contains(c) && !board.contains(c))
         .collect();
@@ -29,17 +33,20 @@ pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f
     let mut sum_equity: f64 = 0.0;
     let mut sum_sq: f64 = 0.0;
 
+    // Pre-fill full_board with known board cards
+    let mut full_board_buf = [0u8; 5];
+    full_board_buf[..board.len()].copy_from_slice(board);
+
     for _ in 0..samples {
-        remaining.shuffle(&mut rng);
-        let mut draw = remaining.iter().take(total_cards_needed);
-        let opp_hole: Vec<u8> = draw.by_ref().take(2).cloned().collect();
-        let board_completion: Vec<u8> = draw.take(needed_board_cards).cloned().collect();
+        // Partial shuffle: only shuffle the first `total_draw` elements
+        remaining.partial_shuffle(&mut rng, total_draw);
 
-        let mut full_board = board.to_vec();
-        full_board.extend(board_completion);
+        let opp_hole = [remaining[0], remaining[1]];
+        let board_fill = &remaining[2..2 + needed_board];
+        full_board_buf[board.len()..].copy_from_slice(board_fill);
 
-        let hero_rank = evaluator.evaluate_hand(hole, &full_board);
-        let opp_rank = evaluator.evaluate_hand(&opp_hole, &full_board);
+        let hero_rank = evaluator.evaluate_hand(hole, &full_board_buf);
+        let opp_rank = evaluator.evaluate_hand(&opp_hole, &full_board_buf);
 
         let equity = if hero_rank < opp_rank {
             1.0

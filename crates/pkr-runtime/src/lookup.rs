@@ -1,4 +1,3 @@
-// lookup.rs
 use crate::mmap::MmapReader;
 use pkr_contracts::{BlueprintProvider, SotaAdvice};
 
@@ -24,6 +23,19 @@ impl SolverHandle {
             self.mmap.fmph_header(),
             self.mmap.fmph_data(),
         );
+
+        // Verify key
+        let keys = self.mmap.keys_data();
+        let key_start = idx * 8;
+        if key_start + 8 > keys.len() {
+            return None;
+        }
+        let stored_key = u64::from_le_bytes(
+            keys[key_start..key_start + 8].try_into().ok()?
+        );
+        if stored_key != infoset_hash {
+            return None;
+        }
 
         let max_actions = fh.max_actions_k as usize;
         let cdf_start = idx * max_actions;
@@ -62,9 +74,9 @@ fn eval_mph(
     let seed2 = fmph_header.seed2;
 
     let bucket = hash_key(key, seed1) as usize % max_level_size;
-    let d = u32::from_le_bytes(fmph_data[bucket * 4..bucket * 4 + 4].try_into().unwrap()) as u64;
+    let d = u32::from_le_bytes(
+        fmph_data[bucket * 4..bucket * 4 + 4].try_into().unwrap()
+    ) as u64;
 
     (hash_key(key, seed2).wrapping_add(d) as usize) % num_keys
 }
-
-// mmap.rs remains structurally the same, just ensure FmphHeader size assertions are 40 bytes now.

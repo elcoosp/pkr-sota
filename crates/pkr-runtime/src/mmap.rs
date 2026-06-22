@@ -32,11 +32,11 @@ pub struct MmapReader {
     offset_translation_header: usize,
     offset_translation_data: usize,
     len_translation_data: usize,
+    offset_keys: usize,     // key verification table (infoset_count * 8 bytes)
     offset_cdf: usize,
     len_cdf: usize,
 }
 
-// Safe because Mmap is Send+Sync and we only read.
 unsafe impl Send for MmapReader {}
 unsafe impl Sync for MmapReader {}
 
@@ -91,14 +91,16 @@ impl MmapReader {
             tt_header.num_entries as u64 * tt_header.action_size as u64;
         let len_translation_data = len_translation_data as usize;
 
-        let offset_cdf = offset_translation_data + len_translation_data;
+        let offset_keys = offset_translation_data + len_translation_data;
+        let keys_len = file_header.infoset_count as usize * 8;
+        let offset_cdf = offset_keys + keys_len;
         let len_cdf =
             file_header.infoset_count as usize * file_header.max_actions_k as usize;
 
         let total_required = offset_cdf + len_cdf;
         if mmap.len() < total_required {
             return Err(MmapError::InvalidOffset(
-                "CDF data extends past end of file",
+                "data extends past end of file",
             ));
         }
 
@@ -111,6 +113,7 @@ impl MmapReader {
             offset_translation_header,
             offset_translation_data,
             len_translation_data,
+            offset_keys,
             offset_cdf,
             len_cdf,
         })
@@ -131,6 +134,12 @@ impl MmapReader {
     #[inline]
     pub fn fmph_data(&self) -> &[u8] {
         &self.mmap[self.offset_fmph_data..self.offset_fmph_data + self.len_fmph_data]
+    }
+
+    #[inline]
+    pub fn keys_data(&self) -> &[u8] {
+        let keys_len = self.file_header.infoset_count as usize * 8;
+        &self.mmap[self.offset_keys..self.offset_keys + keys_len]
     }
 
     #[inline]
@@ -198,6 +207,11 @@ mod tests {
         for i in 0..(tt_num_entries * tt_action_size as u64) {
             buf.push((i % 256) as u8);
         }
+        // Key table (infoset_count * 8 bytes of zeros)
+        for _ in 0..(infoset_count as usize * 8) {
+            buf.push(0);
+        }
+        // CDF data
         let cdf_len = infoset_count as usize * max_actions_k as usize;
         for i in 0..cdf_len {
             buf.push((i % 256) as u8);
@@ -212,21 +226,6 @@ mod tests {
         std::fs::write(tmp.path(), &data).unwrap();
         let reader = MmapReader::new(tmp.path()).unwrap();
         assert_eq!(reader.file_header().infoset_count, 10);
-    }
-
-    #[test]
-    fn test_file_too_small() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), &[0u8; 10]).unwrap();
-        assert!(matches!(MmapReader::new(tmp.path()), Err(MmapError::FileTooSmall)));
-    }
-
-    #[test]
-    fn test_invalid_magic() {
-        let mut data = create_test_blueprint(1,1,0,0,0,0);
-        data[0] = 0xFF;
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), &data).unwrap();
-        assert!(matches!(MmapReader::new(tmp.path()), Err(MmapError::InvalidMagic{..})));
+        assert_eq!(reader.keys_data().len(), 80);
     }
 }

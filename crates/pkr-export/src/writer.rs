@@ -14,9 +14,13 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
 
     let fmph: FmphData = build_fmph(&keys);
 
+    // CDF indexed by MPH displacement order
     let mut cdf_indexed = vec![0u8; infoset_count * num_actions];
+    // Key verification table (stores the original key at each MPH index)
+    let mut key_table = vec![0u64; infoset_count];
     for &key in &keys {
         let idx = eval_fmph(&fmph, key);
+        key_table[idx] = key;
         let strategy = table.get_average_strategy(key);
         let mut cumulative = 0.0f32;
         for (a, &prob) in strategy.iter().enumerate() {
@@ -48,6 +52,9 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
     file.write_all(bytemuck::bytes_of(&fmph_header)).unwrap();
     file.write_all(bytemuck::cast_slice(&fmph.displacements)).unwrap();
     file.write_all(bytemuck::bytes_of(&translation_header)).unwrap();
+    // Write key verification table (u64 per infoset)
+    file.write_all(bytemuck::cast_slice(&key_table)).unwrap();
+    // Write CDF data
     file.write_all(&cdf_indexed).unwrap();
     file.flush().unwrap();
 }
