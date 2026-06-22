@@ -7,20 +7,12 @@ pub struct CompactRegretTable {
 }
 
 impl CompactRegretTable {
-    pub fn new(_capacity: usize, num_actions: usize) -> Self {
+    pub fn new(num_actions: usize) -> Self {
         Self {
             num_actions,
             regrets: HashMap::new(),
             strategy_sum: HashMap::new(),
         }
-    }
-
-    pub fn add_regret(&mut self, infoset_hash: u64, action_idx: usize, delta: f32) {
-        let entry = self
-            .regrets
-            .entry(infoset_hash)
-            .or_insert_with(|| vec![0.0; self.num_actions]);
-        entry[action_idx] += delta;
     }
 
     pub fn set_regret(&mut self, infoset_hash: u64, action_idx: usize, val: f32) {
@@ -70,9 +62,7 @@ impl CompactRegretTable {
     pub fn num_actions(&self) -> usize {
         self.num_actions
     }
-    pub fn capacity(&self) -> usize {
-        self.regrets.len()
-    }
+
     pub fn get_keys(&self) -> Vec<u64> {
         self.strategy_sum.keys().copied().collect()
     }
