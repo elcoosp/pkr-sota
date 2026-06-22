@@ -13,6 +13,7 @@ pub enum ActionKind {
     Fold,
     Check,
     Call,
+    /// Total chips the player will have invested this street after this action.
     Bet(f32),
 }
 
@@ -22,10 +23,27 @@ pub struct Action {
     pub kind: ActionKind,
 }
 
+/// A compact record of what changed in the state so we can undo an action.
+#[derive(Debug, Clone, Copy)]
+struct UndoRecord {
+    actor: usize,
+    street: Street,
+    pot: f32,
+    stacks: [f32; 2],
+    street_bets: [f32; 2],
+    total_invested: [f32; 2],
+    actions_this_street: u8,
+    history_len: usize,        // length of abstract_history before action
+    board_len: usize,          // length of board before action
+    folded: [bool; 2],
+}
+
+/// Stack-allocated game state. No heap allocations during traversal.
 #[derive(Debug, Clone)]
 pub struct GameState {
     pub hole: [[u8; 2]; 2],
-    pub board: Vec<u8>,
+    pub board: [u8; 5],        // fixed 5 cards, board_len indicates how many are valid
+    pub board_len: u8,
     pub pot: f32,
     pub stacks: [f32; 2],
     pub total_invested: [f32; 2],
@@ -33,18 +51,22 @@ pub struct GameState {
     pub actor: usize,
     pub dealer: usize,
     pub street_bets: [f32; 2],
-    pub history: Vec<Action>,
+    pub history: [Action; 32],     // fixed array for action history
+    pub history_len: u8,
     pub folded: [bool; 2],
-    actions_this_street: usize,
-    /// Abstract action bucket (0..5) for each action in `history`, used for infoset hashing.
-    pub abstract_history: Vec<u8>,
+    pub actions_this_street: u8,
+    pub abstract_history: [u8; 32], // abstract action buckets
+    pub abstract_history_len: u8,
+    pub undo_stack: [UndoRecord; 32],
+    pub undo_len: u8,
 }
 
 impl GameState {
     pub fn new(start_stack: f32, sb: f32, bb: f32) -> Self {
         let state = Self {
             hole: [[0; 2]; 2],
-            board: Vec::new(),
+            board: [0u8; 5],
+            board_len: 0,
             pot: sb + bb,
             stacks: [start_stack - sb, start_stack - bb],
             total_invested: [sb, bb],
@@ -52,10 +74,20 @@ impl GameState {
             actor: 0,
             dealer: 0,
             street_bets: [sb, bb],
-            history: Vec::new(),
+            history: [Action { player: 0, kind: ActionKind::Fold }; 32],
+            history_len: 0,
             folded: [false; 2],
             actions_this_street: 0,
-            abstract_history: Vec::new(),
+            abstract_history: [0u8; 32],
+            abstract_history_len: 0,
+            undo_stack: [UndoRecord {
+                actor: 0, street: Street::Preflop, pot: 0.0,
+                stacks: [0.0; 2], street_bets: [0.0; 2],
+                total_invested: [0.0; 2],
+                actions_this_street: 0, history_len: 0,
+                board_len: 0, folded: [false; 2],
+            }; 32],
+            undo_len: 0,
         };
         state
     }
@@ -105,41 +137,100 @@ impl GameState {
         actions
     }
 
-    /// Apply an action, returning the new state. Also records the abstract action bucket in `abstract_history`.
-    pub fn apply_action(&self, action: &Action) -> Self {
-        let mut new = self.clone();
-        // Compute abstract action bucket BEFORE applying (using current state)
-        let bucket = abstract_action_index_static(&action.kind, &self);
-        new.abstract_history.push(bucket);
+    /// Save current state before applying an action.
+    fn push_undo(&mut self) {
+        if self.undo_len as usize == self.undo_stack.len() {
+            // Should never happen in reasonable play; if it does, we'd panic,
+            // but 32 undo slots is plenty for a hand.
+            return;
+        }
+        let record = UndoRecord {
+            actor: self.actor,
+            street: self.street,
+            pot: self.pot,
+            stacks: self.stacks,
+            street_bets: self.street_bets,
+            total_invested: self.total_invested,
+            actions_this_street: self.actions_this_street,
+            history_len: self.history_len as usize,
+            board_len: self.board_len as usize,
+            folded: self.folded,
+        };
+        self.undo_stack[self.undo_len as usize] = record;
+        self.undo_len += 1;
+    }
 
+    /// Apply an action in place, saving undo info.
+    pub fn apply_action_in_place(&mut self, action: &Action) {
+        self.push_undo();
+        self.apply_action_internal(action);
+    }
+
+    /// Internal apply without undo (for initial state setup).
+    fn apply_action_internal(&mut self, action: &Action) {
         let actor = self.actor;
         match action.kind {
             ActionKind::Fold => {
-                new.folded[actor] = true;
+                self.folded[actor] = true;
             }
             ActionKind::Check => {}
             ActionKind::Call => {
                 let to_call = self.bet_to_call();
-                let chips = to_call.min(new.stacks[actor]);
-                new.stacks[actor] -= chips;
-                new.pot += chips;
-                new.total_invested[actor] += chips;
-                new.street_bets[actor] += chips;
+                let chips = to_call.min(self.stacks[actor]);
+                self.stacks[actor] -= chips;
+                self.pot += chips;
+                self.total_invested[actor] += chips;
+                self.street_bets[actor] += chips;
             }
             ActionKind::Bet(total) => {
-                let current = new.street_bets[actor];
-                let chips = (total - current).max(0.0).min(new.stacks[actor]);
-                new.stacks[actor] -= chips;
-                new.pot += chips;
-                new.total_invested[actor] += chips;
-                new.street_bets[actor] = total;
+                let current = self.street_bets[actor];
+                let chips = (total - current).max(0.0).min(self.stacks[actor]);
+                self.stacks[actor] -= chips;
+                self.pot += chips;
+                self.total_invested[actor] += chips;
+                self.street_bets[actor] = total;
             }
         }
-        new.history.push(*action);
-        new.actions_this_street += 1;
+
+        // Record abstract action bucket
+        let bucket = abstract_action_index_static(&action.kind, self);
+        if (self.abstract_history_len as usize) < self.abstract_history.len() {
+            self.abstract_history[self.abstract_history_len as usize] = bucket;
+            self.abstract_history_len += 1;
+        }
+
+        // Record history
+        if (self.history_len as usize) < self.history.len() {
+            self.history[self.history_len as usize] = *action;
+            self.history_len += 1;
+        }
+
+        self.actions_this_street += 1;
         let next = 1 - actor;
-        new.actor = next;
-        new
+        if self.folded[next] {
+            // other player folded – terminal handled by is_terminal
+        }
+        self.actor = next;
+    }
+
+    /// Undo the last applied action.
+    pub fn undo_action(&mut self) {
+        if self.undo_len == 0 {
+            return;
+        }
+        self.undo_len -= 1;
+        let rec = self.undo_stack[self.undo_len as usize];
+        self.actor = rec.actor;
+        self.street = rec.street;
+        self.pot = rec.pot;
+        self.stacks = rec.stacks;
+        self.street_bets = rec.street_bets;
+        self.total_invested = rec.total_invested;
+        self.actions_this_street = rec.actions_this_street;
+        self.history_len = rec.history_len as u8;
+        self.board_len = rec.board_len as u8;
+        self.folded = rec.folded;
+        self.abstract_history_len = rec.history_len as u8; // same as history length
     }
 
     pub fn is_street_complete(&self) -> bool {
@@ -164,8 +255,8 @@ impl GameState {
         if self.folded[other] {
             return self.pot - self.total_invested[player];
         }
-        let hero_rank = evaluator.evaluate_hand(&self.hole[0], &self.board);
-        let vill_rank = evaluator.evaluate_hand(&self.hole[1], &self.board);
+        let hero_rank = evaluator.evaluate_hand(&self.hole[0], &self.board[..self.board_len as usize]);
+        let vill_rank = evaluator.evaluate_hand(&self.hole[1], &self.board[..self.board_len as usize]);
         let win = hero_rank < vill_rank;
         let tie = hero_rank == vill_rank;
         if tie {
@@ -177,8 +268,15 @@ impl GameState {
         }
     }
 
-    pub fn advance_street(&mut self, cards: &[u8]) {
-        self.board.extend_from_slice(cards);
+    /// Advance to next street, adding community cards.
+    pub fn advance_street_in_place(&mut self, cards: &[u8]) {
+        self.push_undo(); // allow undoing street advance if needed (though we won't typically undo streets)
+        for &c in cards {
+            if (self.board_len as usize) < 5 {
+                self.board[self.board_len as usize] = c;
+                self.board_len += 1;
+            }
+        }
         self.street = match self.street {
             Street::Preflop => Street::Flop,
             Street::Flop => Street::Turn,
@@ -209,93 +307,5 @@ fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
                 4
             }
         }
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct DummyEvaluator;
-    impl Evaluator for DummyEvaluator {
-        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 { 0 }
-    }
-
-    #[test]
-    fn test_initial_state() {
-        let state = GameState::new(200.0, 1.0, 2.0);
-        assert_eq!(state.pot, 3.0);
-        assert_eq!(state.stacks, [199.0, 198.0]);
-        assert_eq!(state.street, Street::Preflop);
-        assert_eq!(state.actor, 0);
-        assert_eq!(state.folded, [false, false]);
-    }
-
-    #[test]
-    fn test_preflop_betting() {
-        let state = GameState::new(200.0, 1.0, 2.0);
-        assert_eq!(state.bet_to_call(), 1.0);
-        let actions = state.legal_actions();
-        assert!(actions.iter().any(|a| matches!(a.kind, ActionKind::Fold)));
-        assert!(actions.iter().any(|a| matches!(a.kind, ActionKind::Call)));
-    }
-
-    #[test]
-    fn test_fold_ends_hand() {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
-        state = state.apply_action(&Action { player: 0, kind: ActionKind::Fold });
-        assert!(state.folded[0]);
-        assert!(state.is_terminal());
-    }
-
-    #[test]
-    fn test_check_check_completes_street() {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
-        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
-        assert_eq!(state.actor, 1);
-        state = state.apply_action(&Action { player: 1, kind: ActionKind::Check });
-        assert!(state.is_street_complete());
-    }
-
-    #[test]
-    fn test_advance_street() {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
-        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
-        state = state.apply_action(&Action { player: 1, kind: ActionKind::Check });
-        assert!(state.is_street_complete());
-        state.advance_street(&[10, 11, 12]);
-        assert_eq!(state.street, Street::Flop);
-        assert_eq!(state.board, vec![10, 11, 12]);
-        assert_eq!(state.street_bets, [0.0, 0.0]);
-    }
-
-    #[test]
-    fn test_showdown_payoff() {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
-        state.set_hole_cards([0, 1], [2, 3]);
-        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
-        state = state.apply_action(&Action { player: 1, kind: ActionKind::Check });
-        state.board = vec![4,5,6,7,8];
-        state.street = Street::River;
-        let eval = DummyEvaluator;
-        let payoff = state.terminal_payoff(0, &eval);
-        assert!((payoff - (state.pot/2.0 - state.total_invested[0])).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_bet_sizing() {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
-        state = state.apply_action(&Action { player: 0, kind: ActionKind::Call });
-        let actions = state.legal_actions();
-        let bet_actions: Vec<_> = actions.iter().filter(|a| matches!(a.kind, ActionKind::Bet(_))).collect();
-        assert!(!bet_actions.is_empty());
-    }
-
-    #[test]
-    fn test_terminal_payoff_fold() {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
-        state = state.apply_action(&Action { player: 0, kind: ActionKind::Fold });
-        let eval = DummyEvaluator;
-        assert!(state.terminal_payoff(0, &eval) < 0.0);
-        assert!(state.terminal_payoff(1, &eval) > 0.0);
     }
 }

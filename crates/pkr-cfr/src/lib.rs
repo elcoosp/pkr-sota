@@ -51,15 +51,16 @@ impl Trainer {
                 let deck_slice = &deck[4..];
                 let mut deck_idx = 0usize;
                 traverse(
-                    &state, &table, &*abstraction, &*evaluator,
+                    &mut state, &table, &*abstraction, &*evaluator,
                     &mut rng, global_iter, 0, 1.0, 1.0,
                     deck_slice, &mut deck_idx, &mut thread_batch,
                 );
+                // Reset state for player 1
                 let mut state2 = GameState::new(200.0, 1.0, 2.0);
                 state2.set_hole_cards(hero, villain);
                 let mut deck_idx2 = 0usize;
                 traverse(
-                    &state2, &table, &*abstraction, &*evaluator,
+                    &mut state2, &table, &*abstraction, &*evaluator,
                     &mut rng, global_iter, 1, 1.0, 1.0,
                     deck_slice, &mut deck_idx2, &mut thread_batch,
                 );
