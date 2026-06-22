@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ================== CONFIGURABLE PARAMETERS ==================
-THREADS=8                  # number of CPU threads (M1 has 8 cores)
+THREADS=4                  # number of CPU threads (M1 has 8 cores)
 ITERATIONS=50000           # CFR training iterations (30‑min budget)
 EHS_SAMPLES=100            # Monte Carlo samples for EHS (100=fast, 1000=quality)
 CENTROID_SAMPLES=5000      # samples for k‑means centroids

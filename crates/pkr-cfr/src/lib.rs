@@ -1,4 +1,3 @@
-#![allow(unexpected_cfgs)]
 pub mod dcfr;
 pub mod table;
 pub mod traversal;

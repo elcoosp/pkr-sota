@@ -13,6 +13,7 @@ pkr-core = { workspace = true }
 pkr-eval = { workspace = true }
 rayon = { workspace = true }
 rand = { workspace = true }
+rand_xoshiro = { workspace = true }
 tracing = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 bincode = "1.3"
