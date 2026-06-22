@@ -39,7 +39,7 @@ impl CompactRegretTable {
             let mut sum = 0.0f32;
             for i in 0..K {
                 let raw = r[i].regret.load(Ordering::Relaxed);
-                let val = (raw as f32).max(0.0);
+                let val = ((raw as f32) / SCALE).max(0.0);
                 out[i] = val;
                 sum += val;
             }
