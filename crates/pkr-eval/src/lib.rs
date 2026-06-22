@@ -1,228 +1,209 @@
 use pkr_contracts::Evaluator;
 
+#[inline]
+fn card_suit_rank(c: u8) -> (usize, usize) {
+    let suit = (c / 13) as usize;
+    let rank = (c % 13) as usize;
+    (suit, rank)
+}
+
+fn eval_5(hand: &[u8; 5]) -> u32 {
+    let mut rank_bits: u16 = 0;
+    let mut suit_counts = [0u8; 4];
+    let mut suit_ranks = [0u16; 4];
+    let mut rank_counts = [0u8; 13];
+    let mut ranks: [u8; 5] = [0; 5];
+
+    for (i, &c) in hand.iter().enumerate() {
+        if c == 255 {
+            continue;
+        }
+        let (s, r) = card_suit_rank(c);
+        suit_counts[s] += 1;
+        suit_ranks[s] |= 1 << r;
+        rank_counts[r] += 1;
+        rank_bits |= 1 << r;
+        ranks[i] = r as u8;
+    }
+
+    ranks.sort_unstable_by(|a, b| b.cmp(a));
+
+    let flush_suit = suit_counts.iter().position(|&c| c >= 5);
+
+    let mut straight_high = None;
+    let mask = rank_bits;
+    if mask >= 0x1F {
+        let mut cnt = 0u8;
+        for r in (0..13).rev() {
+            if (mask & (1 << r)) != 0 {
+                cnt += 1;
+                if cnt >= 5 {
+                    straight_high = Some(r as i8 + 4);
+                    break;
+                }
+            } else {
+                cnt = 0;
+            }
+        }
+    }
+    if straight_high.is_none() && (mask & 0x100F) == 0x100F {
+        straight_high = Some(3);
+    }
+
+    if let Some(fs) = flush_suit {
+        let fmask = suit_ranks[fs];
+        let mut sf_high = None;
+        let mut cnt = 0u8;
+        for r in (0..13).rev() {
+            if (fmask & (1 << r)) != 0 {
+                cnt += 1;
+                if cnt >= 5 {
+                    sf_high = Some(r as i8 + 4);
+                    break;
+                }
+            } else {
+                cnt = 0;
+            }
+        }
+        if sf_high.is_none() && (fmask & 0x100F) == 0x100F {
+            sf_high = Some(3);
+        }
+        if let Some(high) = sf_high {
+            let raw = (8u32 << 20) | ((high as u32) << 16);
+            return !raw;
+        }
+    }
+
+    if let Some(q) = rank_counts.iter().position(|&c| c == 4) {
+        let quad_rank = q as u8;
+        let kicker = ranks.iter().find(|&&r| r as usize != q).copied().unwrap_or(0);
+        let raw = (7u32 << 20) | ((quad_rank as u32) << 16) | ((kicker as u32) << 12);
+        return !raw;
+    }
+
+    let trips = rank_counts.iter().position(|&c| c == 3);
+    let pair = rank_counts.iter().position(|&c| c == 2);
+    if trips.is_some() && pair.is_some() {
+        let raw = (6u32 << 20) | ((trips.unwrap() as u32) << 16) | ((pair.unwrap() as u32) << 12);
+        return !raw;
+    }
+
+    if let Some(fs) = flush_suit {
+        let mut flush_ranks = [0u8; 5];
+        let fmask = suit_ranks[fs];
+        let mut idx = 0;
+        for r in (0..13).rev() {
+            if (fmask & (1 << r)) != 0 {
+                flush_ranks[idx] = r as u8;
+                idx += 1;
+                if idx == 5 { break; }
+            }
+        }
+        let raw = (5u32 << 20)
+            | ((flush_ranks[0] as u32) << 16)
+            | ((flush_ranks[1] as u32) << 12)
+            | ((flush_ranks[2] as u32) << 8)
+            | ((flush_ranks[3] as u32) << 4)
+            | (flush_ranks[4] as u32);
+        return !raw;
+    }
+
+    if let Some(high) = straight_high {
+        let raw = (4u32 << 20) | ((high as u32) << 16);
+        return !raw;
+    }
+
+    if let Some(t) = trips {
+        let mut kickers = [0u8; 2];
+        let mut ki = 0;
+        for &r in ranks.iter() {
+            if r as usize != t {
+                kickers[ki] = r;
+                ki += 1;
+                if ki == 2 { break; }
+            }
+        }
+        let raw = (3u32 << 20) | ((t as u32) << 16) | ((kickers[0] as u32) << 12) | ((kickers[1] as u32) << 8);
+        return !raw;
+    }
+
+    let pairs: Vec<usize> = rank_counts.iter().enumerate().filter(|&(_, &c)| c == 2).map(|(i,_)| i).collect();
+    if pairs.len() >= 2 {
+        let (p1, p2) = (pairs[0] as u8, pairs[1] as u8);
+        let kicker = ranks.iter().find(|&&r| r != p1 && r != p2).copied().unwrap_or(0);
+        let raw = (2u32 << 20) | ((p1 as u32) << 16) | ((p2 as u32) << 12) | ((kicker as u32) << 8);
+        return !raw;
+    }
+
+    if let Some(&p) = pairs.get(0) {
+        let mut kickers = [0u8; 3];
+        let mut ki = 0;
+        for &r in ranks.iter() {
+            if r as usize != p {
+                kickers[ki] = r;
+                ki += 1;
+                if ki == 3 { break; }
+            }
+        }
+        let raw = (1u32 << 20) | ((p as u32) << 16) | ((kickers[0] as u32) << 12) | ((kickers[1] as u32) << 8) | ((kickers[2] as u32) << 4);
+        return !raw;
+    }
+
+    let raw = (0u32 << 20)
+        | ((ranks[0] as u32) << 16)
+        | ((ranks[1] as u32) << 12)
+        | ((ranks[2] as u32) << 8)
+        | ((ranks[3] as u32) << 4)
+        | (ranks[4] as u32);
+    !raw
+}
+
+const COMBOS_7_5: [[u8; 5]; 21] = [
+    [0,1,2,3,4], [0,1,2,3,5], [0,1,2,3,6],
+    [0,1,2,4,5], [0,1,2,4,6], [0,1,2,5,6],
+    [0,1,3,4,5], [0,1,3,4,6], [0,1,3,5,6],
+    [0,1,4,5,6], [0,2,3,4,5], [0,2,3,4,6],
+    [0,2,3,5,6], [0,2,4,5,6], [0,3,4,5,6],
+    [1,2,3,4,5], [1,2,3,4,6], [1,2,3,5,6],
+    [1,2,4,5,6], [1,3,4,5,6], [2,3,4,5,6],
+];
+
 pub struct NlheEvaluator;
 
 impl Evaluator for NlheEvaluator {
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
+        let total = hole.len() + board.len();
+        assert!(total >= 5, "need at least 5 cards to evaluate");
+        assert!(total <= 7, "max 7 cards");
+
         let mut cards = [255u8; 7];
         let mut idx = 0;
-        for &c in hole {
-            if idx < 7 {
-                cards[idx] = c;
-                idx += 1;
-            }
+        for &c in hole.iter().chain(board) {
+            cards[idx] = c;
+            idx += 1;
         }
-        for &c in board {
-            if idx < 7 {
-                cards[idx] = c;
-                idx += 1;
-            }
-        }
-        eval_7_cards(&cards)
-    }
-}
 
-#[inline]
-fn eval_7_cards(cards: &[u8; 7]) -> u32 {
-    let mut rank_counts = [0u8; 13];
-    let mut suit_counts = [0u8; 4];
-    let mut suit_ranks = [0u16; 4];
-    let mut rank_mask = 0u16;
-
-    for &c in cards.iter() {
-        if c == 255 {
-            continue;
-        }
-        let suit = (c / 13) as usize;
-        let rank = (c % 13) as usize;
-        rank_counts[rank] += 1;
-        suit_counts[suit] += 1;
-        suit_ranks[suit] |= 1 << rank;
-        rank_mask |= 1 << rank;
-    }
-
-    let mut flush_suit = None;
-    for s in 0..4 {
-        if suit_counts[s] >= 5 {
-            flush_suit = Some(s);
-            break;
-        }
-    }
-
-    let mut straight_high = -1i32;
-    let mut count = 0;
-    for r in (0..13i32).rev() {
-        if (rank_mask & (1 << r)) != 0 {
-            count += 1;
-            if count >= 5 {
-                straight_high = r;
-                break;
-            }
+        let mut best = u32::MAX;
+        let combos = if total == 5 {
+            &COMBOS_7_5[..1]
+        } else if total == 6 {
+            &COMBOS_7_5[..6]
         } else {
-            count = 0;
-        }
-    }
-    if straight_high == -1 {
-        if (rank_mask & (1 << 12)) != 0 && (rank_mask & 0xF) == 0xF {
-            straight_high = 3;
-        } // Wheel
-    }
+            &COMBOS_7_5[..21]
+        };
 
-    if let Some(fs) = flush_suit {
-        let fr = suit_ranks[fs];
-        let mut sf_high = -1i32;
-        let mut c = 0;
-        for r in (0..13i32).rev() {
-            if (fr & (1 << r)) != 0 {
-                c += 1;
-                if c >= 5 {
-                    sf_high = r;
-                    break;
-                }
-            } else {
-                c = 0;
+        for combo in combos {
+            let mut hand = [0u8; 5];
+            for (i, &ci) in combo.iter().enumerate() {
+                hand[i] = cards[ci as usize];
+            }
+            let rank = eval_5(&hand);
+            if rank < best {
+                best = rank;
             }
         }
-        if sf_high == -1 {
-            if (fr & (1 << 12)) != 0 && (fr & 0xF) == 0xF {
-                sf_high = 3;
-            }
-        }
-        if sf_high != -1 {
-            return rank_value(8, sf_high as u8, 0, 0, 0, 0);
-        }
+        best
     }
-
-    let mut quads = -1i32;
-    let mut k1 = -1i32;
-    for r in (0..13i32).rev() {
-        if rank_counts[r as usize] == 4 {
-            quads = r;
-        } else if rank_counts[r as usize] > 0 && k1 == -1 {
-            k1 = r;
-        }
-    }
-    if quads != -1 {
-        return rank_value(7, quads as u8, k1 as u8, 0, 0, 0);
-    }
-
-    let mut trips = -1i32;
-    let mut pair = -1i32;
-    for r in (0..13i32).rev() {
-        if rank_counts[r as usize] == 3 {
-            if trips == -1 {
-                trips = r;
-            } else if pair == -1 {
-                pair = r;
-            }
-        } else if rank_counts[r as usize] == 2 {
-            if pair == -1 {
-                pair = r;
-            }
-        }
-    }
-    if trips != -1 && pair != -1 {
-        return rank_value(6, trips as u8, pair as u8, 0, 0, 0);
-    }
-
-    if let Some(fs) = flush_suit {
-        let fr = suit_ranks[fs];
-        let mut kickers = [0u8; 5];
-        let mut k_idx = 0;
-        for r in (0..13i32).rev() {
-            if (fr & (1 << r)) != 0 {
-                kickers[k_idx] = r as u8;
-                k_idx += 1;
-                if k_idx == 5 {
-                    break;
-                }
-            }
-        }
-        return rank_value(
-            5, kickers[0], kickers[1], kickers[2], kickers[3], kickers[4],
-        );
-    }
-
-    if straight_high != -1 {
-        return rank_value(4, straight_high as u8, 0, 0, 0, 0);
-    }
-
-    if trips != -1 {
-        let mut kickers = [0u8; 2];
-        let mut k_idx = 0;
-        for r in (0..13i32).rev() {
-            if rank_counts[r as usize] > 0 && r != trips {
-                kickers[k_idx] = r as u8;
-                k_idx += 1;
-                if k_idx == 2 {
-                    break;
-                }
-            }
-        }
-        return rank_value(3, trips as u8, kickers[0], kickers[1], 0, 0);
-    }
-
-    let mut pairs = [-1i32; 2];
-    let mut p_idx = 0;
-    for r in (0..13i32).rev() {
-        if rank_counts[r as usize] == 2 {
-            pairs[p_idx] = r;
-            p_idx += 1;
-            if p_idx == 2 {
-                break;
-            }
-        }
-    }
-    if pairs[0] != -1 && pairs[1] != -1 {
-        let mut k = 0u8;
-        for r in (0..13i32).rev() {
-            if rank_counts[r as usize] > 0 && r != pairs[0] && r != pairs[1] {
-                k = r as u8;
-                break;
-            }
-        }
-        return rank_value(2, pairs[0] as u8, pairs[1] as u8, k, 0, 0);
-    }
-
-    if pairs[0] != -1 {
-        let mut kickers = [0u8; 3];
-        let mut k_idx = 0;
-        for r in (0..13i32).rev() {
-            if rank_counts[r as usize] > 0 && r != pairs[0] {
-                kickers[k_idx] = r as u8;
-                k_idx += 1;
-                if k_idx == 3 {
-                    break;
-                }
-            }
-        }
-        return rank_value(1, pairs[0] as u8, kickers[0], kickers[1], kickers[2], 0);
-    }
-
-    let mut kickers = [0u8; 5];
-    let mut k_idx = 0;
-    for r in (0..13i32).rev() {
-        if rank_counts[r as usize] > 0 {
-            kickers[k_idx] = r as u8;
-            k_idx += 1;
-            if k_idx == 5 {
-                break;
-            }
-        }
-    }
-    rank_value(
-        0, kickers[0], kickers[1], kickers[2], kickers[3], kickers[4],
-    )
-}
-
-#[inline]
-fn rank_value(cat: u8, k1: u8, k2: u8, k3: u8, k4: u8, k5: u8) -> u32 {
-    ((cat as u32) << 20)
-        | ((k1 as u32) << 16)
-        | ((k2 as u32) << 12)
-        | ((k3 as u32) << 8)
-        | ((k4 as u32) << 4)
-        | (k5 as u32)
 }
 
 #[cfg(test)]
