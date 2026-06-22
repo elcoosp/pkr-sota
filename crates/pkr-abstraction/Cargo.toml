@@ -3,11 +3,16 @@ name = "pkr-abstraction"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "pkr-abstraction-precompute"
+path = "src/bin/precompute.rs"
+
 [dependencies]
 pkr-contracts = { workspace = true }
 pkr-core = { workspace = true }
 pkr-eval = { workspace = true }
-amx-rs = "0.0.3" # Apple Silicon AMX intrinsics
 rayon = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"

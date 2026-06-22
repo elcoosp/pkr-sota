@@ -1,5 +1,5 @@
 use clap::Parser;
-use pkr_abstraction::KMeansAbstraction;
+use pkr_abstraction::{KMeansAbstraction, load_centroids};
 use pkr_cfr::Trainer;
 use pkr_core::state::GameState;
 use pkr_eval::NlheEvaluator;
@@ -24,15 +24,18 @@ struct Cli {
 
     #[arg(long, default_value_t = 2.0)]
     bb: f32,
+
+    #[arg(long, default_value = "centroids.bin")]
+    centroids: PathBuf,
 }
 
 fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
-    let centroids = vec![(0.2, 0.04), (0.5, 0.25), (0.8, 0.64)];
-    let eval = Box::new(NlheEvaluator);
-    let abstraction = Box::new(KMeansAbstraction::new(centroids, eval));
+    let store = load_centroids(cli.centroids.to_str().unwrap())
+        .expect("Failed to load centroids");
+    let abstraction = Box::new(KMeansAbstraction::from_store(store));
     let num_actions = 4;
     let mut trainer = Trainer::new(abstraction, Box::new(NlheEvaluator), num_actions);
 
@@ -52,9 +55,6 @@ fn main() {
 
         let mut state = GameState::new(cli.stack, cli.sb, cli.bb);
         state.set_hole_cards(hero, villain);
-        // Preflop starts with SB to act (actor = dealer = 0)
-        // Blinds already posted
-
         let chance_cards: [Vec<u8>; 3] = [flop, turn, river];
         trainer.run_iteration(&state, &chance_cards, &mut rng);
     }

@@ -48,9 +48,11 @@ pub fn cluster_hands(features: Vec<(f32, f32)>, k: usize) -> Vec<u64> {
                 centroids
                     .iter()
                     .enumerate()
-                    .min_by(|&(_, &c1), &(_, &c2)| {
-                        distance(f, c1)
-                            .partial_cmp(&distance(f, c2))
+                    .min_by(|a, b| {
+                        let c1 = a.1;
+                        let c2 = b.1;
+                        distance(f, *c1)
+                            .partial_cmp(&distance(f, *c2))
                             .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .map(|(idx, _)| idx)

@@ -1,10 +1,3 @@
-#!/usr/bin/env bash
-set -uo pipefail
-COMPILE_OK=true
-INCOMPLETE=false
-
-echo "Rewriting precompute.rs with corrected RNG usage"
-cat > crates/pkr-abstraction/src/bin/precompute.rs << 'PRECOMP_FINAL_2yR8kL'
 use pkr_abstraction::{calculate_ehs, save_centroids, CentroidStore};
 use pkr_eval::NlheEvaluator;
 use rand::prelude::IndexedRandom;
@@ -94,26 +87,3 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
     }
     centroids
 }
-PRECOMP_FINAL_2yR8kL
-
-echo "Checking compilation"
-if ! cargo check --workspace 2>&1; then
-  echo "Compilation failed – will skip commit"
-  COMPILE_OK=false
-fi
-
-if [ "$INCOMPLETE" = true ] || [ "$COMPILE_OK" = false ]; then
-  echo "Skipping tests and commit due to errors"
-  exit 1
-fi
-
-echo "Running tests"
-cargo test -p pkr-abstraction -p pkr-cfr -p pkr-eval -p pkr-core
-if [ $? -eq 0 ]; then
-  echo "All tests passed. Committing."
-  git add -A
-  git commit -m "fix(precompute): correct RNG calls and remove deprecated API"
-else
-  echo "Tests failed. Fix errors then run the next script."
-  exit 1
-fi
