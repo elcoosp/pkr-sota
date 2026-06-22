@@ -12,7 +12,6 @@ use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 use std::sync::{Arc, OnceLock};
 use memmap2::Mmap;
 
-type BuildHasherType = BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CentroidStore {

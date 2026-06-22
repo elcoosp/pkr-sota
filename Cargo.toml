@@ -1,45 +1,47 @@
 [workspace]
-resolver = "3"
 members = [
     "crates/pkr-contracts",
     "crates/pkr-core",
+    "crates/pkr-cfr",
     "crates/pkr-eval",
     "crates/pkr-abstraction",
-    "crates/pkr-cfr",
     "crates/pkr-export",
     "crates/pkr-runtime",
     "binaries/pkr-trainer",
 ]
+resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
-authors = ["pkr-sota contributors"]
+edition = "2021"
+authors = ["pkr-sota"]
 
 [workspace.dependencies]
-# Internal crates
 pkr-contracts = { path = "crates/pkr-contracts" }
 pkr-core = { path = "crates/pkr-core" }
+pkr-cfr = { path = "crates/pkr-cfr" }
 pkr-eval = { path = "crates/pkr-eval" }
 pkr-abstraction = { path = "crates/pkr-abstraction" }
-pkr-cfr = { path = "crates/pkr-cfr" }
 pkr-export = { path = "crates/pkr-export" }
 pkr-runtime = { path = "crates/pkr-runtime" }
-
-# Core Serialization & Memory
-serde = { version = "1.0", features = ["derive"] }
-bytemuck = { version = "1.21", features = ["derive"] }
-memmap2 = "0.9"
-thiserror = "2.0"
-
-# Concurrency & Randomness (Crucial for CFR/AMX)
+serde = { version = "1", features = ["derive"] }
+bytemuck = { version = "1", features = ["derive"] }
+foldhash = "0.1"
+rand = "0.10"
 rayon = "1.10"
-rand = "0.10"  # Updated to latest 0.10.x
-
-# Logging & CLI
 tracing = "0.1"
+thiserror = "2"
+memmap2 = "0.9"
+clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4.5", features = ["derive"] }
 
-# Fast Hashing (For training-time maps before FMph export)
-foldhash = "0.2" # Updated to latest 0.2.x
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = true
+strip = "symbols"
+
+[profile.release.package."*"]
+opt-level = 3
