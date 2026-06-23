@@ -1,9 +1,9 @@
 pub mod dcfr;
-#[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod table;
 pub mod traversal;
 
+use crate::gpu::BatchItem;
 use crate::table::CompactRegretTable;
 use crate::traversal::traverse;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
@@ -36,10 +36,11 @@ impl Trainer {
         let abstraction = Arc::clone(&self.abstraction);
         let evaluator = Arc::clone(&self.evaluator);
 
-        // Run all threads in parallel using the same shared table
-        (0..rayon::current_num_threads())
+        // Each thread collects its own batch
+        let thread_batches: Vec<Vec<BatchItem>> = (0..rayon::current_num_threads())
             .into_par_iter()
-            .for_each(|_| {
+            .map(|_| {
+                let mut batch = Vec::with_capacity(10000);
                 let mut rng = rand::rng();
                 let mut deck: Vec<u8> = (0..52).collect();
                 deck.shuffle(&mut rng);
@@ -62,10 +63,10 @@ impl Trainer {
                     1.0,
                     deck_slice,
                     &mut deck_idx,
-                    0, // Initial depth = 0
+                    0,
+                    &mut batch,
                 );
 
-                // Reset for player 1
                 let mut state2 = GameState::new(200.0, 1.0, 2.0);
                 state2.set_hole_cards(hero, villain);
                 let mut deck_idx2 = 0usize;
@@ -81,9 +82,21 @@ impl Trainer {
                     1.0,
                     deck_slice,
                     &mut deck_idx2,
-                    0, // Initial depth = 0
+                    0,
+                    &mut batch,
                 );
-            });
+                batch
+            })
+            .collect();
+
+        // Merge all batches into one giant batch
+        let mut merged_batch = Vec::with_capacity(100000);
+        for tb in thread_batches {
+            merged_batch.extend(tb);
+        }
+
+        // Send exactly ONE dispatch to the GPU per iteration
+        table.flush_gpu_batch(&merged_batch);
     }
 
     pub fn get_table(&self) -> &CompactRegretTable {

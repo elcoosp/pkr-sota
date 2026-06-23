@@ -1,45 +1,62 @@
-use crate::dcfr;
+use crate::gpu::{BatchItem, GpuState};
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
 const K: usize = 6;
 pub(crate) const SCALE: f32 = 1000.0;
 
-// Align to 64 bytes to perfectly fit one M1 cache line.
-// This eliminates L2/L3 cache thrashing.
-#[repr(align(64))]
-struct InfosetNode {
-    regret: [AtomicI32; K],
-    momentum: [AtomicI32; K],
-    strategy_sum: [AtomicI32; K],
-}
-
-impl InfosetNode {
-    fn new() -> Self {
-        Self {
-            regret: [const { AtomicI32::new(0) }; K],
-            momentum: [const { AtomicI32::new(0) }; K],
-            strategy_sum: [const { AtomicI32::new(0) }; K],
-        }
-    }
-}
-
 pub struct CompactRegretTable {
-    map: DashMap<u64, Box<InfosetNode>>,
+    hash_to_idx: DashMap<u64, usize>,
+    cpu_regrets: Vec<AtomicI32>,
+    cpu_momentums: Vec<AtomicI32>,
+    strategy_sum: Vec<AtomicI32>,
+    next_idx: AtomicUsize,
+    capacity: usize,
+    gpu: GpuState,
 }
 
 impl CompactRegretTable {
     pub fn new() -> Self {
+        let capacity = 5_000_000;
+        let mut cpu_regrets = Vec::with_capacity(capacity * K);
+        let mut cpu_momentums = Vec::with_capacity(capacity * K);
+        let mut strategy_sum = Vec::with_capacity(capacity * K);
+
+        cpu_regrets.resize_with(capacity * K, || AtomicI32::new(0));
+        cpu_momentums.resize_with(capacity * K, || AtomicI32::new(0));
+        strategy_sum.resize_with(capacity * K, || AtomicI32::new(0));
+
+        let gpu = GpuState::new(capacity);
+
         Self {
-            map: DashMap::new(),
+            hash_to_idx: DashMap::new(),
+            cpu_regrets,
+            cpu_momentums,
+            strategy_sum,
+            next_idx: AtomicUsize::new(0),
+            capacity,
+            gpu,
         }
     }
 
+    pub(crate) fn get_or_create_idx(&self, hash: u64) -> usize {
+        let entry = self.hash_to_idx.entry(hash);
+        *entry.or_insert_with(|| {
+            let idx = self.next_idx.fetch_add(1, Ordering::Relaxed);
+            if idx >= self.capacity {
+                panic!("Flat table capacity exceeded");
+            }
+            idx
+        })
+    }
+
     pub fn get_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
-        if let Some(node) = self.map.get(&infoset_hash) {
+        if let Some(idx) = self.hash_to_idx.get(&infoset_hash) {
+            let base = *idx * K;
             let mut sum = 0.0f32;
             for i in 0..K {
-                let raw = node.regret[i].load(Ordering::Relaxed);
+                let raw = self.cpu_regrets[base + i].load(Ordering::Relaxed);
                 let val = ((raw as f32) / SCALE).max(0.0);
                 out[i] = val;
                 sum += val;
@@ -58,14 +75,15 @@ impl CompactRegretTable {
     }
 
     pub fn get_average_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
-        if let Some(node) = self.map.get(&infoset_hash) {
+        if let Some(idx) = self.hash_to_idx.get(&infoset_hash) {
+            let base = *idx * K;
             let sum: f32 = (0..K)
-                .map(|i| node.strategy_sum[i].load(Ordering::Relaxed) as f32)
+                .map(|i| self.strategy_sum[base + i].load(Ordering::Relaxed) as f32)
                 .sum();
             if sum > 0.0 {
                 let inv = 1.0 / sum;
                 for i in 0..K {
-                    out[i] = (node.strategy_sum[i].load(Ordering::Relaxed) as f32) * inv;
+                    out[i] = (self.strategy_sum[base + i].load(Ordering::Relaxed) as f32) * inv;
                 }
                 return;
             }
@@ -74,62 +92,70 @@ impl CompactRegretTable {
     }
 
     pub fn add_strategy_sum(&self, infoset_hash: u64, action_idx: usize, prob: f32) {
-        let node = self
-            .map
-            .entry(infoset_hash)
-            .or_insert_with(|| Box::new(InfosetNode::new()));
-        node.strategy_sum[action_idx].fetch_add((prob * SCALE) as i32, Ordering::Relaxed);
+        let idx = self.get_or_create_idx(infoset_hash);
+        let base = idx * K;
+        self.strategy_sum[base + action_idx].fetch_add((prob * SCALE) as i32, Ordering::Relaxed);
     }
 
-    pub fn apply_regret_batch(&self, batch: &[(u64, usize, u32, f32)]) {
-        for &(hash, action, iteration, delta) in batch {
-            let node = self
-                .map
-                .entry(hash)
-                .or_insert_with(|| Box::new(InfosetNode::new()));
-            let atom_reg = &node.regret[action];
-            let atom_mom = &node.momentum[action];
+    /// CPU‑GPU hybrid: deduplicate batch, dispatch to GPU, then pull back only updated entries.
+    pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
+        // Deduplicate
+        let mut dedup_map: HashMap<(u32, u32), f32> =
+            HashMap::with_capacity(batch.len().min(100_000));
+        let mut iteration = 0u32;
+        for item in batch {
+            let key = (item.index, item.action);
+            let entry = dedup_map.entry(key).or_insert(0.0);
+            *entry += item.delta;
+            iteration = item.iteration;
+        }
 
-            loop {
-                let cur_i = atom_reg.load(Ordering::Relaxed);
-                let mom_i = atom_mom.load(Ordering::Relaxed);
+        let deduped: Vec<BatchItem> = dedup_map
+            .into_iter()
+            .map(|((index, action), delta)| BatchItem {
+                index,
+                action,
+                iteration,
+                delta,
+            })
+            .collect();
 
-                let cur_f = cur_i as f32 / SCALE;
-                let mom_f = mom_i as f32 / SCALE;
+        // Convert AtomicI32 slice to plain &mut [i32] for the GPU callback
+        let mut regrets = vec![0i32; self.capacity * K];
+        let mut momentums = vec![0i32; self.capacity * K];
+        for i in 0..self.capacity * K {
+            regrets[i] = self.cpu_regrets[i].load(Ordering::Relaxed);
+            momentums[i] = self.cpu_momentums[i].load(Ordering::Relaxed);
+        }
 
-                let (new_f, new_mom_f) =
-                    dcfr::update_regret_pfr_plus(cur_f, mom_f, iteration, delta);
+        self.gpu.flush_batch(&deduped, &mut regrets, &mut momentums);
 
-                let new_i = (new_f * SCALE) as i32;
-                let new_mom_i = (new_mom_f * SCALE) as i32;
-
-                if atom_reg
-                    .compare_exchange_weak(cur_i, new_i, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    atom_mom.store(new_mom_i, Ordering::Relaxed);
-                    break;
-                }
-            }
+        // Write back updated entries (the GPU updated only the touched indices)
+        for i in 0..self.capacity * K {
+            self.cpu_regrets[i].store(regrets[i], Ordering::Relaxed);
+            self.cpu_momentums[i].store(momentums[i], Ordering::Relaxed);
         }
     }
 
     pub fn get_regret(&self, infoset_hash: u64, action_idx: usize) -> f32 {
-        self.map
+        self.hash_to_idx
             .get(&infoset_hash)
-            .map(|node| node.regret[action_idx].load(Ordering::Relaxed) as f32 / SCALE)
+            .map(|idx| {
+                self.cpu_regrets[*idx * K + action_idx].load(Ordering::Relaxed) as f32 / SCALE
+            })
             .unwrap_or(0.0)
     }
 
     pub fn get_keys(&self) -> Vec<u64> {
-        self.map.iter().map(|e| *e.key()).collect()
+        self.hash_to_idx.iter().map(|e| *e.key()).collect()
     }
 
     pub fn get_average_strategy_slice(&self, infoset_hash: u64) -> Option<[f32; K]> {
-        self.map.get(&infoset_hash).map(|node| {
+        self.hash_to_idx.get(&infoset_hash).map(|idx| {
+            let base = *idx * K;
             let mut out = [0.0f32; K];
             for i in 0..K {
-                out[i] = node.strategy_sum[i].load(Ordering::Relaxed) as f32 / SCALE;
+                out[i] = self.strategy_sum[base + i].load(Ordering::Relaxed) as f32 / SCALE;
             }
             out
         })

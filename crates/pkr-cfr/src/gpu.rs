@@ -1,49 +1,329 @@
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicI32, Ordering};
-use dashmap::DashMap;
-use crate::table::SCALE;
+use bytemuck::{Pod, Zeroable};
+use std::borrow::Cow;
+use std::time::Duration;
+use wgpu::*;
 
-// Flat table for GPU-accelerated CFR updates
-pub struct FlatRegretTable {
-    pub regrets: Vec<AtomicI32>,       // length N*6, interleaved
-    pub strategy_sum: Vec<AtomicI32>,
-    pub hash_to_idx: DashMap<u64, usize>,
-    pub idx_to_hash: Vec<u64>,
-    pub num_infosets: usize,
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct BatchItem {
+    pub index: u32,
+    pub action: u32,
+    pub iteration: u32,
+    pub delta: f32,
 }
 
-impl FlatRegretTable {
-    pub fn new() -> Self {
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BatchResult {
+    regret: i32,
+    momentum: i32,
+}
+
+const SHADER: &str = r#"
+    struct BatchItem {
+        index: u32,
+        action: u32,
+        iteration: u32,
+        delta: f32,
+    }
+
+    struct BatchResult {
+        regret: i32,
+        momentum: i32,
+    }
+
+    @group(0) @binding(0) var<storage, read_write> regrets: array<i32>;
+    @group(0) @binding(1) var<storage, read_write> momentums: array<i32>;
+    @group(0) @binding(2) var<storage, read> batch: array<BatchItem>;
+    @group(0) @binding(3) var<storage, read_write> output: array<BatchResult>;
+
+    @compute @workgroup_size(64)
+    fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+        let idx = id.x;
+        if idx >= arrayLength(&batch) {
+            return;
+        }
+
+        let item = batch[idx];
+        let flat_idx = item.index * 6u + item.action;
+
+        let SCALE = 1000.0;
+        let t = f32(item.iteration);
+
+        let cur_i = regrets[flat_idx];
+        let mom_i = momentums[flat_idx];
+
+        if t == 0.0 {
+            regrets[flat_idx] = i32(item.delta * SCALE);
+            momentums[flat_idx] = i32(item.delta * SCALE);
+            output[idx].regret = i32(item.delta * SCALE);
+            output[idx].momentum = i32(item.delta * SCALE);
+            return;
+        }
+
+        let cur_f = f32(cur_i) / SCALE;
+        let mom_f = f32(mom_i) / SCALE;
+
+        let gamma = 1.0 / sqrt(t + 1.0);
+        let predicted_delta = (1.0 - gamma) * mom_f + gamma * item.delta;
+
+        let r_pos = max(cur_f, 0.0);
+        let r_neg = min(cur_f, 0.0);
+        let alpha = 1.5;
+        let beta = 0.0;
+        let t_a = pow(t, alpha);
+        let t_b = pow(t, beta);
+        let w_pos = t_a / (t_a + 1.0);
+        let w_neg = t_b / (t_b + 1.0);
+        let discounted_regret = w_pos * r_pos + w_neg * r_neg;
+
+        let new_regret = max(discounted_regret + predicted_delta, 0.0);
+        regrets[flat_idx] = i32(new_regret * SCALE);
+        momentums[flat_idx] = i32(predicted_delta * SCALE);
+        output[idx].regret = i32(new_regret * SCALE);
+        output[idx].momentum = i32(predicted_delta * SCALE);
+    }
+"#;
+
+pub struct GpuState {
+    pub device: Device,
+    pub queue: Queue,
+    pub pipeline: ComputePipeline,
+    pub bind_group_layout: BindGroupLayout,
+    pub regrets_buffer: Buffer,
+    pub momentums_buffer: Buffer,
+    pub batch_buffer: Buffer,   // reusable input buffer
+    pub output_buffer: Buffer,  // STORAGE | COPY_SRC
+    pub staging_output: Buffer, // MAP_READ | COPY_DST
+    pub capacity: usize,
+    max_batch_size: usize,
+}
+
+impl GpuState {
+    pub fn new(capacity: usize) -> Self {
+        let instance = Instance::new(InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default()))
+                .expect("No GPU adapter found");
+
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("M1 GPU"),
+            required_features: Features::empty(),
+            required_limits: Limits::downlevel_defaults(),
+            memory_hints: Default::default(),
+            experimental_features: ExperimentalFeatures::default(),
+            trace: Trace::Off,
+        }))
+        .expect("Failed to get GPU device");
+
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("PCFR+ Shader"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("CFR Bind Layout"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("CFR Pipeline Layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: Some("CFR Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let buffer_size = (capacity * 6 * std::mem::size_of::<i32>()) as u64;
+        let regrets_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Regrets Buffer"),
+            size: buffer_size,
+            usage: BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let momentums_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Momentums Buffer"),
+            size: buffer_size,
+            usage: BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let max_batch_size = 1_000_000;
+        let batch_size_bytes = (max_batch_size * std::mem::size_of::<BatchItem>()) as u64;
+        let batch_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Batch Input"),
+            size: batch_size_bytes,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let output_size_bytes = (max_batch_size * std::mem::size_of::<BatchResult>()) as u64;
+        let output_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Batch Output (GPU)"),
+            size: output_size_bytes,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let staging_output = device.create_buffer(&BufferDescriptor {
+            label: Some("Batch Output (Staging)"),
+            size: output_size_bytes,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
-            regrets: Vec::new(),
-            strategy_sum: Vec::new(),
-            hash_to_idx: DashMap::new(),
-            idx_to_hash: Vec::new(),
-            num_infosets: 0,
+            device,
+            queue,
+            pipeline,
+            bind_group_layout,
+            regrets_buffer,
+            momentums_buffer,
+            batch_buffer,
+            output_buffer,
+            staging_output,
+            capacity,
+            max_batch_size,
         }
     }
 
-    /// Discover all infoset hashes from the given table and allocate flat arrays.
-    pub fn build_from(&mut self, table: &crate::table::CompactRegretTable) {
-        let keys: Vec<u64> = table.get_keys();
-        self.num_infosets = keys.len();
-        self.regrets = (0..self.num_infosets * 6).map(|_| AtomicI32::new(0)).collect();
-        self.strategy_sum = (0..self.num_infosets * 6).map(|_| AtomicI32::new(0)).collect();
+    pub fn flush_batch(
+        &self,
+        batch: &[BatchItem],
+        cpu_regrets: &mut [i32],
+        cpu_momentums: &mut [i32],
+    ) {
+        if batch.is_empty() {
+            return;
+        }
+        assert!(batch.len() <= self.max_batch_size, "batch too large");
 
-        for (idx, &hash) in keys.iter().enumerate() {
-            self.hash_to_idx.insert(hash, idx);
-            if idx >= self.idx_to_hash.len() {
-                self.idx_to_hash.resize(idx + 1, 0);
+        // Upload input batch
+        self.queue
+            .write_buffer(&self.batch_buffer, 0, bytemuck::cast_slice(batch));
+
+        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("CFR Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: self.regrets_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: self.momentums_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: self.batch_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: self.output_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let output_byte_len = (batch.len() * std::mem::size_of::<BatchResult>()) as u64;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            let workgroups = ((batch.len() as u32) + 63) / 64;
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        // Copy output to staging
+        encoder.copy_buffer_to_buffer(
+            &self.output_buffer,
+            0,
+            &self.staging_output,
+            0,
+            output_byte_len,
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Map staging buffer
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.staging_output
+            .slice(..output_byte_len)
+            .map_async(MapMode::Read, move |r| {
+                tx.send(r).unwrap();
+            });
+
+        self.device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(10)),
+            })
+            .expect("Failed to poll GPU device");
+
+        rx.recv().unwrap().expect("staging map failed");
+
+        {
+            let mapping = self
+                .staging_output
+                .slice(..output_byte_len)
+                .get_mapped_range();
+            let results: &[BatchResult] = bytemuck::cast_slice(&mapping);
+            for (item, result) in batch.iter().zip(results.iter()) {
+                let flat_idx = (item.index as usize) * 6 + item.action as usize;
+                cpu_regrets[flat_idx] = result.regret;
+                cpu_momentums[flat_idx] = result.momentum;
             }
-            self.idx_to_hash[idx] = hash;
+            drop(mapping);
         }
+        self.staging_output.unmap();
     }
-}
-
-// Placeholder for WGPU dispatch (if feature "gpu" is enabled)
-#[cfg(feature = "gpu")]
-pub fn dispatch_gpu_cfr_update(table: &FlatRegretTable, deltas: &[i32]) {
-    // Implement wgpu setup and dispatch here.
-    // On M1 with unified memory, this would be a near-zero-copy buffer pass.
-    unimplemented!("GPU dispatch not yet implemented")
 }

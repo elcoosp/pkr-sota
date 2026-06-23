@@ -1,12 +1,13 @@
+use crate::gpu::BatchItem;
 use crate::table::CompactRegretTable;
 use pkr_abstraction::calculate_ehs;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{ActionKind, GameState, Street};
 use rand::Rng;
-use rand::RngExt; // <--- Import EHS calculator
+use rand::RngExt;
 
 const K: usize = 6;
-const MAX_DEPTH: u32 = 50; // Prevents infinite recursion from endless min-raises
+const MAX_DEPTH: u32 = 50;
 
 pub fn traverse(
     current: &mut GameState,
@@ -21,13 +22,12 @@ pub fn traverse(
     deck: &[u8],
     deck_idx: &mut usize,
     depth: u32,
+    batch: &mut Vec<BatchItem>, // <--- Added batch vector
 ) -> f32 {
-    // If we hit max depth, stop recursing to prevent stack overflow
     if depth > MAX_DEPTH {
         return 0.0;
     }
 
-    // Use `if` instead of `while` to deal exactly one street transition per step.
     if current.is_street_complete() && !current.is_terminal() {
         let cards_needed = match current.street {
             Street::Preflop => 3,
@@ -37,11 +37,9 @@ pub fn traverse(
         };
         let start = *deck_idx;
         *deck_idx += cards_needed;
-
         if *deck_idx > deck.len() {
             return 0.0;
         }
-
         let new_cards = &deck[start..*deck_idx];
         current.advance_street_in_place(new_cards);
     }
@@ -50,17 +48,10 @@ pub fn traverse(
         return current.terminal_payoff(traverser, evaluator);
     }
 
-    // =========================================================
-    // DEPTH-LIMITED SOLVING (DeepStack Architecture)
-    // If we reach the Turn, we DO NOT recurse to the River.
-    // We evaluate the leaf node using EHS * Pot as the expected value.
-    // This skips the entire turn/river CFR tree, giving a 100x speedup.
-    // =========================================================
     if current.street == Street::Turn {
         let hole = &current.hole[traverser];
         let board = &current.board;
         let (ehs, _ehs_sq) = calculate_ehs(hole, board, evaluator);
-        // Return expected chip value
         return ehs * current.pot;
     }
 
@@ -81,7 +72,6 @@ pub fn traverse(
         }
     }
 
-    // Use precomputed abstract history bytes (includes bet size encoding)
     let hist_len = current.abstract_history.len().min(32);
     let mut history_bytes = [0u8; 32];
     history_bytes[..hist_len].copy_from_slice(&current.abstract_history[..hist_len]);
@@ -111,7 +101,6 @@ pub fn traverse(
             }
             let pick_idx = action_indices[a][rng.random_range(0..count)];
 
-            // Apply in-place, recurse, then undo
             current.apply_action_in_place(&num_actions[pick_idx]);
             let mut local_deck_idx = *deck_idx;
             v[a] = traverse(
@@ -127,20 +116,24 @@ pub fn traverse(
                 deck,
                 &mut local_deck_idx,
                 depth + 1,
+                batch,
             );
             current.undo_action();
         }
 
         let v_sigma: f32 = strategy.iter().zip(v.iter()).map(|(p, u)| p * u).sum();
 
-        // Collect regret updates into a batch to apply them
-        let mut batch = [(0u64, 0usize, 0u32, 0.0f32); K];
+        // Push updates to the local batch instead of updating atomically
+        let idx = table.get_or_create_idx(infoset_hash); // Need to expose this or get_idx
         for a in 0..K {
             let delta = v[a] - v_sigma;
-            batch[a] = (infoset_hash, a, global_iteration, delta);
+            batch.push(BatchItem {
+                index: idx as u32,
+                action: a as u32,
+                iteration: global_iteration,
+                delta,
+            });
         }
-        table.apply_regret_batch(&batch);
-
         v_sigma
     } else {
         let r = rng.random::<f32>();
@@ -159,7 +152,6 @@ pub fn traverse(
         }
         let pick_idx = action_indices[sampled_abstract][rng.random_range(0..count)];
 
-        // Apply in-place, recurse, then undo
         current.apply_action_in_place(&num_actions[pick_idx]);
         let mut local_deck_idx = *deck_idx;
         let result = traverse(
@@ -175,9 +167,9 @@ pub fn traverse(
             deck,
             &mut local_deck_idx,
             depth + 1,
+            batch,
         );
         current.undo_action();
-
         result
     }
 }
