@@ -1,6 +1,9 @@
 use pkr_abstraction::{calculate_ehs, load_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
-use pkr_eval::lookup::{choose, combinadic_unrank, combinadic_unrank_2, combinadic_unrank_5, combinadic_unrank_6, TableEvaluator};
+use pkr_eval::lookup::choose;
+use pkr_eval::lookup_fast::{
+    combinadic_unrank_2, combinadic_unrank_5, combinadic_unrank_6, TableEvaluator,
+};
 use pkr_eval::slow::NlheEvaluator;
 use rand::prelude::*;
 use rand::seq::SliceRandom;
@@ -29,25 +32,37 @@ fn main() {
         "abstraction" => {
             let centroids_path = args.get(2).expect("centroids file required");
             let rank_table_path = args.get(3).expect("hand ranks table file required");
-            let output = args.get(4).cloned().unwrap_or("abstraction.bin".to_string());
+            let output = args
+                .get(4)
+                .cloned()
+                .unwrap_or("abstraction.bin".to_string());
             generate_abstraction_table(centroids_path, rank_table_path, &output);
         }
         "turn_table" => {
             let centroids_path = args.get(2).expect("centroids file required");
             let rank_table_path = args.get(3).expect("hand ranks table file required");
-            let output = args.get(4).cloned().unwrap_or("turn_abstraction.bin".to_string());
+            let output = args
+                .get(4)
+                .cloned()
+                .unwrap_or("turn_abstraction.bin".to_string());
             generate_turn_table(centroids_path, rank_table_path, &output);
         }
         "preflop_table" => {
             let centroids_path = args.get(2).expect("centroids file required");
             let rank_table_path = args.get(3).expect("hand ranks table file required");
-            let output = args.get(4).cloned().unwrap_or("preflop_abstraction.bin".to_string());
+            let output = args
+                .get(4)
+                .cloned()
+                .unwrap_or("preflop_abstraction.bin".to_string());
             generate_preflop_table(centroids_path, rank_table_path, &output);
         }
         "flop_buckets" => {
             let k: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
             let rank_table_path = args.get(3).cloned().unwrap_or("hand_ranks.bin".to_string());
-            let output = args.get(4).cloned().unwrap_or("flop_buckets.bin".to_string());
+            let output = args
+                .get(4)
+                .cloned()
+                .unwrap_or("flop_buckets.bin".to_string());
             generate_flop_buckets(k, &rank_table_path, &output);
         }
         _ => eprintln!("Unknown command"),
@@ -68,7 +83,8 @@ fn generate_centroids(num_samples: usize, k: usize, output: &str) {
             let board = &cards[2..5];
             let (ehs, ehs_sq) = calculate_ehs(hole, board, &evaluator);
             (ehs, ehs_sq)
-        }).collect();
+        })
+        .collect();
     let centroids = simple_kmeans(&features, k, 50);
     let store = CentroidStore { centroids };
     save_centroids(output, &store).expect("Failed to save centroids");
@@ -91,100 +107,139 @@ fn generate_rank_table(output: &str) {
 
 fn generate_abstraction_table(centroids_path: &str, rank_table_path: &str, output: &str) {
     let store = load_centroids(centroids_path).expect("Failed to load centroids");
-    assert!(store.centroids.len() <= 255, "centroid count must be ≤ 255 for u8 ids");
+    assert!(
+        store.centroids.len() <= 255,
+        "centroid count must be ≤ 255 for u8 ids"
+    );
     let centroids = &store.centroids;
     let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
     let total_combos = 2_598_960u64;
     let entries = total_combos as usize * 10;
     let mut table: Vec<u8> = vec![0u8; entries];
     const HOLE_MASKS_5: [[usize; 2]; 10] = [
-        [0,1],[0,2],[0,3],[0,4],
-        [1,2],[1,3],[1,4],[2,3],[2,4],[3,4],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [2, 3],
+        [2, 4],
+        [3, 4],
     ];
-    table.par_chunks_mut(10).enumerate().for_each(|(combo_idx, chunk)| {
-        let cards = combinadic_unrank_5(combo_idx as u32);
-        for (mask_idx, slot) in chunk.iter_mut().enumerate() {
-            let pos = HOLE_MASKS_5[mask_idx];
-            let hole = [cards[pos[0]], cards[pos[1]]];
-            let mut board = [0u8; 3];
-            let mut b_idx = 0;
-            for j in 0..5 {
-                if j != pos[0] && j != pos[1] {
-                    board[b_idx] = cards[j];
-                    b_idx += 1;
+    table
+        .par_chunks_mut(10)
+        .enumerate()
+        .for_each(|(combo_idx, chunk)| {
+            let cards = combinadic_unrank_5(combo_idx as u32);
+            for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+                let pos = HOLE_MASKS_5[mask_idx];
+                let hole = [cards[pos[0]], cards[pos[1]]];
+                let mut board = [0u8; 3];
+                let mut b_idx = 0;
+                for j in 0..5 {
+                    if j != pos[0] && j != pos[1] {
+                        board[b_idx] = cards[j];
+                        b_idx += 1;
+                    }
                 }
-            }
-            let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
-            let mut best_idx = 0;
-            let mut best_dist = f32::MAX;
-            for (idx, c) in centroids.iter().enumerate() {
-                let dx = ehs - c.0;
-                let dy = ehs_sq - c.1;
-                let dist = dx * dx + dy * dy;
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_idx = idx;
+                let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+                let mut best_idx = 0;
+                let mut best_dist = f32::MAX;
+                for (idx, c) in centroids.iter().enumerate() {
+                    let dx = ehs - c.0;
+                    let dy = ehs_sq - c.1;
+                    let dist = dx * dx + dy * dy;
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_idx = idx;
+                    }
                 }
+                *slot = best_idx as u8;
             }
-            *slot = best_idx as u8;
-        }
-    });
+        });
     let mut file = File::create(output).expect("failed to create abstraction table");
     file.write_all(&table).unwrap();
-    println!("Generated abstraction table with {} entries -> {}", entries, output);
+    println!(
+        "Generated abstraction table with {} entries -> {}",
+        entries, output
+    );
 }
 
 fn generate_turn_table(centroids_path: &str, rank_table_path: &str, output: &str) {
     let store = load_centroids(centroids_path).expect("Failed to load centroids");
-    assert!(store.centroids.len() <= 255, "centroid count must be ≤ 255 for u8 ids");
+    assert!(
+        store.centroids.len() <= 255,
+        "centroid count must be ≤ 255 for u8 ids"
+    );
     let centroids = &store.centroids;
     let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
     let total_combos = choose(52, 6) as u64;
     let entries = total_combos as usize * 15;
     let mut table: Vec<u8> = vec![0u8; entries];
     const HOLE_MASKS_6: [[usize; 2]; 15] = [
-        [0,1],[0,2],[0,3],[0,4],[0,5],
-        [1,2],[1,3],[1,4],[1,5],
-        [2,3],[2,4],[2,5],
-        [3,4],[3,5],
-        [4,5],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [0, 5],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [1, 5],
+        [2, 3],
+        [2, 4],
+        [2, 5],
+        [3, 4],
+        [3, 5],
+        [4, 5],
     ];
-    table.par_chunks_mut(15).enumerate().for_each(|(combo_idx, chunk)| {
-        let cards = combinadic_unrank_6(combo_idx as u32);
-        for (mask_idx, slot) in chunk.iter_mut().enumerate() {
-            let pos = HOLE_MASKS_6[mask_idx];
-            let hole = [cards[pos[0]], cards[pos[1]]];
-            let mut board = [0u8; 4];
-            let mut b_idx = 0;
-            for j in 0..6 {
-                if j != pos[0] && j != pos[1] {
-                    board[b_idx] = cards[j];
-                    b_idx += 1;
+    table
+        .par_chunks_mut(15)
+        .enumerate()
+        .for_each(|(combo_idx, chunk)| {
+            let cards = combinadic_unrank_6(combo_idx as u32);
+            for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+                let pos = HOLE_MASKS_6[mask_idx];
+                let hole = [cards[pos[0]], cards[pos[1]]];
+                let mut board = [0u8; 4];
+                let mut b_idx = 0;
+                for j in 0..6 {
+                    if j != pos[0] && j != pos[1] {
+                        board[b_idx] = cards[j];
+                        b_idx += 1;
+                    }
                 }
-            }
-            let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
-            let mut best_idx = 0;
-            let mut best_dist = f32::MAX;
-            for (idx, c) in centroids.iter().enumerate() {
-                let dx = ehs - c.0;
-                let dy = ehs_sq - c.1;
-                let dist = dx * dx + dy * dy;
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_idx = idx;
+                let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+                let mut best_idx = 0;
+                let mut best_dist = f32::MAX;
+                for (idx, c) in centroids.iter().enumerate() {
+                    let dx = ehs - c.0;
+                    let dy = ehs_sq - c.1;
+                    let dist = dx * dx + dy * dy;
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_idx = idx;
+                    }
                 }
+                *slot = best_idx as u8;
             }
-            *slot = best_idx as u8;
-        }
-    });
+        });
     let mut file = File::create(output).expect("failed to create turn table");
     file.write_all(&table).unwrap();
-    println!("Generated turn table with {} entries -> {}", entries, output);
+    println!(
+        "Generated turn table with {} entries -> {}",
+        entries, output
+    );
 }
 
 fn generate_preflop_table(centroids_path: &str, rank_table_path: &str, output: &str) {
     let store = load_centroids(centroids_path).expect("Failed to load centroids");
-    assert!(store.centroids.len() <= 255, "centroid count must be ≤ 255 for u8 ids");
+    assert!(
+        store.centroids.len() <= 255,
+        "centroid count must be ≤ 255 for u8 ids"
+    );
     let centroids = &store.centroids;
     let evaluator = TableEvaluator::new(rank_table_path).expect("Failed to load rank table");
     let total = choose(52, 2) as usize;
@@ -207,12 +262,14 @@ fn generate_preflop_table(centroids_path: &str, rank_table_path: &str, output: &
     });
     let mut file = File::create(output).expect("failed to create preflop table");
     file.write_all(&table).unwrap();
-    println!("Generated preflop table with {} entries -> {}", total, output);
+    println!(
+        "Generated preflop table with {} entries -> {}",
+        total, output
+    );
 }
 
 fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) {
-    
-    use pkr_eval::lookup::combinadic_unrank_3;
+    use pkr_eval::lookup_fast::combinadic_unrank_3;
 
     let evaluator = TableEvaluator::new(rank_table_path).expect("load hand_ranks.bin");
     let total_flops = choose(52, 3) as usize;
@@ -246,34 +303,45 @@ fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) {
 
                 let hero_rank = evaluator.evaluate_hand(&hole, &board_cards);
                 let opp_rank = evaluator.evaluate_hand(&opp_hole, &board_cards);
-                let equity = if hero_rank < opp_rank { 1.0 } else if hero_rank == opp_rank { 0.5 } else { 0.0 };
+                let equity = if hero_rank < opp_rank {
+                    1.0
+                } else if hero_rank == opp_rank {
+                    0.5
+                } else {
+                    0.0
+                };
                 let bin = f32::min(equity * 10.0, 9.0) as usize;
                 histogram[bin] += 1.0;
             }
-            for val in histogram.iter_mut() { *val /= 100.0; }
+            for val in histogram.iter_mut() {
+                *val /= 100.0;
+            }
             histogram
         })
         .collect();
 
     let centroids = kmeans_10d(&features, k, 50);
     let mut buckets: Vec<u8> = vec![0; total_flops];
-    buckets.par_iter_mut().enumerate().for_each(|(idx, bucket)| {
-        let feat = &features[idx];
-        let mut best_dist = f32::MAX;
-        let mut best_bucket = 0u8;
-        for (c_idx, c) in centroids.iter().enumerate() {
-            let mut dist = 0.0;
-            for i in 0..10 {
-                let d = feat[i] - c[i];
-                dist += d * d;
+    buckets
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(idx, bucket)| {
+            let feat = &features[idx];
+            let mut best_dist = f32::MAX;
+            let mut best_bucket = 0u8;
+            for (c_idx, c) in centroids.iter().enumerate() {
+                let mut dist = 0.0;
+                for i in 0..10 {
+                    let d = feat[i] - c[i];
+                    dist += d * d;
+                }
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_bucket = c_idx as u8;
+                }
             }
-            if dist < best_dist {
-                best_dist = dist;
-                best_bucket = c_idx as u8;
-            }
-        }
-        *bucket = best_bucket;
-    });
+            *bucket = best_bucket;
+        });
     let mut file = File::create(output).expect("failed to create flop buckets");
     file.write_all(&buckets).unwrap();
     println!("Generated {} flop buckets -> {}", k, output);
@@ -281,38 +349,57 @@ fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) {
 
 fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> {
     let n = data.len();
-    if n == 0 || k == 0 { return vec![]; }
+    if n == 0 || k == 0 {
+        return vec![];
+    }
     let mut rng = rand::rng();
     let num_clusters = k.min(n);
     let mut centroids: Vec<[f32; 10]> = data.sample(&mut rng, num_clusters).cloned().collect();
     for _ in 0..max_iters {
-        let assignments: Vec<usize> = data.par_iter().map(|p| {
-            let mut best = 0;
-            let mut best_d = f32::MAX;
-            for (i, c) in centroids.iter().enumerate() {
-                let d: f32 = (0..10).map(|j| { let d = p[j]-c[j]; d*d }).sum();
-                if d < best_d { best_d = d; best = i; }
-            }
-            best
-        }).collect();
+        let assignments: Vec<usize> = data
+            .par_iter()
+            .map(|p| {
+                let mut best = 0;
+                let mut best_d = f32::MAX;
+                for (i, c) in centroids.iter().enumerate() {
+                    let d: f32 = (0..10)
+                        .map(|j| {
+                            let d = p[j] - c[j];
+                            d * d
+                        })
+                        .sum();
+                    if d < best_d {
+                        best_d = d;
+                        best = i;
+                    }
+                }
+                best
+            })
+            .collect();
         let mut sums = vec![[0.0f32; 10]; num_clusters];
         let mut counts = vec![0usize; num_clusters];
         for (i, p) in data.iter().enumerate() {
             let c = assignments[i];
             counts[c] += 1;
-            for j in 0..10 { sums[c][j] += p[j]; }
+            for j in 0..10 {
+                sums[c][j] += p[j];
+            }
         }
         let mut changed = false;
         for i in 0..num_clusters {
             if counts[i] > 0 {
                 for j in 0..10 {
                     let new_val = sums[i][j] / counts[i] as f32;
-                    if (new_val - centroids[i][j]).abs() > 1e-6 { changed = true; }
+                    if (new_val - centroids[i][j]).abs() > 1e-6 {
+                        changed = true;
+                    }
                     centroids[i][j] = new_val;
                 }
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
     centroids
 }
@@ -325,30 +412,39 @@ fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn std::
 
 fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)> {
     let n = data.len();
-    if n == 0 || k == 0 { return vec![]; }
+    if n == 0 || k == 0 {
+        return vec![];
+    }
     let k = k.min(n);
     if k == 1 {
-        let mean = data.iter().fold((0.0,0.0), |a, &p| (a.0+p.0, a.1+p.1));
+        let mean = data.iter().fold((0.0, 0.0), |a, &p| (a.0 + p.0, a.1 + p.1));
         return vec![(mean.0 / n as f32, mean.1 / n as f32)];
     }
     let mut rng = rand::rng();
     let mut centroids: Vec<(f32, f32)> = data.sample(&mut rng, k).cloned().collect();
     for _ in 0..max_iters {
-        let assignments: Vec<usize> = data.par_iter().map(|&point| {
-            let mut best = 0;
-            let mut best_d = f32::MAX;
-            for (i, c) in centroids.iter().enumerate() {
-                let dx = point.0 - c.0;
-                let dy = point.1 - c.1;
-                let d = dx*dx + dy*dy;
-                if d < best_d { best_d = d; best = i; }
-            }
-            best
-        }).collect();
-        let mut sums = vec![(0.0f32,0.0f32); k];
+        let assignments: Vec<usize> = data
+            .par_iter()
+            .map(|&point| {
+                let mut best = 0;
+                let mut best_d = f32::MAX;
+                for (i, c) in centroids.iter().enumerate() {
+                    let dx = point.0 - c.0;
+                    let dy = point.1 - c.1;
+                    let d = dx * dx + dy * dy;
+                    if d < best_d {
+                        best_d = d;
+                        best = i;
+                    }
+                }
+                best
+            })
+            .collect();
+        let mut sums = vec![(0.0f32, 0.0f32); k];
         let mut counts = vec![0usize; k];
         for (&point, &cluster) in data.iter().zip(assignments.iter()) {
-            sums[cluster].0 += point.0; sums[cluster].1 += point.1;
+            sums[cluster].0 += point.0;
+            sums[cluster].1 += point.1;
             counts[cluster] += 1;
         }
         let mut changed = false;
@@ -361,7 +457,9 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
                 centroids[i] = new;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
     centroids
 }

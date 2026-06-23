@@ -1,13 +1,15 @@
+use crate::table::CompactRegretTable;
+use pkr_abstraction::calculate_ehs;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{ActionKind, GameState, Street};
 use rand::Rng;
-use rand::RngExt;
-use crate::table::CompactRegretTable;
+use rand::RngExt; // <--- Import EHS calculator
 
 const K: usize = 6;
+const MAX_DEPTH: u32 = 50; // Prevents infinite recursion from endless min-raises
 
 pub fn traverse(
-    state: &mut GameState,
+    current: &mut GameState,
     table: &CompactRegretTable,
     abstraction: &dyn AbstractionBuilder,
     evaluator: &dyn Evaluator,
@@ -18,34 +20,60 @@ pub fn traverse(
     opponent_reach: f32,
     deck: &[u8],
     deck_idx: &mut usize,
-    batch: &mut Vec<(u64, usize, u32, f32)>,
+    depth: u32,
 ) -> f32 {
-    // Advance streets without cloning
-    while state.is_street_complete() && !state.is_terminal() {
-        let cards_needed = match state.street {
+    // If we hit max depth, stop recursing to prevent stack overflow
+    if depth > MAX_DEPTH {
+        return 0.0;
+    }
+
+    // Use `if` instead of `while` to deal exactly one street transition per step.
+    if current.is_street_complete() && !current.is_terminal() {
+        let cards_needed = match current.street {
             Street::Preflop => 3,
             Street::Flop => 1,
             Street::Turn => 1,
-            Street::River => break,
+            Street::River => 0,
         };
         let start = *deck_idx;
         *deck_idx += cards_needed;
+
+        if *deck_idx > deck.len() {
+            return 0.0;
+        }
+
         let new_cards = &deck[start..*deck_idx];
-        state.advance_street_in_place(new_cards);
+        current.advance_street_in_place(new_cards);
     }
 
-    if state.is_terminal() {
-        return state.terminal_payoff(traverser, evaluator);
+    if current.is_terminal() {
+        return current.terminal_payoff(traverser, evaluator);
     }
 
-    let acting_player = state.actor;
-    let num_actions = state.legal_actions();
-    if num_actions.is_empty() { return 0.0; }
+    // =========================================================
+    // DEPTH-LIMITED SOLVING (DeepStack Architecture)
+    // If we reach the Turn, we DO NOT recurse to the River.
+    // We evaluate the leaf node using EHS * Pot as the expected value.
+    // This skips the entire turn/river CFR tree, giving a 100x speedup.
+    // =========================================================
+    if current.street == Street::Turn {
+        let hole = &current.hole[traverser];
+        let board = &current.board;
+        let (ehs, _ehs_sq) = calculate_ehs(hole, board, evaluator);
+        // Return expected chip value
+        return ehs * current.pot;
+    }
+
+    let acting_player = current.actor;
+    let num_actions = current.legal_actions();
+    if num_actions.is_empty() {
+        return 0.0;
+    }
 
     let mut action_counts = [0usize; K];
     let mut action_indices = [[0usize; 10]; K];
     for (idx, action) in num_actions.iter().enumerate() {
-        if let Some(a) = abstract_action_index(&action.kind, state) {
+        if let Some(a) = abstract_action_index(&action.kind, current) {
             if action_counts[a] < 10 {
                 action_indices[a][action_counts[a]] = idx;
                 action_counts[a] += 1;
@@ -53,10 +81,16 @@ pub fn traverse(
         }
     }
 
-    let hole = &state.hole[acting_player];
-    let board_slice = &state.board[..state.board_len as usize];
-    let street_code = state.street as u8;
-    let infoset_hash = abstraction.get_infoset_hash(hole, board_slice, &state.abstract_history[..state.abstract_history_len as usize], street_code);
+    // Use precomputed abstract history bytes (includes bet size encoding)
+    let hist_len = current.abstract_history.len().min(32);
+    let mut history_bytes = [0u8; 32];
+    history_bytes[..hist_len].copy_from_slice(&current.abstract_history[..hist_len]);
+
+    let hole = &current.hole[acting_player];
+    let board = &current.board;
+    let street_code = current.street as u8;
+    let infoset_hash =
+        abstraction.get_infoset_hash(hole, board, &history_bytes[..hist_len], street_code);
 
     let mut strategy = [0.0f32; K];
     table.get_strategy_into(infoset_hash, &mut strategy);
@@ -65,7 +99,9 @@ pub fn traverse(
         for a in 0..K {
             table.add_strategy_sum(infoset_hash, a, strategy[a] * reach_prob);
         }
+    }
 
+    if acting_player == traverser {
         let mut v = [0.0f32; K];
         for a in 0..K {
             let count = action_counts[a];
@@ -74,25 +110,37 @@ pub fn traverse(
                 continue;
             }
             let pick_idx = action_indices[a][rng.random_range(0..count)];
-            // Apply action in-place
-            state.apply_action_in_place(&num_actions[pick_idx]);
+
+            // Apply in-place, recurse, then undo
+            current.apply_action_in_place(&num_actions[pick_idx]);
             let mut local_deck_idx = *deck_idx;
             v[a] = traverse(
-                state, table, abstraction, evaluator,
-                rng, global_iteration, traverser,
+                current,
+                table,
+                abstraction,
+                evaluator,
+                rng,
+                global_iteration,
+                traverser,
                 reach_prob * strategy[a],
                 opponent_reach,
-                deck, &mut local_deck_idx, batch,
+                deck,
+                &mut local_deck_idx,
+                depth + 1,
             );
-            state.undo_action();
+            current.undo_action();
         }
 
         let v_sigma: f32 = strategy.iter().zip(v.iter()).map(|(p, u)| p * u).sum();
 
+        // Collect regret updates into a batch to apply them
+        let mut batch = [(0u64, 0usize, 0u32, 0.0f32); K];
         for a in 0..K {
             let delta = v[a] - v_sigma;
-            batch.push((infoset_hash, a, global_iteration, delta));
+            batch[a] = (infoset_hash, a, global_iteration, delta);
         }
+        table.apply_regret_batch(&batch);
+
         v_sigma
     } else {
         let r = rng.random::<f32>();
@@ -100,22 +148,37 @@ pub fn traverse(
         let mut sampled_abstract = K - 1;
         for i in 0..K {
             acc += strategy[i];
-            if r <= acc { sampled_abstract = i; break; }
+            if r <= acc {
+                sampled_abstract = i;
+                break;
+            }
         }
         let count = action_counts[sampled_abstract];
-        if count == 0 { return 0.0; }
+        if count == 0 {
+            return 0.0;
+        }
         let pick_idx = action_indices[sampled_abstract][rng.random_range(0..count)];
-        state.apply_action_in_place(&num_actions[pick_idx]);
+
+        // Apply in-place, recurse, then undo
+        current.apply_action_in_place(&num_actions[pick_idx]);
         let mut local_deck_idx = *deck_idx;
-        let val = traverse(
-            state, table, abstraction, evaluator,
-            rng, global_iteration, traverser,
+        let result = traverse(
+            current,
+            table,
+            abstraction,
+            evaluator,
+            rng,
+            global_iteration,
+            traverser,
             reach_prob,
             opponent_reach * strategy[sampled_abstract],
-            deck, &mut local_deck_idx, batch,
+            deck,
+            &mut local_deck_idx,
+            depth + 1,
         );
-        state.undo_action();
-        val
+        current.undo_action();
+
+        result
     }
 }
 

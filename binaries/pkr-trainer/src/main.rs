@@ -1,7 +1,7 @@
 use clap::Parser;
-use pkr_abstraction::{KMeansAbstraction, load_centroids};
+use pkr_abstraction::{load_centroids, KMeansAbstraction};
 use pkr_cfr::Trainer;
-use pkr_eval::lookup::TableEvaluator;
+use pkr_eval::TableEvaluator;
 use pkr_export::writer::write_blueprint;
 use rayon::ThreadPoolBuilder;
 use std::path::PathBuf;
@@ -42,7 +42,6 @@ struct Cli {
     #[arg(long)]
     flop_buckets: Option<PathBuf>,
 
-
     #[arg(long, default_value = "hand_ranks.bin")]
     rank_table: PathBuf,
 
@@ -54,65 +53,73 @@ fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
-    // 1. Initialize the Rayon thread pool ONCE.
-    let num_threads = cli.threads
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(8));
+    let num_threads = cli.threads.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(8)
+    });
 
+    // 1. Initialize the Rayon thread pool ONCE with a LARGE stack size
     ThreadPoolBuilder::new()
         .num_threads(num_threads)
+        .stack_size(32 * 1024 * 1024) // 32 MB stack to prevent overflow on deep game trees
         .build_global()
         .expect("Failed to initialize global Rayon pool");
 
     eprintln!("Running with {} threads", num_threads);
 
-    // 2. Load the FAST evaluator instead of NlheEvaluator
-    let evaluator = Arc::new(
-        TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin")
-    );
+    // 2. Load the FAST evaluator
+    let evaluator =
+        Arc::new(TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin"));
 
-    let store = load_centroids(cli.centroids.to_str().unwrap())
-        .expect("Failed to load default centroids");
+    let store =
+        load_centroids(cli.centroids.to_str().unwrap()).expect("Failed to load default centroids");
     let mut abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
 
     if let Some(path) = &cli.flop_centroids {
-        abstraction.load_street_centroids(1, path.to_str().unwrap())
+        abstraction
+            .load_street_centroids(1, path.to_str().unwrap())
             .expect("Failed to load flop centroids");
     }
     if let Some(path) = &cli.turn_centroids {
-        abstraction.load_street_centroids(2, path.to_str().unwrap())
+        abstraction
+            .load_street_centroids(2, path.to_str().unwrap())
             .expect("Failed to load turn centroids");
     }
     if let Some(path) = &cli.river_centroids {
-        abstraction.load_street_centroids(3, path.to_str().unwrap())
+        abstraction
+            .load_street_centroids(3, path.to_str().unwrap())
             .expect("Failed to load river centroids");
     }
 
-    // Load tables using &self init_table
     if let Some(path) = &cli.preflop_table {
-        abstraction.init_table(0, path.to_str().unwrap())
+        abstraction
+            .init_table(0, path.to_str().unwrap())
             .expect("Failed to load preflop table");
     }
     if let Some(path) = &cli.flop_table {
-        abstraction.init_table(1, path.to_str().unwrap())
+        abstraction
+            .init_table(1, path.to_str().unwrap())
             .expect("Failed to load flop table");
     }
     if let Some(path) = &cli.turn_table {
-        abstraction.init_table(2, path.to_str().unwrap())
+        abstraction
+            .init_table(2, path.to_str().unwrap())
             .expect("Failed to load turn table");
     }
     if let Some(path) = &cli.flop_buckets {
-        abstraction.load_flop_buckets(path.to_str().unwrap())
+        abstraction
+            .load_flop_buckets(path.to_str().unwrap())
             .expect("Failed to load flop buckets");
     }
 
     if let Some(path) = &cli.river_table {
-        abstraction.init_table(3, path.to_str().unwrap())
+        abstraction
+            .init_table(3, path.to_str().unwrap())
             .expect("Failed to load river table");
     }
 
     let abstraction = Arc::new(abstraction);
-
-    // 3. Trainer no longer takes num_threads; it uses the global Rayon pool.
     let mut trainer = Trainer::new(abstraction, evaluator);
 
     for i in 0..cli.iterations {

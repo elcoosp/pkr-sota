@@ -1,4 +1,5 @@
 use pkr_contracts::Evaluator;
+use rand::rng;
 use rand::seq::SliceRandom;
 use std::sync::OnceLock;
 
@@ -31,7 +32,7 @@ pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f
         }
     }
 
-    let mut rng = rand::rng();
+    let mut rng = rng();
     let mut sum_equity: f64 = 0.0;
     let mut sum_sq: f64 = 0.0;
 

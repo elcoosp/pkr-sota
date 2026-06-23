@@ -9,3 +9,7 @@ memmap2 = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+
+[features]
+default = ["fast-eval"]
+fast-eval = []

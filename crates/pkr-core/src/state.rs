@@ -25,7 +25,7 @@ pub struct Action {
 
 /// A compact record of what changed in the state so we can undo an action.
 #[derive(Debug, Clone, Copy)]
-struct UndoRecord {
+pub struct UndoRecord {
     actor: usize,
     street: Street,
     pot: f32,
