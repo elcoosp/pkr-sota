@@ -14,9 +14,10 @@ pub struct BatchItem {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct BatchResult {
-    regret: i32,
-    momentum: i32,
+pub struct BatchResult {
+    pub regret: i32,
+    pub momentum: i32,
+    pub _pad: [u8; 8], // keep 16-byte stride identical to the WGSL output struct
 }
 
 const SHADER: &str = r#"
@@ -30,6 +31,8 @@ const SHADER: &str = r#"
     struct BatchResult {
         regret: i32,
         momentum: i32,
+        _pad: u32,
+        _pad2: u32,
     }
 
     @group(0) @binding(0) var<storage, read_write> regrets: array<i32>;
@@ -233,15 +236,12 @@ impl GpuState {
             max_batch_size,
         }
     }
-
-    pub fn flush_batch(
-        &self,
-        batch: &[BatchItem],
-        cpu_regrets: &mut [i32],
-        cpu_momentums: &mut [i32],
-    ) {
+    pub fn max_batch_size(&self) -> usize {
+        self.max_batch_size
+    }
+    pub fn flush_batch(&self, batch: &[BatchItem]) -> Vec<BatchResult> {
         if batch.is_empty() {
-            return;
+            return Vec::new();
         }
         assert!(batch.len() <= self.max_batch_size, "batch too large");
 
@@ -311,19 +311,16 @@ impl GpuState {
 
         rx.recv().unwrap().expect("staging map failed");
 
+        let mut out = Vec::with_capacity(batch.len());
         {
             let mapping = self
                 .staging_output
                 .slice(..output_byte_len)
                 .get_mapped_range();
             let results: &[BatchResult] = bytemuck::cast_slice(&mapping);
-            for (item, result) in batch.iter().zip(results.iter()) {
-                let flat_idx = (item.index as usize) * 6 + item.action as usize;
-                cpu_regrets[flat_idx] = result.regret;
-                cpu_momentums[flat_idx] = result.momentum;
-            }
-            drop(mapping);
+            out.extend_from_slice(results);
         }
         self.staging_output.unmap();
+        out
     }
 }
