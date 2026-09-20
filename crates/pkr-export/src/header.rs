@@ -8,8 +8,13 @@ pub struct FileHeader {
     pub variant_id: u32,
     pub infoset_count: u64,
     pub max_actions_k: u8,
-    pub _padding: [u8; 7],
+    pub hash_algo: u8,
+    pub _padding: [u8; 6],
 }
+
+/// Hash algorithm identifiers stored in FileHeader.hash_algo.
+pub const HASH_ALGO_FNV1A64_INFOSET: u8 = pkr_contracts::HASH_ALGO_FNV1A64_INFOSET;
+pub const FORMAT_VERSION_V2: u32 = 2; // version that introduced hash_algo field
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
