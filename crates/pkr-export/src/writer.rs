@@ -1,10 +1,9 @@
+use crate::header::{FileHeader, HASH_ALGO_FNV1A64_INFOSET, FORMAT_VERSION_V2};
 use pkr_cfr::table::CompactRegretTable;
 use std::fs::File;
 use std::io::Write;
-use crate::header::FileHeader;
 
 const MAGIC: &[u8; 8] = b"PKRSOTA1";
-const VERSION: u32 = 1;
 const K: usize = 6;
 
 pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
@@ -31,19 +30,22 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable) {
 
     let file_header = FileHeader {
         magic: *MAGIC,
-        version: VERSION,
+        version: FORMAT_VERSION_V2,
         variant_id: 0,
         infoset_count: infoset_count as u64,
         max_actions_k: K as u8,
-        _padding: [0u8; 7],
+        hash_algo: HASH_ALGO_FNV1A64_INFOSET,
+        _padding: [0u8; 6],
     };
 
     // No FMPH, no translation table – we put a zero-length placeholder for format compat
     let mut file = File::create(path).expect("failed to create blueprint file");
     file.write_all(bytemuck::bytes_of(&file_header)).unwrap();
     // Write key table size (u32) and CDF size (u32) for simple parsing
-    file.write_all(&(infoset_count as u32).to_le_bytes()).unwrap();
-    file.write_all(&((K * infoset_count) as u32).to_le_bytes()).unwrap();
+    file.write_all(&(infoset_count as u32).to_le_bytes())
+        .unwrap();
+    file.write_all(&((K * infoset_count) as u32).to_le_bytes())
+        .unwrap();
     file.write_all(&key_bytes).unwrap();
     file.write_all(&cdf_bytes).unwrap();
     file.flush().unwrap();

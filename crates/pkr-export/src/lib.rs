@@ -19,7 +19,15 @@ mod header_tests {
 
     #[test]
     fn test_file_header_pod() {
-        let fh = FileHeader { magic: *b"PKRSOTA1", version: 1, variant_id: 0, infoset_count: 100, max_actions_k: 6, _padding: [0; 7] };
+        let fh = FileHeader {
+            magic: *b"PKRSOTA1",
+            version: 2,
+            variant_id: 0,
+            infoset_count: 100,
+            max_actions_k: 6,
+            hash_algo: HASH_ALGO_FNV1A64_INFOSET,
+            _padding: [0; 6],
+        };
         let bytes = bytemuck::bytes_of(&fh);
         let decoded: &FileHeader = bytemuck::from_bytes(bytes);
         assert_eq!(decoded.infoset_count, 100);
