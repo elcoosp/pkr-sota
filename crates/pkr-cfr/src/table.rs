@@ -97,9 +97,10 @@ impl CompactRegretTable {
         self.strategy_sum[base + action_idx].fetch_add((prob * SCALE) as i32, Ordering::Relaxed);
     }
 
-    /// CPU‑GPU hybrid: deduplicate batch, dispatch to GPU, then pull back only updated entries.
+    /// CPU-GPU hybrid: deduplicate batch, dispatch to GPU in chunks,
+    /// then write back ONLY the touched entries.
     pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
-        // Deduplicate
+        // 1. Deduplicate
         let mut dedup_map: HashMap<(u32, u32), f32> =
             HashMap::with_capacity(batch.len().min(100_000));
         let mut iteration = 0u32;
@@ -109,7 +110,6 @@ impl CompactRegretTable {
             *entry += item.delta;
             iteration = item.iteration;
         }
-
         let deduped: Vec<BatchItem> = dedup_map
             .into_iter()
             .map(|((index, action), delta)| BatchItem {
@@ -120,20 +120,17 @@ impl CompactRegretTable {
             })
             .collect();
 
-        // Convert AtomicI32 slice to plain &mut [i32] for the GPU callback
-        let mut regrets = vec![0i32; self.capacity * K];
-        let mut momentums = vec![0i32; self.capacity * K];
-        for i in 0..self.capacity * K {
-            regrets[i] = self.cpu_regrets[i].load(Ordering::Relaxed);
-            momentums[i] = self.cpu_momentums[i].load(Ordering::Relaxed);
-        }
+        // 2. Chunked dispatch — a merged cross-thread batch can exceed max_batch_size
+        let max = self.gpu.max_batch_size();
+        for chunk in deduped.chunks(max) {
+            let results = self.gpu.flush_batch(chunk);
 
-        self.gpu.flush_batch(&deduped, &mut regrets, &mut momentums);
-
-        // Write back updated entries (the GPU updated only the touched indices)
-        for i in 0..self.capacity * K {
-            self.cpu_regrets[i].store(regrets[i], Ordering::Relaxed);
-            self.cpu_momentums[i].store(momentums[i], Ordering::Relaxed);
+            // 3. Touched-only write-back: O(len(chunk)) instead of O(capacity * K)
+            for (item, result) in chunk.iter().zip(results.iter()) {
+                let flat = item.index as usize * K + item.action as usize;
+                self.cpu_regrets[flat].store(result.regret, Ordering::Relaxed);
+                self.cpu_momentums[flat].store(result.momentum, Ordering::Relaxed);
+            }
         }
     }
 
@@ -159,5 +156,81 @@ impl CompactRegretTable {
             }
             out
         })
+    }
+
+    pub fn hash_contains(&self, infoset_hash: u64) -> bool {
+        self.hash_to_idx.contains_key(&infoset_hash)
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "gpu")]
+mod tests {
+    use super::*;
+
+    /// Verify that flush_gpu_batch writes back only touched entries and is
+    /// a no-op for untouched entries. The GPU applies PCFR+ DCFR update
+    /// (momentum + regret discounting), so on the first iteration (t=1)
+    /// with zero-initial GPU state:
+    ///   gamma = 1/sqrt(t+1) = 1/sqrt(2)
+    ///   predicted_delta = gamma * delta  (momentum=0)
+    ///   new_regret = max(0, 0 + predicted_delta) = gamma * delta
+    /// Deduplicated delta for (i1, action 0) = 1.5 + 0.5 = 2.0
+    /// So regret = 2.0 / sqrt(2) ≈ 1.4142, stored as i32 * SCALE.
+    #[test]
+    fn flush_writes_back_only_touched_entries_and_is_idempotent_for_untouched() {
+        let table = CompactRegretTable::new();
+        let i1 = table.get_or_create_idx(0xDEAD_0001);
+        let i2 = table.get_or_create_idx(0xDEAD_0002);
+
+        let batch = vec![
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 1.5,
+            },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.5,
+            },
+            BatchItem {
+                index: i2 as u32,
+                action: 3,
+                iteration: 1,
+                delta: -0.25,
+            },
+        ];
+        table.flush_gpu_batch(&batch);
+
+        // Deduped delta = 2.0; PCFR+ on t=1: regret = 2.0 / sqrt(2) ≈ 1.4142
+        let expected_regret = 2.0 / std::f32::consts::SQRT_2;
+        let actual_regret = table.get_regret(0xDEAD_0001, 0);
+        assert!(
+            (actual_regret - expected_regret).abs() < 0.01,
+            "expected ~{expected_regret}, got {actual_regret}"
+        );
+
+        // delta=-0.25; with r_neg=0, discounted_regret=0, new_regret = max(0+predicted, 0) = 0
+        // (negative regret after max(0,...) clamps to 0)
+        let actual_neg = table.get_regret(0xDEAD_0002, 3);
+        let expected_neg = if 1.0 / std::f32::consts::SQRT_2 * (-0.25) > 0.0 {
+            1.0 / std::f32::consts::SQRT_2 * (-0.25)
+        } else {
+            0.0
+        };
+        assert!(
+            (actual_neg - expected_neg).abs() < 0.01,
+            "expected ~{expected_neg}, got {actual_neg}"
+        );
+
+        // Untouched entry stays zero
+        assert_eq!(table.get_regret(0xDEAD_0002, 0), 0.0);
+
+        // Empty batch -> nothing changes
+        table.flush_gpu_batch(&[]);
+        assert!((table.get_regret(0xDEAD_0001, 0) - expected_regret).abs() < 0.01);
     }
 }
