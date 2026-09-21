@@ -1,4 +1,4 @@
-use pkr_abstraction::{calculate_ehs, load_centroids, CentroidStore};
+use pkr_abstraction::{calculate_ehs, load_centroids, save_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
 use pkr_eval::lookup::choose;
 use pkr_eval::lookup_fast::{
@@ -7,11 +7,10 @@ use pkr_eval::lookup_fast::{
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use rand::{seq::IndexedRandom, Rng, RngExt};
+use rand::{seq::IndexedRandom, RngExt};
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
 
 type EhsValue = f32;
 
@@ -29,6 +28,24 @@ fn main() {
             let output = args.get(4).map(|s| s.as_str()).unwrap_or("abstraction_table.bin");
             println!("Centroids: {} | Rank table: {}", centroids_path, rank_table_path);
             let _ = generate_abstraction_table(centroids_path, rank_table_path, output);
+            println!("Done.");
+        }
+        "hand_ranks" => {
+            let output = args.get(2).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            println!("Generating hand ranks -> {}", output);
+            let _ = generate_hand_ranks(output);
+            println!("Done.");
+        }
+        "centroids" => {
+            let num_samples = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1000);
+            let k = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
+            let rank_table_path = args.get(4).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            let output = args.get(5).map(|s| s.as_str()).unwrap_or("centroids.bin");
+            println!(
+                "Samples: {} | K: {} | Rank table: {} | Output: {}",
+                num_samples, k, rank_table_path, output
+            );
+            let _ = generate_centroids(num_samples, k, rank_table_path, output);
             println!("Done.");
         }
         "turn" => {
@@ -110,6 +127,56 @@ fn main() {
     }
 }
 
+fn generate_hand_ranks(output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use pkr_eval::NlheEvaluator;
+    let evaluator = NlheEvaluator;
+    let total = choose(52, 5) as usize;
+    let mut ranks: Vec<u32> = vec![0u32; total];
+    ranks.par_iter_mut().enumerate().for_each(|(idx, slot)| {
+        let cards = combinadic_unrank_5(idx as u32);
+        let hole = [cards[0], cards[1]];
+        let board = [cards[2], cards[3], cards[4]];
+        *slot = evaluator.evaluate_hand(&hole, &board);
+    });
+    let mut bytes: Vec<u8> = Vec::with_capacity(total * 4);
+    for r in &ranks {
+        bytes.extend_from_slice(&r.to_le_bytes());
+    }
+    let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
+    file.write_all(&bytes).map_err(|e| format!("write: {}", e))?;
+    println!("Generated {} hand ranks -> {}", total, output);
+    Ok(())
+}
+
+fn generate_centroids(
+    num_samples: usize,
+    k: usize,
+    rank_table_path: &str,
+    output: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let total = choose(52, 2) as usize;
+    let data: Vec<(f32, f32)> = (0..total)
+        .into_par_iter()
+        .map(|idx| {
+            let hole = combinadic_unrank_2(idx as u32);
+            let (ehs, ehs_sq) = calculate_ehs(&hole, &[], &evaluator);
+            (ehs, ehs_sq)
+        })
+        .collect();
+    let mut rng = StdRng::seed_from_u64(42);
+    let sample: Vec<(f32, f32)> = if data.len() > num_samples {
+        data.sample(&mut rng, num_samples).cloned().collect()
+    } else {
+        data
+    };
+    let centroids = simple_kmeans(&sample, k, 50);
+    let store = CentroidStore { centroids };
+    save_centroids(output, &store)?;
+    println!("Generated {} centroids -> {}", k, output);
+    Ok(())
+}
+
 fn generate_abstraction_table(
     centroids_path: &str,
     rank_table_path: &str,
@@ -186,11 +253,6 @@ fn generate_turn_table(
         store.centroids.len() <= 500,
         "centroid count for turn tables must be <= 500 (u16 ids)"
     );
-    let centroids: Vec<[f32; 2]> = store
-        .centroids
-        .iter()
-        .map(|c| [c.0, c.1])
-        .collect();
     let evaluator = TableEvaluator::new(rank_table_path)?;
     let total = choose(52, 6) as usize;
 

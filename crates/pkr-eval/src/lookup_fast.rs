@@ -72,6 +72,23 @@ pub fn combinadic_unrank_6(mut index: u32) -> [u8; 6] {
     result
 }
 
+pub fn combinadic_unrank_7(mut index: u32) -> [u8; 7] {
+    let mut result = [0u8; 7];
+    let mut remaining = 52u32;
+    for i in (1..=7).rev() {
+        let mut x = remaining - 1;
+        while choose(x, i) > index {
+            x -= 1;
+        }
+        let pos = (7 - i) as usize;
+        result[pos] = x as u8;
+        index -= choose(x, i);
+        remaining = x;
+    }
+    result.sort_unstable_by(|a, b| b.cmp(a));
+    result
+}
+
 pub fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
     let mut result = Vec::with_capacity(k as usize);
     let mut remaining = n;

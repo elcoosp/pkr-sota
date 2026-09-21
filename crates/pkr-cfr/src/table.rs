@@ -161,6 +161,14 @@ impl CompactRegretTable {
     pub fn hash_contains(&self, infoset_hash: u64) -> bool {
         self.hash_to_idx.contains_key(&infoset_hash)
     }
+
+    pub fn len(&self) -> usize {
+        self.hash_to_idx.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hash_to_idx.is_empty()
+    }
 }
 
 #[cfg(test)]
