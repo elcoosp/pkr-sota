@@ -40,6 +40,12 @@ const SHADER: &str = r#"
     @group(0) @binding(2) var<storage, read> batch: array<BatchItem>;
     @group(0) @binding(3) var<storage, read_write> output: array<BatchResult>;
 
+    // DCFR parameters (must match dcfr.rs):
+    //   α = 1.5, β = 0.0, γ = 2.0, τ = 1000
+    const ALPHA: f32 = 1.5;
+    const BETA: f32 = 0.0;
+    const TAU: f32 = 1000.0;
+
     @compute @workgroup_size(64)
     fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let idx = id.x;
@@ -50,7 +56,7 @@ const SHADER: &str = r#"
         let item = batch[idx];
         let flat_idx = item.index * 6u + item.action;
 
-        let SCALE = 1000.0;
+        let SCALE: f32 = 1000.0;
         let t = f32(item.iteration);
 
         let cur_i = regrets[flat_idx];
@@ -67,17 +73,30 @@ const SHADER: &str = r#"
         let cur_f = f32(cur_i) / SCALE;
         let mom_f = f32(mom_i) / SCALE;
 
-        let gamma = 1.0 / sqrt(t + 1.0);
-        let predicted_delta = (1.0 - gamma) * mom_f + gamma * item.delta;
+        let gamma_mom = 1.0 / sqrt(t + 1.0);
+        let predicted_delta = (1.0 - gamma_mom) * mom_f + gamma_mom * item.delta;
 
         let r_pos = max(cur_f, 0.0);
         let r_neg = min(cur_f, 0.0);
-        let alpha = 1.5;
-        let beta = 0.0;
-        let t_a = pow(t, alpha);
-        let t_b = pow(t, beta);
-        let w_pos = t_a / (t_a + 1.0);
-        let w_neg = t_b / (t_b + 1.0);
+
+        // DCFR discount factors: for t < τ, w = 1.0 (no discount)
+        // for t >= τ: w = (t/τ)^p (Brown & Sandholm 2019)
+        var w_pos: f32;
+        if t < TAU {
+            w_pos = 1.0;
+        } else {
+            let ratio = t / TAU;
+            w_pos = pow(ratio, ALPHA);
+        }
+
+        var w_neg: f32;
+        if t < TAU {
+            w_neg = 1.0;
+        } else {
+            let ratio = t / TAU;
+            w_neg = pow(ratio, BETA);
+        }
+
         let discounted_regret = w_pos * r_pos + w_neg * r_neg;
 
         let new_regret = max(discounted_regret + predicted_delta, 0.0);
