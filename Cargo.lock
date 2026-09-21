@@ -882,6 +882,7 @@ dependencies = [
  "pkr-abstraction",
  "pkr-contracts",
  "pkr-core",
+ "pkr-eval",
  "pollster",
  "rand",
  "rayon",
