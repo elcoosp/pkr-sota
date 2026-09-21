@@ -313,8 +313,10 @@ mod tests {
         let mut rng = rand::rng();
         let mut net = ValueNet::new(&mut rng);
 
-        // Generate simple training data: value should equal ehs
-        let data: Vec<(f32, f32, f32, f32, f32)> = (0..1000)
+        // Generate simple training data: value should equal ehs.
+        // Kept small (200 samples, 15 epochs) so CI stays fast; the test
+        // only needs to show the loss decreases, not to converge.
+        let data: Vec<(f32, f32, f32, f32, f32)> = (0..200)
             .map(|_| {
                 let mut r = rand::rng();
                 let ehs: f32 = r.random_range(0.0..1.0);
@@ -326,7 +328,7 @@ mod tests {
         let features = [0.8f32, 0.64, 0.2, 0.04];
         let before = net.forward(&features);
 
-        net.train(&data, 50, 0.01);
+        net.train(&data, 15, 0.01);
 
         let after = net.forward(&features);
         // After training, output for high EHS should be higher

@@ -18,7 +18,10 @@ pub struct CompactRegretTable {
 
 impl CompactRegretTable {
     pub fn new() -> Self {
-        let capacity = 5_000_000;
+        Self::with_capacity(5_000_000)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
         let mut cpu_regrets = Vec::with_capacity(capacity * K);
         let mut cpu_momentums = Vec::with_capacity(capacity * K);
         let mut strategy_sum = Vec::with_capacity(capacity * K);
@@ -187,7 +190,7 @@ mod tests {
     /// So regret = 2.0 / sqrt(2) ≈ 1.4142, stored as i32 * SCALE.
     #[test]
     fn flush_writes_back_only_touched_entries_and_is_idempotent_for_untouched() {
-        let table = CompactRegretTable::new();
+        let table = CompactRegretTable::with_capacity(4096);
         let i1 = table.get_or_create_idx(0xDEAD_0001);
         let i2 = table.get_or_create_idx(0xDEAD_0002);
 

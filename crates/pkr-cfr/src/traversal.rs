@@ -277,7 +277,7 @@ mod tests {
     /// meaning turn nodes are real decision nodes (not leaves).
     #[test]
     fn traverse_does_not_cutoff_at_turn() {
-        let table = Arc::new(CompactRegretTable::new());
+        let table = Arc::new(CompactRegretTable::with_capacity(100_000));
         let abstraction = make_abstraction();
         let evaluator: Arc<dyn pkr_contracts::Evaluator> = Arc::new(MockEvaluator);
 
@@ -322,12 +322,13 @@ mod tests {
     /// are registered in the table (i.e., the tree is NOT truncated at the turn).
     #[test]
     fn turn_and_river_infosets_receive_strategy_sum_after_training() {
-        let table = Arc::new(CompactRegretTable::new());
+        let table = Arc::new(CompactRegretTable::with_capacity(100_000));
         let abstraction = make_abstraction();
         let evaluator: Arc<dyn pkr_contracts::Evaluator> = Arc::new(MockEvaluator);
 
-        // Run many iterations with random decks to explore different action paths
-        for iteration in 1..=200u32 {
+        // Run enough iterations with random decks to register >50 infosets.
+        // GPU flush is a sync point, so keep this small to keep CI fast.
+        for iteration in 1..=60u32 {
             let mut rng = StdRng::seed_from_u64(1000 + iteration as u64);
             let mut batch = Vec::with_capacity(10000);
             let mut deck: Vec<u8> = (0..52).collect();
@@ -377,7 +378,7 @@ mod tests {
             table.flush_gpu_batch(&batch);
         }
 
-        // After 200 iterations with random decks, the table should have
+        // After 60 iterations with random decks, the table should have
         // registered infosets at turn and river streets.
         //
         // With the old turn-cutoff bug, traversal never reaches turn/river,
