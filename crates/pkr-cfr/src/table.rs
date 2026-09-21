@@ -46,11 +46,27 @@ impl CompactRegretTable {
     pub(crate) fn get_or_create_idx(&self, hash: u64) -> usize {
         let entry = self.hash_to_idx.entry(hash);
         *entry.or_insert_with(|| {
-            let idx = self.next_idx.fetch_add(1, Ordering::Relaxed);
-            if idx >= self.capacity {
-                panic!("Flat table capacity exceeded");
+            // CAS loop so next_idx never advances past capacity.
+            // When the table saturates, new hashes share the last slot.
+            loop {
+                let cur = self.next_idx.load(Ordering::Relaxed);
+                if cur >= self.capacity {
+                    tracing::error!(
+                        "CompactRegretTable capacity {} exceeded; clumping new infosets onto last slot",
+                        self.capacity
+                    );
+                    return self.capacity - 1;
+                }
+                match self.next_idx.compare_exchange_weak(
+                    cur,
+                    cur + 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return cur,
+                    Err(_) => continue,
+                }
             }
-            idx
         })
     }
 
@@ -171,6 +187,122 @@ impl CompactRegretTable {
 
     pub fn is_empty(&self) -> bool {
         self.hash_to_idx.is_empty()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Serialize the full table (map + all three atomic arrays) to a
+    /// single file. Format is self-describing and forward-extensible via
+    /// the version field. Takes an &self snapshot, so it is safe to call
+    /// while training threads are idle (e.g. between iterations).
+    pub fn save_checkpoint(&self, path: &str, iteration: u32) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path)?;
+        let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
+        f.write_all(b"PKRCKPT1")?;
+        f.write_all(&1u32.to_le_bytes())?;
+        f.write_all(&(K as u32).to_le_bytes())?;
+        f.write_all(&iteration.to_le_bytes())?;
+        f.write_all(&(n as u64).to_le_bytes())?;
+        let map_len = self.hash_to_idx.len() as u64;
+        f.write_all(&map_len.to_le_bytes())?;
+        for e in self.hash_to_idx.iter() {
+            f.write_all(&e.key().to_le_bytes())?;
+            f.write_all(&(*e.value() as u64).to_le_bytes())?;
+        }
+        let entries = n * K;
+        for i in 0..entries {
+            f.write_all(&self.cpu_regrets[i].load(Ordering::Relaxed).to_le_bytes())?;
+        }
+        for i in 0..entries {
+            f.write_all(&self.cpu_momentums[i].load(Ordering::Relaxed).to_le_bytes())?;
+        }
+        for i in 0..entries {
+            f.write_all(&self.strategy_sum[i].load(Ordering::Relaxed).to_le_bytes())?;
+        }
+        f.flush()?;
+        Ok(())
+    }
+
+    /// Load a checkpoint written by `save_checkpoint`. Clears the current
+    /// table first, so it is safe to call on a freshly-constructed table.
+    /// Returns the iteration number stored in the checkpoint.
+    pub fn load_checkpoint(&self, path: &str) -> std::io::Result<u32> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path)?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        let mut p = 0usize;
+        let read = |p: &mut usize, n: usize| -> std::io::Result<&[u8]> {
+            if *p + n > buf.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "checkpoint truncated",
+                ));
+            }
+            let s = &buf[*p..*p + n];
+            *p += n;
+            Ok(s)
+        };
+        let magic = read(&mut p, 8)?;
+        if magic != b"PKRCKPT1" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bad checkpoint magic",
+            ));
+        }
+        let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+        if version != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported checkpoint version",
+            ));
+        }
+        let k = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap()) as usize;
+        if k != K {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint K mismatch",
+            ));
+        }
+        let iteration = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+        let n = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
+        if n > self.capacity {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint larger than table capacity",
+            ));
+        }
+        let map_len = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
+        self.hash_to_idx.clear();
+        for _ in 0..map_len {
+            let key = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
+            let idx = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
+            if idx >= self.capacity {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "checkpoint index out of range",
+                ));
+            }
+            self.hash_to_idx.insert(key, idx);
+        }
+        let entries = n * K;
+        for i in 0..entries {
+            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+            self.cpu_regrets[i].store(v, Ordering::Relaxed);
+        }
+        for i in 0..entries {
+            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+            self.cpu_momentums[i].store(v, Ordering::Relaxed);
+        }
+        for i in 0..entries {
+            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+            self.strategy_sum[i].store(v, Ordering::Relaxed);
+        }
+        self.next_idx.store(n, Ordering::Relaxed);
+        Ok(iteration)
     }
 }
 

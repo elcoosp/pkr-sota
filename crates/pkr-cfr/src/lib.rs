@@ -25,10 +25,18 @@ pub struct Trainer {
 
 impl Trainer {
     pub fn new(abstraction: Arc<dyn AbstractionBuilder>, evaluator: Arc<dyn Evaluator>) -> Self {
+        Self::with_capacity(abstraction, evaluator, 5_000_000)
+    }
+
+    pub fn with_capacity(
+        abstraction: Arc<dyn AbstractionBuilder>,
+        evaluator: Arc<dyn Evaluator>,
+        capacity: usize,
+    ) -> Self {
         Self {
             abstraction,
             evaluator,
-            table: Arc::new(CompactRegretTable::new()),
+            table: Arc::new(CompactRegretTable::with_capacity(capacity)),
             iteration: AtomicU32::new(0),
         }
     }
@@ -104,5 +112,24 @@ impl Trainer {
 
     pub fn get_table(&self) -> &CompactRegretTable {
         &self.table
+    }
+
+    pub fn iteration(&self) -> u32 {
+        self.iteration.load(Ordering::Relaxed)
+    }
+
+    pub fn is_near_capacity(&self) -> bool {
+        let cap = self.table.capacity();
+        cap > 0 && self.table.len() * 100 / cap >= 95
+    }
+
+    pub fn save_checkpoint(&self, path: &str) -> std::io::Result<()> {
+        self.table.save_checkpoint(path, self.iteration())
+    }
+
+    pub fn load_checkpoint(&self, path: &str) -> std::io::Result<()> {
+        let iter = self.table.load_checkpoint(path)?;
+        self.iteration.store(iter, Ordering::Relaxed);
+        Ok(())
     }
 }

@@ -951,9 +951,11 @@ dependencies = [
  "pkr-core",
  "pkr-eval",
  "pkr-export",
+ "pkr-runtime",
  "rand",
  "rand_xoshiro",
  "rayon",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]

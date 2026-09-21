@@ -49,6 +49,20 @@ struct Cli {
 
     #[arg(long)]
     threads: Option<usize>,
+
+    /// Path to a checkpoint file. If it exists on startup it is loaded and
+    /// training resumes from the saved iteration. Written periodically.
+    #[arg(long)]
+    checkpoint: Option<PathBuf>,
+
+    /// Write a checkpoint every N iterations (0 = never).
+    #[arg(long, default_value_t = 10000)]
+    checkpoint_every: u32,
+
+    /// Maximum number of distinct infosets. Defaults to 5M (matches the
+    /// production table). Lower for smoke tests.
+    #[arg(long, default_value_t = 5_000_000)]
+    capacity: usize,
 }
 
 fn main() {
@@ -77,56 +91,67 @@ fn main() {
     let mut abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
 
     if let Some(path) = &cli.flop_centroids {
-        abstraction
-            .load_street_centroids(1, path.to_str().unwrap())
-            .expect("Failed to load flop centroids");
+        abstraction.load_street_centroids(1, path.to_str().unwrap()).expect("flop centroids");
     }
     if let Some(path) = &cli.turn_centroids {
-        abstraction
-            .load_street_centroids(2, path.to_str().unwrap())
-            .expect("Failed to load turn centroids");
+        abstraction.load_street_centroids(2, path.to_str().unwrap()).expect("turn centroids");
     }
     if let Some(path) = &cli.river_centroids {
-        abstraction
-            .load_street_centroids(3, path.to_str().unwrap())
-            .expect("Failed to load river centroids");
+        abstraction.load_street_centroids(3, path.to_str().unwrap()).expect("river centroids");
     }
-
     if let Some(path) = &cli.preflop_table {
-        abstraction
-            .init_table(0, path.to_str().unwrap())
-            .expect("Failed to load preflop table");
+        abstraction.init_table(0, path.to_str().unwrap()).expect("preflop table");
     }
     if let Some(path) = &cli.flop_table {
-        abstraction
-            .init_table(1, path.to_str().unwrap())
-            .expect("Failed to load flop table");
+        abstraction.init_table(1, path.to_str().unwrap()).expect("flop table");
     }
     if let Some(path) = &cli.turn_table {
-        abstraction
-            .init_table(2, path.to_str().unwrap())
-            .expect("Failed to load turn table");
+        abstraction.init_table(2, path.to_str().unwrap()).expect("turn table");
     }
     if let Some(path) = &cli.flop_buckets {
-        abstraction
-            .load_flop_buckets(path.to_str().unwrap())
-            .expect("Failed to load flop buckets");
+        abstraction.load_flop_buckets(path.to_str().unwrap()).expect("flop buckets");
     }
     if let Some(path) = &cli.river_table {
-        abstraction
-            .init_table(3, path.to_str().unwrap())
-            .expect("Failed to load river table");
+        abstraction.init_table(3, path.to_str().unwrap()).expect("river table");
     }
 
     let abstraction = Arc::new(abstraction);
-    let mut trainer = Trainer::new(abstraction, evaluator);
+    let mut trainer = Trainer::with_capacity(abstraction, evaluator, cli.capacity);
+
+    let start_iter = if let Some(ckpt) = &cli.checkpoint {
+        if ckpt.exists() {
+            match trainer.load_checkpoint(ckpt.to_str().unwrap()) {
+                Ok(()) => {
+                    let it = trainer.iteration();
+                    eprintln!("Resumed from checkpoint at iteration {}", it);
+                    it
+                }
+                Err(e) => {
+                    eprintln!("WARNING: failed to load checkpoint: {} — starting fresh", e);
+                    0
+                }
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    };
 
     let start = Instant::now();
-    for i in 0..cli.iterations {
+    let mut last_ckpt_iter = start_iter;
+    let mut stopped_early = false;
+
+    for i in start_iter..cli.iterations {
+        if trainer.is_near_capacity() {
+            eprintln!("WARN: table near capacity ({} infosets), stopping early", trainer.get_table().len());
+            stopped_early = true;
+            break;
+        }
         if i % 1000 == 0 {
-            let elapsed = start.elapsed().as_secs_f64();
-            let iters_done = i.max(1) as f64;
-            let rate = iters_done / elapsed.max(1e-6);
+            let elapsed = start.elapsed().as_secs_f64().max(1e-6);
+            let iters_done = (i - start_iter).max(1) as f64;
+            let rate = iters_done / elapsed;
             let remaining = (cli.iterations - i) as f64;
             let eta_s = remaining / rate.max(1e-6);
             let infosets = trainer.get_table().len();
@@ -139,7 +164,30 @@ fn main() {
                 eta_s / 3600.0
             );
         }
+        if cli.checkpoint_every > 0
+            && i > 0
+            && i != last_ckpt_iter
+            && (i - last_ckpt_iter) >= cli.checkpoint_every
+        {
+            if let Some(ckpt) = &cli.checkpoint {
+                match trainer.save_checkpoint(ckpt.to_str().unwrap()) {
+                    Ok(()) => {
+                        eprintln!("Checkpoint written at iteration {}", i);
+                        last_ckpt_iter = i;
+                    }
+                    Err(e) => eprintln!("WARNING: checkpoint failed: {}", e),
+                }
+            }
+        }
         trainer.run_iteration_parallel();
+    }
+
+    if !stopped_early {
+        if let Some(ckpt) = &cli.checkpoint {
+            if let Err(e) = trainer.save_checkpoint(ckpt.to_str().unwrap()) {
+                eprintln!("WARNING: final checkpoint failed: {}", e);
+            }
+        }
     }
 
     eprintln!("Training done in {:.1}s", start.elapsed().as_secs_f64());
