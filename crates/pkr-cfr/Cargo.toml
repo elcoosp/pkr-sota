@@ -7,6 +7,7 @@ edition.workspace = true
 pkr-contracts = { workspace = true }
 pkr-abstraction = { workspace = true }
 pkr-core = { workspace = true }
+pkr-eval = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
