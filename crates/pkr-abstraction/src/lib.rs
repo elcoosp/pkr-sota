@@ -370,6 +370,22 @@ mod extended_tests {
     }
 
     #[test]
+    fn test_river_centroids_support_large_k() {
+        // River centroids should support k up to 2000 (u16 range)
+        let n: usize = 1500;
+        let store = CentroidStore {
+            centroids: (0..n)
+                .map(|i| (i as f32 / n as f32, i as f32 / n as f32))
+                .collect(),
+        };
+        let tmp = std::env::temp_dir().join("test_river_centroids.bin");
+        save_centroids(tmp.to_str().unwrap(), &store).unwrap();
+        let loaded = load_centroids(tmp.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.centroids.len(), n);
+        std::fs::remove_file(tmp).ok();
+    }
+
+    #[test]
     fn test_hash_changes_with_street() {
         let builder = KMeansAbstraction::new(vec![(0.5, 0.25)], Arc::new(TestEval));
         let h1 = builder.get_infoset_hash(&[0, 1], &[], &[], 0);
