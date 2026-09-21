@@ -295,7 +295,7 @@ pub fn generate_training_data(n: usize, rng: &mut impl rand::Rng) -> Vec<(f32, f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, RngExt};
+    use rand::RngExt;
 
     #[test]
     fn test_network_initializes_and_forward() {

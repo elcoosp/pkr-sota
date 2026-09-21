@@ -260,7 +260,7 @@ pub fn is_river_resolvable(state: &GameState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pkr_core::state::{Action, ActionKind};
+    use pkr_core::state::ActionKind;
 
     #[test]
     fn test_river_range_from_available() {

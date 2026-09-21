@@ -12,8 +12,6 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::Write;
 
-type EhsValue = f32;
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {

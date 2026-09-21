@@ -59,6 +59,9 @@ pub fn build_translation_table() -> Vec<u8> {
 }
 
 pub fn write_blueprint(path: &str, table: &CompactRegretTable, keys: &[u64]) {
+    let mut sorted_keys: Vec<u64> = keys.to_vec();
+    sorted_keys.sort_unstable();
+    let keys: &[u64] = &sorted_keys;
     let num_keys = keys.len();
     let infoset_count = num_keys;
 
