@@ -145,9 +145,12 @@ pub fn traverse(
         let v_sigma: f32 = strategy.iter().zip(v.iter()).map(|(p, u)| p * u).sum();
 
         // Push updates to the local batch instead of updating atomically
+        // The delta is scaled by opponent_reach: in external-sampling MCCFR,
+        // the opponent's reach probability weights the traversal so that
+        // the expected regret converges to the true game value.
         let idx = table.get_or_create_idx(infoset_hash);
         for a in 0..K {
-            let delta = v[a] - v_sigma;
+            let delta = (v[a] - v_sigma) * opponent_reach;
             batch.push(BatchItem {
                 index: idx as u32,
                 action: a as u32,
