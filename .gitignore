@@ -16,3 +16,5 @@ target
 target/
 wr.sh
 dump.txt
+turn_abstraction.bin
+abstraction.bin
