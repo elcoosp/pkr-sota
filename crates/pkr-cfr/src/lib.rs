@@ -1,7 +1,10 @@
 pub mod dcfr;
 pub mod gpu;
+pub mod preflop_validate;
+pub mod riversolve;
 pub mod table;
 pub mod traversal;
+pub mod valuenet;
 
 use crate::gpu::BatchItem;
 use crate::table::CompactRegretTable;
