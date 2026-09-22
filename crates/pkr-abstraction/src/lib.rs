@@ -3,7 +3,7 @@ pub use ehs::calculate_ehs;
 
 use memmap2::Mmap;
 use pkr_contracts::{fnv1a, AbstractionBuilder, Evaluator, FNV_OFFSET};
-use pkr_eval::lookup::{choose, combinadic_rank};
+use pkr_eval::lookup::{choose, combinadic_rank, combinadic_rank_4};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -193,6 +193,20 @@ impl KMeansAbstraction {
         }
         (rank as usize) * 15 + mask_idx
     }
+
+    fn flat_index_river_board(board: &[u8]) -> usize {
+        debug_assert_eq!(board.len(), 5);
+        let mut sorted = [board[0], board[1], board[2], board[3], board[4]];
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        combinadic_rank(&sorted) as usize
+    }
+
+    fn flat_index_turn_board(board: &[u8]) -> usize {
+        debug_assert_eq!(board.len(), 4);
+        let mut sorted = [board[0], board[1], board[2], board[3]];
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        combinadic_rank_4(&sorted) as usize
+    }
 }
 
 fn combinadic_rank_6(cards: &[u8; 6]) -> u64 {
@@ -217,38 +231,60 @@ impl AbstractionBuilder for KMeansAbstraction {
             .get(&street)
             .unwrap_or(&self.default_centroids);
 
+        let ehs_fallback = || {
+            let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
+            nearest_centroid(ehs, ehs_sq, centroids)
+        };
         let cluster_id = match board.len() {
             0 => {
                 if let Some(table) = self.tables.get(&0u8).and_then(|l| l.get()) {
                     let idx = Self::flat_index_preflop(hole);
-                    table[idx] as u64
+                    if idx < table.len() {
+                        table[idx] as u64
+                    } else {
+                        ehs_fallback()
+                    }
                 } else {
-                    let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
-                    nearest_centroid(ehs, ehs_sq, centroids)
+                    ehs_fallback()
                 }
             }
             3 => {
                 if let Some(table) = self.tables.get(&1u8).and_then(|l| l.get()) {
                     let idx = Self::flat_index_flop(hole, board);
-                    table[idx] as u64
+                    if idx < table.len() {
+                        table[idx] as u64
+                    } else {
+                        ehs_fallback()
+                    }
                 } else {
-                    let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
-                    nearest_centroid(ehs, ehs_sq, centroids)
+                    ehs_fallback()
                 }
             }
             4 => {
                 if let Some(table) = self.tables.get(&2u8).and_then(|l| l.get()) {
                     let idx = Self::flat_index_turn(hole, board);
-                    table[idx] as u64
+                    if idx < table.len() {
+                        table[idx] as u64
+                    } else {
+                        ehs_fallback()
+                    }
                 } else {
-                    let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
-                    nearest_centroid(ehs, ehs_sq, centroids)
+                    ehs_fallback()
                 }
             }
-            _ => {
-                let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
-                nearest_centroid(ehs, ehs_sq, centroids)
+            5 => {
+                // River: hand rank is exact. Use it directly (hole-specific
+                // and O(1)) and mix in a board bucket if one was provided.
+                let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
+                let board_bucket = if let Some(table) = self.tables.get(&3u8).and_then(|l| l.get()) {
+                    let idx = Self::flat_index_river_board(board);
+                    if idx < table.len() { table[idx] as u64 } else { 0 }
+                } else {
+                    0
+                };
+                (hand_rank << 8) | (board_bucket & 0xff)
             }
+            _ => ehs_fallback(),
         };
 
         let flop_bucket = self.flop_bucket(board);

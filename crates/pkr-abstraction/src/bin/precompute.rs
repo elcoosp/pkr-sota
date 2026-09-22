@@ -244,76 +244,65 @@ fn generate_turn_table(
     centroids_path: &str,
     rank_table_path: &str,
     output: &str,
-    num_samples: usize,
+    _num_samples: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
     assert!(
-        store.centroids.len() <= 500,
-        "centroid count for turn tables must be <= 500 (u16 ids)"
+        store.centroids.len() <= 255,
+        "turn table uses u8 bucket ids; keep centroid count <= 255"
     );
+    let centroids = &store.centroids;
     let evaluator = TableEvaluator::new(rank_table_path)?;
-    let total = choose(52, 6) as usize;
+    let total_combos = choose(52, 6) as usize;
+    let entries = total_combos * 15;
+    let mut table: Vec<u8> = vec![0u8; entries];
 
-    let mut rng = StdRng::seed_from_u64(42);
-    let data: Vec<(f32, f32)> = (0..total)
-        .map(|idx| {
-            let cards = combinadic_unrank_6(idx as u32);
-            let hole = [cards[0], cards[1]];
-            let board = [cards[2], cards[3], cards[4], cards[5]];
-            let (ehs, _) = calculate_ehs(&hole, &board, &evaluator);
-            (ehs, 0.0)
-        })
-        .collect();
+    let masks: [[usize; 2]; 15] = [
+        [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
+        [1, 2], [1, 3], [1, 4], [1, 5],
+        [2, 3], [2, 4], [2, 5],
+        [3, 4], [3, 5],
+        [4, 5],
+    ];
 
-    let num_samples_actual = num_samples.min(data.len());
-    let centroids: Vec<(f32, f32)> = data
-        .sample(&mut rng, num_samples_actual as usize)
-        .cloned()
-        .collect();
-
-    let num_centroids = centroids.len();
-    let table: Vec<(u32, u16)> = (0..total)
-        .map(|idx| {
-            let cards = combinadic_unrank_6(idx as u32);
-            let hole = [cards[0], cards[1]];
-            let board = [cards[2], cards[3], cards[4], cards[5]];
-            let (ehs, _) = calculate_ehs(&hole, &board, &evaluator);
-            let mut best_idx = 0;
-            let mut best_dist = f32::MAX;
-            for (i, c) in centroids.iter().enumerate() {
-                let d = (ehs - c.0).powi(2);
-                if d < best_dist {
-                    best_dist = d;
-                    best_idx = i;
+    table.par_chunks_mut(15).enumerate().for_each(|(combo_idx, chunk)| {
+        let cards = combinadic_unrank_6(combo_idx as u32);
+        for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+            let pos = masks[mask_idx];
+            let hole = [cards[pos[0]], cards[pos[1]]];
+            let mut board = [0u8; 4];
+            let mut b_idx = 0;
+            for j in 0..6 {
+                if j != pos[0] && j != pos[1] {
+                    board[b_idx] = cards[j];
+                    b_idx += 1;
                 }
             }
-            let key = turn_base_key(&cards);
-            (key, best_idx as u16)
-        })
-        .collect();
+            let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+            let mut best_idx = 0u8;
+            let mut best_dist = f32::MAX;
+            for (ci, c) in centroids.iter().enumerate() {
+                let dx = ehs - c.0;
+                let dy = ehs_sq - c.1;
+                let dist = dx * dx + dy * dy;
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = ci as u8;
+                }
+            }
+            *slot = best_idx;
+        }
+    });
 
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&(total as u32).to_le_bytes()).map_err(|e| format!("write size: {}", e))?;
-    for (key, bucket) in &table {
-        file.write_all(&key.to_le_bytes()).map_err(|e| format!("write key: {}", e))?;
-        file.write_all(&bucket.to_le_bytes()).map_err(|e| format!("write bucket: {}", e))?;
-    }
+    file.write_all(&table).map_err(|e| format!("write: {}", e))?;
     println!(
-        "Generated turn table with {} entries ({} centroids, {} sampled) -> {}",
-        total,
-        num_centroids,
-        num_samples_actual,
+        "Generated turn table ({} entries, {} centroids) -> {}",
+        entries,
+        centroids.len(),
         output
     );
     Ok(())
-}
-
-fn turn_base_key(cards: &[u8; 6]) -> u32 {
-    let mut key = 0u32;
-    for &c in cards {
-        key = key * 52 + c as u32;
-    }
-    key
 }
 
 fn generate_preflop_table(
@@ -418,27 +407,29 @@ fn generate_flop_buckets(k: usize, rank_table_path: &str, output: &str) -> Resul
 }
 
 fn generate_river_buckets(k: usize, rank_table_path: &str, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(k <= 255, "river bucket count must be <= 255 (u8 buckets)");
     let evaluator = TableEvaluator::new(rank_table_path)?;
-    let total_rivers = choose(52, 4) as usize;
-    let features: Vec<(f32, f32)> = (0..total_rivers)
-        .map(|river_idx| {
-            let river = combinadic_unrank_3(river_idx as u32);
+    let total_boards = choose(52, 5) as usize;
+    let features: Vec<[f32; 10]> = (0..total_boards)
+        .into_par_iter()
+        .map(|board_idx| {
+            let board = combinadic_unrank_5(board_idx as u32);
             let mut histogram = [0.0f32; 10];
-            let mut rng = StdRng::seed_from_u64(river_idx as u64);
-            let mut deck = [0u8; 48];
+            let mut rng = StdRng::seed_from_u64(board_idx as u64);
+            let mut deck = [0u8; 47];
             let mut d_idx = 0;
             for c in 0..52u8 {
-                if !river.contains(&c) {
+                if !board.contains(&c) {
                     deck[d_idx] = c;
                     d_idx += 1;
                 }
             }
-            for _ in 0..500 {
+            for _ in 0..200 {
                 let hole = [
-                    deck[rng.random_range(0..48)],
-                    deck[rng.random_range(0..48)],
+                    deck[rng.random_range(0..47)],
+                    deck[rng.random_range(0..47)],
                 ];
-                let (ehs, _) = calculate_ehs(&hole, &river, &evaluator);
+                let (ehs, _) = calculate_ehs(&hole, &board, &evaluator);
                 let bucket = (ehs * 10.0).clamp(0.0, 9.0) as usize;
                 histogram[bucket] += 1.0;
             }
@@ -449,23 +440,22 @@ fn generate_river_buckets(k: usize, rank_table_path: &str, output: &str) -> Resu
                     *v /= sum;
                 }
             }
-            let mean = norm.iter().enumerate().map(|(i, &w)| i as f32 * w).sum::<f32>();
-            let variance = norm.iter().enumerate().map(|(i, &w)| (i as f32 - mean).powi(2) * w).sum::<f32>();
-            (mean, variance)
+            norm
         })
         .collect();
 
-    assert!(k <= 2000, "river bucket count must be <= 2000 (u16 ids)");
-    let centroids = simple_kmeans(&features, k, 50);
-    let mut buckets: Vec<u8> = vec![0; total_rivers];
+    let centroids = kmeans_10d(&features, k, 50);
+    let mut buckets: Vec<u8> = vec![0; total_boards];
     buckets.par_iter_mut().enumerate().for_each(|(idx, bucket)| {
         let feat = &features[idx];
         let mut best_dist = f32::MAX;
         let mut best_bucket = 0u8;
         for (c_idx, c) in centroids.iter().enumerate() {
-            let dx = feat.0 - c.0;
-            let dy = feat.1 - c.1;
-            let dist = dx * dx + dy * dy;
+            let mut dist = 0.0;
+            for i in 0..10 {
+                let d = feat[i] - c[i];
+                dist += d * d;
+            }
             if dist < best_dist {
                 best_dist = dist;
                 best_bucket = c_idx as u8;
@@ -475,7 +465,10 @@ fn generate_river_buckets(k: usize, rank_table_path: &str, output: &str) -> Resu
     });
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
     file.write_all(&buckets).map_err(|e| format!("write: {}", e))?;
-    println!("Generated {} river buckets -> {}", k, output);
+    println!(
+        "Generated {} river board-buckets ({} boards) -> {}",
+        k, total_boards, output
+    );
     Ok(())
 }
 
