@@ -19,7 +19,6 @@ pub fn traverse(
     global_iteration: u32,
     traverser: usize,
     reach_prob: f32,
-    opponent_reach: f32,
     deck: &[u8],
     deck_idx: &mut usize,
     depth: u32,
@@ -144,7 +143,6 @@ pub fn traverse(
                 global_iteration,
                 traverser,
                 reach_prob * strategy[a],
-                opponent_reach,
                 deck,
                 &mut *deck_idx,
                 depth + 1,
@@ -159,7 +157,7 @@ pub fn traverse(
         let v_sigma: f32 = strategy.iter().zip(v.iter()).map(|(p, u)| p * u).sum();
 
         for a in 0..K {
-            let delta = (v[a] - v_sigma) * opponent_reach;
+            let delta = v[a] - v_sigma;
             batch.push(BatchItem {
                 index: idx as u32,
                 action: a as u32,
@@ -206,7 +204,6 @@ pub fn traverse(
             global_iteration,
             traverser,
             reach_prob,
-            opponent_reach * strategy[sampled_abstract],
             deck,
             &mut *deck_idx,
             depth + 1,
@@ -247,7 +244,6 @@ fn abstract_action_index(kind: &ActionKind, state: &GameState) -> Option<usize> 
 }
 
 #[cfg(test)]
-#[cfg(feature = "gpu")]
 mod tests {
     use super::*;
     use crate::table::CompactRegretTable;
@@ -304,7 +300,6 @@ mod tests {
             1,
             0,
             1.0,
-            1.0,
             deck_slice,
             &mut deck_idx,
             0,
@@ -345,7 +340,6 @@ mod tests {
                 iteration,
                 0,
                 1.0,
-                1.0,
                 deck_slice,
                 &mut deck_idx,
                 0,
@@ -366,7 +360,6 @@ mod tests {
                 iteration,
                 1,
                 1.0,
-                1.0,
                 deck_slice,
                 &mut deck_idx2,
                 0,
@@ -378,7 +371,7 @@ mod tests {
             for op in &strategy_batch {
                 table.add_strategy_sum_at(op.index as usize, op.action as usize, op.prob);
             }
-            table.flush_gpu_batch(&batch);
+            table.flush_cpu_batch(&mut batch);
         }
 
         let keys = table.get_keys();

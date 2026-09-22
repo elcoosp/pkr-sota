@@ -99,7 +99,7 @@ impl Trainer {
                         let mut deck_idx = 0usize;
                         traverse(
                             &mut state, &table, &*abstraction, &*evaluator, &mut rng,
-                            global_iter, 0, 1.0, 1.0, deck_slice, &mut deck_idx, 0,
+                            global_iter, 0, 1.0, deck_slice, &mut deck_idx, 0,
                             &mut batch, &mut strategy_batch, &mut metrics,
                         );
 
@@ -108,7 +108,7 @@ impl Trainer {
                         let mut deck_idx2 = 0usize;
                         traverse(
                             &mut state2, &table, &*abstraction, &*evaluator, &mut rng,
-                            global_iter, 1, 1.0, 1.0, deck_slice, &mut deck_idx2, 0,
+                            global_iter, 1, 1.0, deck_slice, &mut deck_idx2, 0,
                             &mut batch, &mut strategy_batch, &mut metrics,
                         );
                     }
