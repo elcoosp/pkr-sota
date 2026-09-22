@@ -1,5 +1,5 @@
 use crate::gpu::BatchItem;
-use crate::table::CompactRegretTable;
+use crate::table::{CompactRegretTable, StrategyOp};
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use rand::Rng;
@@ -22,6 +22,7 @@ pub fn traverse(
     deck_idx: &mut usize,
     depth: u32,
     batch: &mut Vec<BatchItem>,
+    strategy_batch: &mut Vec<StrategyOp>,
 ) -> f32 {
     if depth > MAX_DEPTH {
         return 0.0;
@@ -117,7 +118,11 @@ pub fn traverse(
 
     if let Some(idx) = traverser_idx {
         for a in 0..K {
-            table.add_strategy_sum_at(idx, a, strategy[a] * reach_prob);
+            strategy_batch.push(StrategyOp {
+                index: idx as u32,
+                action: a as u8,
+                prob: strategy[a] * reach_prob,
+            });
         }
     }
 
@@ -148,6 +153,7 @@ pub fn traverse(
                 &mut *deck_idx,
                 depth + 1,
                 batch,
+                strategy_batch,
             );
             *deck_idx = child_deck_idx;
             current.undo_action(); // undo apply_action_in_place
@@ -213,6 +219,7 @@ pub fn traverse(
             &mut *deck_idx,
             depth + 1,
             batch,
+            strategy_batch,
         );
         *deck_idx = child_deck_idx;
         current.undo_action(); // undo apply_action_in_place
@@ -293,6 +300,7 @@ mod tests {
 
         let mut rng = StdRng::seed_from_u64(99);
         let mut batch = Vec::new();
+        let mut strategy_batch = Vec::new();
         let deck: Vec<u8> = (0..52).collect();
 
         let mut state = GameState::new(200.0, 1.0, 2.0);
@@ -314,6 +322,7 @@ mod tests {
             &mut deck_idx,
             0,
             &mut batch,
+            &mut strategy_batch,
         );
 
         // The result should be a valid payoff (not NaN, not a raw EHS * pot value)
@@ -341,6 +350,7 @@ mod tests {
         for iteration in 1..=60u32 {
             let mut rng = StdRng::seed_from_u64(1000 + iteration as u64);
             let mut batch = Vec::with_capacity(10000);
+            let mut strategy_batch = Vec::with_capacity(10000);
             let mut deck: Vec<u8> = (0..52).collect();
             deck.shuffle(&mut rng);
 
@@ -363,6 +373,7 @@ mod tests {
                 &mut deck_idx,
                 0,
                 &mut batch,
+                &mut strategy_batch,
             );
 
             // Villain perspective
@@ -383,8 +394,12 @@ mod tests {
                 &mut deck_idx2,
                 0,
                 &mut batch,
+                &mut strategy_batch,
             );
 
+            for op in &strategy_batch {
+                table.add_strategy_sum_at(op.index as usize, op.action as usize, op.prob);
+            }
             table.flush_gpu_batch(&batch);
         }
 

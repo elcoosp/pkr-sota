@@ -56,6 +56,17 @@ const F_MOMENTUM: usize = 1;
 const F_SUM: usize = 2;
 pub(crate) const SCALE: f32 = 1000.0;
 
+/// A deferred strategy-sum increment. Pushed by traverser nodes into a
+/// thread-local Vec, applied serially by the coordinator. This is the
+/// same shape as the regret BatchItem stream and is what keeps the
+/// traverse hot path write-free on shared state.
+#[derive(Clone, Copy, Debug)]
+pub struct StrategyOp {
+    pub index: u32,
+    pub action: u8,
+    pub prob: f32,
+}
+
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
     /// Layout: `data[idx * STRIDE + action * FIELDS + field]`
