@@ -101,13 +101,15 @@ impl Trainer {
             .collect();
 
         // Merge all batches into one giant batch
-        let mut merged_batch = Vec::with_capacity(100000);
+        let mut merged_batch = Vec::with_capacity(100_000);
         for tb in thread_batches {
             merged_batch.extend(tb);
         }
 
-        // Send exactly ONE dispatch to the GPU per iteration
-        table.flush_gpu_batch(&merged_batch);
+        // CPU flush: no WGPU submit, no sync, no staging buffer. The DCFR
+        // math is a handful of flops per item; the sync overhead of the GPU
+        // path dominates for HU NLHE with K=6.
+        table.flush_cpu_batch(&merged_batch);
     }
 
     pub fn get_table(&self) -> &CompactRegretTable {

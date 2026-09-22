@@ -878,6 +878,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "dashmap",
+ "foldhash 0.1.5",
  "papaya",
  "pkr-abstraction",
  "pkr-contracts",

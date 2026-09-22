@@ -13,6 +13,7 @@ rayon = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 papaya = { workspace = true }
+foldhash = { workspace = true }
 wgpu = { version = "29.0.3", optional = true }
 bytemuck = { workspace = true }
 pollster = "0.3"

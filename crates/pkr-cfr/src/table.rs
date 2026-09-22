@@ -1,5 +1,7 @@
+use crate::dcfr::update_regret_pfr_plus;
 use crate::gpu::{BatchItem, GpuState};
 use dashmap::DashMap;
+use foldhash::fast::RandomState as FoldHasher;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
@@ -7,7 +9,7 @@ const K: usize = 6;
 pub(crate) const SCALE: f32 = 1000.0;
 
 pub struct CompactRegretTable {
-    hash_to_idx: DashMap<u64, usize>,
+    hash_to_idx: DashMap<u64, usize, FoldHasher>,
     cpu_regrets: Vec<AtomicI32>,
     cpu_momentums: Vec<AtomicI32>,
     strategy_sum: Vec<AtomicI32>,
@@ -33,7 +35,7 @@ impl CompactRegretTable {
         let gpu = GpuState::new(capacity);
 
         Self {
-            hash_to_idx: DashMap::new(),
+            hash_to_idx: DashMap::with_hasher(FoldHasher::default()),
             cpu_regrets,
             cpu_momentums,
             strategy_sum,
@@ -112,8 +114,45 @@ impl CompactRegretTable {
 
     pub fn add_strategy_sum(&self, infoset_hash: u64, action_idx: usize, prob: f32) {
         let idx = self.get_or_create_idx(infoset_hash);
+        self.add_strategy_sum_at(idx, action_idx, prob);
+    }
+
+    /// Fast path used by the traversal: assumes the caller already resolved
+    /// `infoset_hash` to `idx` via `get_or_create_idx`. Saves K-1 DashMap
+    /// lookups per traverser node.
+    #[inline(always)]
+    pub fn add_strategy_sum_at(&self, idx: usize, action_idx: usize, prob: f32) {
         let base = idx * K;
         self.strategy_sum[base + action_idx].fetch_add((prob * SCALE) as i32, Ordering::Relaxed);
+    }
+
+    /// CPU implementation of the PCFR+ DCFR update, semantically identical
+    /// to the GPU shader in gpu.rs. For HU NLHE with K=6 the arithmetic is
+    /// trivial; skipping the WGPU submit + sync per iteration removes the
+    /// dominant per-iteration overhead.
+    pub fn flush_cpu_batch(&self, batch: &[BatchItem]) {
+        if batch.is_empty() {
+            return;
+        }
+        let mut dedup: HashMap<(u32, u32), f32, FoldHasher> =
+            HashMap::with_capacity_and_hasher(batch.len().min(100_000), FoldHasher::default());
+        let mut iteration = 0u32;
+        for item in batch {
+            let entry = dedup.entry((item.index, item.action)).or_insert(0.0);
+            *entry += item.delta;
+            iteration = item.iteration;
+        }
+
+        for ((index, action), delta) in dedup {
+            let flat = index as usize * K + action as usize;
+            let cur = self.cpu_regrets[flat].load(Ordering::Relaxed) as f32 / SCALE;
+            let mom = self.cpu_momentums[flat].load(Ordering::Relaxed) as f32 / SCALE;
+            let (new_r, new_m) = update_regret_pfr_plus(cur, mom, iteration, delta);
+            self.cpu_regrets[flat]
+                .store((new_r * SCALE) as i32, Ordering::Relaxed);
+            self.cpu_momentums[flat]
+                .store((new_m * SCALE) as i32, Ordering::Relaxed);
+        }
     }
 
     /// CPU-GPU hybrid: deduplicate batch, dispatch to GPU in chunks,

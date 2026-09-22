@@ -38,6 +38,7 @@ pub fn discount_factor(t: f32, p: f32) -> f32 {
 /// Returns (new_regret, new_momentum).
 ///
 /// This is the CPU fallback path — the GPU shader in gpu.rs mirrors this.
+#[inline(always)]
 pub fn update_regret_pfr_plus(
     current: f32,
     prev_momentum: f32,

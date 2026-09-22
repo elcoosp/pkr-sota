@@ -111,7 +111,7 @@ impl GameState {
         if to_call == 0.0 {
             actions.push(Action { player: self.actor, kind: ActionKind::Check });
             let pot = self.pot;
-            for &frac in &[0.5, 0.75, 1.0, 1.5, 2.0] {
+            for &frac in &[0.5, 1.0, 2.0] {
                 let bet = pot * frac;
                 if bet <= self.stacks[self.actor] {
                     actions.push(Action { player: self.actor, kind: ActionKind::Bet(bet) });
@@ -124,7 +124,7 @@ impl GameState {
             actions.push(Action { player: self.actor, kind: ActionKind::Fold });
             actions.push(Action { player: self.actor, kind: ActionKind::Call });
             let pot = self.pot;
-            for &frac in &[0.5, 0.75, 1.0, 1.5, 2.0] {
+            for &frac in &[0.5, 1.0, 2.0] {
                 let raise = to_call + pot * frac;
                 if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
                     actions.push(Action { player: self.actor, kind: ActionKind::Bet(raise) });
