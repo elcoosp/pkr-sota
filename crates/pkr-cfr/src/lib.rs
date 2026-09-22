@@ -57,7 +57,6 @@ impl Trainer {
         static PROFILE: OnceLock<bool> = OnceLock::new();
         let profile = *PROFILE.get_or_init(|| std::env::var("PKR_PHASE_PROFILE").is_ok());
 
-        let num_threads = rayon::current_num_threads().max(1);
         // Reserve the whole iteration range with ONE atomic op.
         let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
 
