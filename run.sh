@@ -39,15 +39,15 @@ MANEOF
 
 cargo build --release -p pkr-trainer -p pkr-abstraction
 
-pre() { cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- "$@"; }
+# inline cargo calls below
 
-echo "==> [1/8] hand_ranks"; pre hand_ranks "$OUT/hand_ranks.bin"
-echo "==> [2/8] centroids"; pre centroids "$CENTROID_SAMPLES" "$CENTROID_K" "$OUT/hand_ranks.bin" "$OUT/centroids.bin"
-echo "==> [3/8] flop_buckets"; pre flop "$OUT/hand_ranks.bin" "$OUT/flop_buckets.bin" "$FLOP_BUCKETS"
-echo "==> [4/8] river_buckets"; pre river "$OUT/hand_ranks.bin" "$OUT/river_buckets.bin" "$RIVER_BUCKETS"
-echo "==> [5/8] preflop table"; pre preflop "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/preflop_abstraction.bin"
-echo "==> [6/8] flop table"; pre abs5 "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/abstraction.bin"
-echo "==> [7/8] turn table"; EHS_SAMPLES="$EHS_SAMPLES_TURN" pre turn "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/turn_abstraction.bin" 10000
+echo "==> [1/8] hand_ranks"; cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- hand_ranks "$OUT/hand_ranks.bin"
+echo "==> [2/8] centroids"; cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- centroids "$CENTROID_SAMPLES" "$CENTROID_K" "$OUT/hand_ranks.bin" "$OUT/centroids.bin"
+echo "==> [3/8] flop_buckets"; cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- flop "$OUT/hand_ranks.bin" "$OUT/flop_buckets.bin" "$FLOP_BUCKETS"
+echo "==> [4/8] river_buckets"; cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- river "$OUT/hand_ranks.bin" "$OUT/river_buckets.bin" "$RIVER_BUCKETS"
+echo "==> [5/8] preflop table"; cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- preflop "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/preflop_abstraction.bin"
+echo "==> [6/8] flop table"; cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- abs5 "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/abstraction.bin"
+echo "==> [7/8] turn table"; env EHS_SAMPLES="$EHS_SAMPLES_TURN" cargo run --release -p pkr-abstraction --bin pkr-abstraction-precompute -- turn "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/turn_abstraction.bin" 10000
 
 echo "==> [8/8] TRAIN"
 cargo run --release -p pkr-trainer -- \

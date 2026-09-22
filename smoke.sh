@@ -12,7 +12,7 @@ echo "dir: $SMOKE_DIR_ABS"
 echo ""
 
 # ensure TARGET CMD... — runs CMD unless TARGET exists and is non-empty.
-# Propagates CMD's exit code (set -e makes the whole script fail on it).
+# set -e propagates CMD's failure.
 ensure() {
     local target="$1"; shift
     if [ -s "$target" ]; then
@@ -22,54 +22,55 @@ ensure() {
     "$@"
 }
 
-pre() {
-    cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- "$@"
-}
+PRE_BIN="cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute --"
 
 echo "==> Building release binaries"
 cargo build --release -p pkr-trainer -p pkr-abstraction 2>&1 | tail -1
 
 echo "==> [1/8] hand_ranks.bin"
 ensure "$SMOKE_DIR_ABS/hand_ranks.bin" \
-    pre hand_ranks "$SMOKE_DIR_ABS/hand_ranks.bin"
+    cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
+        hand_ranks "$SMOKE_DIR_ABS/hand_ranks.bin"
 
 echo "==> [2/8] centroids.bin"
 ensure "$SMOKE_DIR_ABS/centroids.bin" \
-    pre centroids 200 8 "$SMOKE_DIR_ABS/hand_ranks.bin" "$SMOKE_DIR_ABS/centroids.bin"
+    cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
+        centroids 200 8 "$SMOKE_DIR_ABS/hand_ranks.bin" "$SMOKE_DIR_ABS/centroids.bin"
 
 echo "==> [3/8] preflop_abstraction.bin"
 ensure "$SMOKE_DIR_ABS/preflop_abstraction.bin" \
-    EHS_SAMPLES=20 pre preflop \
-        "$SMOKE_DIR_ABS/centroids.bin" \
+    env EHS_SAMPLES=20 cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
+        preflop "$SMOKE_DIR_ABS/centroids.bin" \
         "$SMOKE_DIR_ABS/hand_ranks.bin" \
         "$SMOKE_DIR_ABS/preflop_abstraction.bin"
 
 echo "==> [4/8] flop_abstraction.bin"
 ensure "$SMOKE_DIR_ABS/flop_abstraction.bin" \
-    EHS_SAMPLES=5 pre abs5 \
-        "$SMOKE_DIR_ABS/centroids.bin" \
+    env EHS_SAMPLES=5 cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
+        abs5 "$SMOKE_DIR_ABS/centroids.bin" \
         "$SMOKE_DIR_ABS/hand_ranks.bin" \
         "$SMOKE_DIR_ABS/flop_abstraction.bin"
 
 echo "==> [5/8] flop_buckets.bin"
 ensure "$SMOKE_DIR_ABS/flop_buckets.bin" \
-    pre flop "$SMOKE_DIR_ABS/hand_ranks.bin" "$SMOKE_DIR_ABS/flop_buckets.bin" 8
+    cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
+        flop "$SMOKE_DIR_ABS/hand_ranks.bin" "$SMOKE_DIR_ABS/flop_buckets.bin" 8
 
 echo "==> [6/8] river_buckets.bin"
 ensure "$SMOKE_DIR_ABS/river_buckets.bin" \
-    EHS_SAMPLES=5 pre river \
-        "$SMOKE_DIR_ABS/hand_ranks.bin" \
+    env EHS_SAMPLES=5 cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
+        river "$SMOKE_DIR_ABS/hand_ranks.bin" \
         "$SMOKE_DIR_ABS/river_buckets.bin" 8
 
 echo "==> [7/8] turn_abstraction.bin (305 MB)"
 ensure "$SMOKE_DIR_ABS/turn_abstraction.bin" \
-    EHS_SAMPLES=1 pre turn \
-        "$SMOKE_DIR_ABS/centroids.bin" \
+    env EHS_SAMPLES=1 cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
+        turn "$SMOKE_DIR_ABS/centroids.bin" \
         "$SMOKE_DIR_ABS/hand_ranks.bin" \
         "$SMOKE_DIR_ABS/turn_abstraction.bin" 100
 
 echo "==> [8/8] pkr-trainer (10 iterations)"
-EHS_SAMPLES=5 cargo run --release --quiet -p pkr-trainer -- \
+env EHS_SAMPLES=5 cargo run --release --quiet -p pkr-trainer -- \
     --iterations 10 \
     --threads 2 \
     --capacity 4096 \
