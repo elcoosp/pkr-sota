@@ -111,8 +111,35 @@ pub fn traverse(
         None
     };
 
+    // --- Action masking: zero out buckets with no legal concrete
+    // --- action, then renormalize over the legal ones.
+    let legal_count = action_counts.iter().filter(|&&c| c > 0).count();
+    if legal_count == 0 {
+        undo_advance_and_return!(0.0);
+    }
+    let legal_total: f32 = (0..K)
+        .filter(|&a| action_counts[a] > 0)
+        .map(|a| strategy[a])
+        .sum();
+    if legal_total > 0.0 {
+        for a in 0..K {
+            if action_counts[a] == 0 {
+                strategy[a] = 0.0;
+            } else {
+                strategy[a] /= legal_total;
+            }
+        }
+    } else {
+        let u = 1.0 / legal_count as f32;
+        for a in 0..K {
+            strategy[a] = if action_counts[a] > 0 { u } else { 0.0 };
+        }
+    }
+
+
     if let Some(idx) = traverser_idx {
         for a in 0..K {
+            if strategy[a] <= 0.0 { continue; }
             strategy_batch.push(StrategyOp {
                 index: idx as u32,
                 action: a as u8,
@@ -127,7 +154,7 @@ pub fn traverse(
         for a in 0..K {
             let count = action_counts[a];
             if count == 0 {
-                v[a] = 0.0;
+                v[a] = f32::NAN;
                 continue;
             }
             let pick_idx = action_indices[a][rng.random_range(0..count)];
@@ -154,9 +181,13 @@ pub fn traverse(
             current.undo_action();
         }
 
-        let v_sigma: f32 = strategy.iter().zip(v.iter()).map(|(p, u)| p * u).sum();
+        let v_sigma: f32 = (0..K)
+            .filter(|&a| !v[a].is_nan())
+            .map(|a| strategy[a] * v[a])
+            .sum();
 
         for a in 0..K {
+            if action_counts[a] == 0 { continue; }
             let delta = v[a] - v_sigma;
             batch.push(BatchItem {
                 index: idx as u32,
@@ -228,13 +259,13 @@ fn abstract_action_index(kind: &ActionKind, state: &GameState) -> Option<usize> 
         ActionKind::Fold => Some(0),
         ActionKind::Check | ActionKind::Call => Some(1),
         ActionKind::Bet(amount) => {
-            let pot = state.pot.max(1.0);
+            let pot = state.pot.max(1.2);
             let fraction = amount / pot;
             if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
                 Some(5)
-            } else if fraction < 0.5 {
+            } else if fraction < 0.6 {
                 Some(2)
-            } else if fraction < 1.0 {
+            } else if fraction < 1.2 {
                 Some(3)
             } else {
                 Some(4)

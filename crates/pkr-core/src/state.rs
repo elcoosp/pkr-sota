@@ -111,7 +111,7 @@ impl GameState {
         if to_call == 0.0 {
             actions.push(Action { player: self.actor, kind: ActionKind::Check });
             let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
+            for &frac in &[0.4, 0.8, 1.6] {
                 let bet = pot * frac;
                 if bet <= self.stacks[self.actor] {
                     actions.push(Action { player: self.actor, kind: ActionKind::Bet(bet) });
@@ -124,7 +124,7 @@ impl GameState {
             actions.push(Action { player: self.actor, kind: ActionKind::Fold });
             actions.push(Action { player: self.actor, kind: ActionKind::Call });
             let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
+            for &frac in &[0.4, 0.8, 1.6] {
                 let raise = to_call + pot * frac;
                 if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
                     actions.push(Action { player: self.actor, kind: ActionKind::Bet(raise) });
@@ -152,7 +152,7 @@ impl GameState {
             out[n] = Action { player: self.actor, kind: ActionKind::Check };
             n += 1;
             let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
+            for &frac in &[0.4, 0.8, 1.6] {
                 if n >= 8 { break; }
                 let bet = pot * frac;
                 if bet <= self.stacks[self.actor] {
@@ -173,7 +173,7 @@ impl GameState {
             out[n] = Action { player: self.actor, kind: ActionKind::Call };
             n += 1;
             let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
+            for &frac in &[0.4, 0.8, 1.6] {
                 if n >= 8 { break; }
                 let raise = to_call + pot * frac;
                 if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
@@ -376,13 +376,13 @@ fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
         ActionKind::Fold => 0,
         ActionKind::Check | ActionKind::Call => 1,
         ActionKind::Bet(amount) => {
-            let pot = state.pot.max(1.0);
+            let pot = state.pot.max(1.2);
             let fraction = amount / pot;
             if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
                 5 // all-in
-            } else if fraction < 0.5 {
+            } else if fraction < 0.6 {
                 2
-            } else if fraction < 1.0 {
+            } else if fraction < 1.2 {
                 3
             } else {
                 4
