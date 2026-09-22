@@ -42,12 +42,15 @@ impl Trainer {
     }
 
     pub fn run_iteration_parallel(&mut self) {
+        use std::time::Instant;
+        let profile = std::env::var("PKR_PHASE_PROFILE").is_ok();
+
         let global_iter = self.iteration.fetch_add(1, Ordering::Relaxed) + 1;
         let table = Arc::clone(&self.table);
         let abstraction = Arc::clone(&self.abstraction);
         let evaluator = Arc::clone(&self.evaluator);
 
-        // Each thread collects its own batch
+        let t0 = Instant::now();
         let thread_batches: Vec<Vec<BatchItem>> = (0..rayon::current_num_threads())
             .into_par_iter()
             .map(|_| {
@@ -99,17 +102,30 @@ impl Trainer {
                 batch
             })
             .collect();
+        let t_traverse = t0.elapsed();
 
-        // Merge all batches into one giant batch
-        let mut merged_batch = Vec::with_capacity(100_000);
+        let t1 = Instant::now();
+        let total_items: usize = thread_batches.iter().map(|b| b.len()).sum();
+        let mut merged_batch = Vec::with_capacity(total_items);
         for tb in thread_batches {
             merged_batch.extend(tb);
         }
+        let t_merge = t1.elapsed();
 
-        // CPU flush: no WGPU submit, no sync, no staging buffer. The DCFR
-        // math is a handful of flops per item; the sync overhead of the GPU
-        // path dominates for HU NLHE with K=6.
-        table.flush_cpu_batch(&merged_batch);
+        let t2 = Instant::now();
+        table.flush_cpu_batch_parallel(&merged_batch);
+        let t_flush = t2.elapsed();
+
+        if profile && global_iter % 5000 == 0 {
+            eprintln!(
+                "[phase] iter={} traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={}",
+                global_iter,
+                t_traverse.as_secs_f64() * 1000.0,
+                t_merge.as_secs_f64() * 1000.0,
+                t_flush.as_secs_f64() * 1000.0,
+                total_items,
+            );
+        }
     }
 
     pub fn get_table(&self) -> &CompactRegretTable {

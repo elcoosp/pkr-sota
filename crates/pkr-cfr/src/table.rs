@@ -19,7 +19,7 @@ const K: usize = 6;
 // bound memory. Actual working set per thread is much smaller in
 // practice, so overflow is rare.
 const IDX_CACHE_INIT: usize = 1 << 18; // 256K entries
-const IDX_CACHE_MAX: usize = 1 << 20;  // 1M entries before clearing
+const IDX_CACHE_MAX: usize = 1 << 22;  // 4M entries before clearing
 
 thread_local! {
     static IDX_CACHE: RefCell<HashMap<u64, usize, FoldHasher>> =
@@ -248,8 +248,61 @@ impl CompactRegretTable {
         self.add(idx, action_idx, F_SUM, (prob * SCALE) as i32);
     }
 
-    /// CPU implementation of the PCFR+ DCFR update, semantically identical
-    /// to the GPU shader in gpu.rs.
+    /// Parallel CPU flush: per-chunk dedup, then parallel atomic updates.
+    ///
+    /// Splits `batch` into `num_threads` contiguous chunks. Each chunk is
+    /// deduped independently and the resulting (idx, action) -> delta
+    /// entries are applied in parallel. Cross-chunk collisions are
+    /// possible (same infoset appears in two chunks); one write wins, the
+    /// other is dropped. For MCCFR this is safe: the traversal is
+    /// randomized, so lost deltas are simply re-sampled next iteration.
+    /// The previous serial flush was O(N * batch) on the coordinator
+    /// thread and dominated wall time at high thread counts.
+    pub fn flush_cpu_batch_parallel(&self, batch: &[BatchItem]) {
+        use rayon::prelude::*;
+        if batch.is_empty() {
+            return;
+        }
+        let iteration = batch[0].iteration;
+        let n_threads = rayon::current_num_threads().max(1);
+        let chunk_size = (batch.len() + n_threads - 1) / n_threads;
+        let chunk_size = chunk_size.max(1);
+
+        // Phase 1: per-chunk dedup in parallel. Chunks are contiguous
+        // slices of `batch`; no shared state is touched.
+        let per_chunk: Vec<Vec<((u32, u32), f32)>> = batch
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut m: HashMap<(u32, u32), f32, FoldHasher> =
+                    HashMap::with_capacity_and_hasher(
+                        (chunk.len() / 2).max(1),
+                        FoldHasher::default(),
+                    );
+                for item in chunk {
+                    let e = m.entry((item.index, item.action)).or_insert(0.0);
+                    *e += item.delta;
+                }
+                m.into_iter().collect()
+            })
+            .collect();
+
+        // Phase 2: parallel atomic updates. Each chunk's dedup list is
+        // applied independently. Loads are `Relaxed` — we accept slight
+        // staleness in `current` when two threads race on the same cell.
+        per_chunk.into_par_iter().for_each(|chunk_dedup| {
+            for ((index, action), delta) in chunk_dedup {
+                let idx = index as usize;
+                let a = action as usize;
+                let cur = self.load(idx, a, F_REGRET) as f32 / SCALE;
+                let mom = self.load(idx, a, F_MOMENTUM) as f32 / SCALE;
+                let (new_r, new_m) = update_regret_pfr_plus(cur, mom, iteration, delta);
+                self.store(idx, a, F_REGRET, (new_r * SCALE) as i32);
+                self.store(idx, a, F_MOMENTUM, (new_m * SCALE) as i32);
+            }
+        });
+    }
+
+    /// Serial CPU flush. Kept for tests and single-threaded callers.
     pub fn flush_cpu_batch(&self, batch: &[BatchItem]) {
         if batch.is_empty() {
             return;

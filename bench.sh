@@ -26,7 +26,7 @@ for T in $THREADS_LIST; do
     echo "--- threads=$T ---"
     # Allow this config to fail without killing the whole bench.
     set +e
-    cargo run --release -p pkr-trainer -- \
+    PKR_PHASE_PROFILE=1 cargo run --release -p pkr-trainer -- \
         --bench-seconds "$SECONDS_PER_RUN" \
         --threads "$T" \
         --capacity 50000000 \
