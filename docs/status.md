@@ -30,6 +30,10 @@ and `ITERS_PER_SYNC=256`:
 At threads=8 that is **3.34 billion iterations/day**, versus roughly
 10 million needed for a level-A arena-playable bot. 300x headroom.
 
+**Default config is `--threads 8` (all cores).** t8 is 14% faster than
+t4 in wall clock with no measurable variance penalty in the profile
+data, so there is no reason to leave cores idle.
+
 ### What made the difference
 
 Earlier attempts had tried and failed at: thread-local idx cache,

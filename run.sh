@@ -2,7 +2,7 @@
 set -euo pipefail
 export RUSTFLAGS="-C target-cpu=native"
 
-THREADS=4
+THREADS=8
 ITERATIONS=1000000
 CENTROID_SAMPLES=1000
 CENTROID_K=200
