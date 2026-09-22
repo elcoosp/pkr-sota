@@ -3,17 +3,6 @@
 //! Kuhn poker: 3-card deck (J, Q, K), 2 players, each antes 1 chip.
 //! Six information sets per player (3 cards x 2 decision points).
 //! Exact Nash value to player 0 is -1/18 ~= -0.0556.
-//!
-//! Tree:
-//!   []         P0: check (0) | bet (1)
-//!   [0]        P1: check (0) | bet (1)
-//!   [1]        P1: fold (0)  | call (1)
-//!   [0,0]      showdown, stakes 1 each
-//!   [0,1]      P0: fold (0)  | call (1)
-//!   [0,1,0]    P0 folds, P0 -1
-//!   [0,1,1]    showdown, stakes 2 each
-//!   [1,0]      P1 folds, P1 -1 -> P0 +1
-//!   [1,1]      showdown, stakes 2 each
 
 use pkr_cfr::dcfr::{update_regret_full, DiscountMode, MomentumMode};
 
@@ -25,6 +14,13 @@ fn infoset_index(player: usize, card: u8, decision_point: usize) -> usize {
     (player * 3 + card as usize) * 2 + decision_point
 }
 
+/// Bit index in a player's 6-bit pure-strategy mask. Two infosets per card.
+#[inline]
+fn p_mask_bit(card: u8, dp: usize) -> u32 {
+    (card as u32) * 2 + dp as u32
+}
+
+/// +stake if P0's card beats P1's, -stake otherwise. No ties (distinct cards).
 #[inline]
 fn showdown(cards: [u8; 2], stake: f32) -> f32 {
     if cards[0] > cards[1] {
@@ -41,8 +37,6 @@ pub struct KuhnCfr {
     iteration: u32,
     pub mode: DiscountMode,
     pub momentum: MomentumMode,
-    /// Set if any regret ever becomes non-finite; indicates numerical
-    /// blow-up of the discount formula. Reported by the experiment.
     pub nan_flag: bool,
 }
 
@@ -67,8 +61,6 @@ impl KuhnCfr {
         self.iteration
     }
 
-    /// Largest |regret| across all infosets and actions. Used by the
-    /// experiment to reveal multiplicative blow-up before it becomes NaN.
     pub fn max_abs_regret(&self) -> f32 {
         let mut m = 0.0f32;
         for row in self.regrets.iter() {
@@ -104,26 +96,17 @@ impl KuhnCfr {
         }
     }
 
-    /// One full CFR iteration with batched regret updates.
-    ///
-    /// Critically: the strategy is snapshotted at the start of the
-    /// iteration and used unchanged throughout the six card-pair
-    /// traversals. Regret deltas accumulate into a local buffer and are
-    /// applied once at the end. This is textbook CFR. The prior
-    /// implementation updated regrets in place during the traversal,
-    /// which made the second card pair use a partially-updated strategy
-    /// -- not CFR, and empirically non-convergent on Kuhn.
+    /// Batched CFR iteration: strategy frozen at start, deltas accumulated
+    /// across card pairs, applied once at the end.
     pub fn iterate(&mut self) {
         self.iteration += 1;
         let t = self.iteration;
 
-        // 1. Snapshot regret-matching strategy for every infoset.
         let mut strat = [[0.0f32; N_ACTIONS]; N_INFOSETS];
         for i in 0..N_INFOSETS {
             strat[i] = self.strategy_at(i);
         }
 
-        // 2. Accumulate deltas and strategy_sum across all card pairs.
         let mut delta_accum = [[0.0f32; N_ACTIONS]; N_INFOSETS];
         for c0 in 0..3u8 {
             for c1 in 0..3u8 {
@@ -141,7 +124,6 @@ impl KuhnCfr {
             }
         }
 
-        // 3. Apply accumulated deltas once.
         for i in 0..N_INFOSETS {
             for a in 0..N_ACTIONS {
                 let (new_r, new_m) = update_regret_full(
@@ -157,7 +139,6 @@ impl KuhnCfr {
             }
         }
 
-        // 4. NaN check once per iteration.
         if !self.nan_flag {
             'outer: for row in self.regrets.iter() {
                 for &v in row.iter() {
@@ -170,9 +151,6 @@ impl KuhnCfr {
         }
     }
 
-    /// Traverse the tree for a fixed card pair. Reads `strat` (frozen),
-    /// writes `strategy_sum` and `delta_accum`. Returns value-to-P0 at
-    /// this history.
     fn traverse(
         strat: &[[f32; N_ACTIONS]; N_INFOSETS],
         strategy_sum: &mut [[f32; N_ACTIONS]; N_INFOSETS],
@@ -249,7 +227,111 @@ impl KuhnCfr {
         }
     }
 
-    // --- Exploitability --------------------------------------------------
+    // --- Exploitability via brute-force pure-strategy enumeration ---------
+    //
+    // Six infosets per player, two actions each => 2^6 = 64 pure
+    // strategies. A best response is one of these. Enumerate and pick the
+    // best. This is correct by construction; the earlier recursive
+    // br_tree_* computed max per card pair, which is not the same as
+    // max per infoset, and inflated exploitability by ~0.27.
+
+    /// Value to P0 when P0 commits to a specific pure strategy (6-bit mask)
+    /// and P1 plays their average strategy.
+    fn value_p0_pure(&self, mask: u32) -> f32 {
+        let mut total = 0.0f32;
+        for c0 in 0..3u8 {
+            for c1 in 0..3u8 {
+                if c0 == c1 {
+                    continue;
+                }
+                let a0_dp0 = ((mask >> p_mask_bit(c0, 0)) & 1) as u8;
+                let a0_dp1 = ((mask >> p_mask_bit(c0, 1)) & 1) as u8;
+
+                let v = match a0_dp0 {
+                    // P0 checks; P1 acts at their dp=0.
+                    0 => {
+                        let s1 = self.average_strategy_at(infoset_index(1, c1, 0));
+                        let v_p1_check = showdown([c0, c1], 1.0);
+                        let v_p1_bet = match a0_dp1 {
+                            0 => -1.0,
+                            1 => showdown([c0, c1], 2.0),
+                            _ => unreachable!(),
+                        };
+                        s1[0] * v_p1_check + s1[1] * v_p1_bet
+                    }
+                    // P0 bets; P1 acts at their dp=1.
+                    1 => {
+                        let s1 = self.average_strategy_at(infoset_index(1, c1, 1));
+                        let v_fold: f32 = 1.0;
+                        let v_call = showdown([c0, c1], 2.0);
+                        s1[0] * v_fold + s1[1] * v_call
+                    }
+                    _ => unreachable!(),
+                };
+                total += v / 6.0;
+            }
+        }
+        total
+    }
+
+    /// Value to P0 when P1 commits to a specific pure strategy (6-bit mask)
+    /// and P0 plays their average strategy. P1 minimizes this.
+    fn value_p1_pure(&self, mask: u32) -> f32 {
+        let mut total = 0.0f32;
+        for c0 in 0..3u8 {
+            for c1 in 0..3u8 {
+                if c0 == c1 {
+                    continue;
+                }
+                let a1_dp0 = ((mask >> p_mask_bit(c1, 0)) & 1) as u8;
+                let a1_dp1 = ((mask >> p_mask_bit(c1, 1)) & 1) as u8;
+
+                let s0_dp0 = self.average_strategy_at(infoset_index(0, c0, 0));
+                let s0_dp1 = self.average_strategy_at(infoset_index(0, c0, 1));
+
+                // P0 checks branch:
+                let v_if_p0_check = match a1_dp0 {
+                    0 => showdown([c0, c1], 1.0),
+                    1 => s0_dp1[0] * -1.0 + s0_dp1[1] * showdown([c0, c1], 2.0),
+                    _ => unreachable!(),
+                };
+                // P0 bets branch:
+                let v_if_p0_bet = match a1_dp1 {
+                    0 => 1.0,
+                    1 => showdown([c0, c1], 2.0),
+                    _ => unreachable!(),
+                };
+                let v = s0_dp0[0] * v_if_p0_check + s0_dp0[1] * v_if_p0_bet;
+                total += v / 6.0;
+            }
+        }
+        total
+    }
+
+    /// P0's best-response value against P1's average strategy.
+    pub fn br_value_p0(&self) -> f32 {
+        let mut best = f32::NEG_INFINITY;
+        for mask in 0..64u32 {
+            let v = self.value_p0_pure(mask);
+            if v > best {
+                best = v;
+            }
+        }
+        best
+    }
+
+    /// Value to P0 when P1 best-responds against P0's average strategy.
+    /// P1 minimizes, so this is a lower bound on the true value.
+    pub fn br_value_p0_given_br1(&self) -> f32 {
+        let mut best = f32::INFINITY;
+        for mask in 0..64u32 {
+            let v = self.value_p1_pure(mask);
+            if v < best {
+                best = v;
+            }
+        }
+        best
+    }
 
     pub fn value_of_avg(&self) -> f32 {
         let mut total = 0.0f32;
@@ -284,88 +366,6 @@ impl KuhnCfr {
                 (0, 1) => {
                     let s = self.average_strategy_at(infoset_index(0, cards[0], 1));
                     s[0] * -1.0 + s[1] * showdown(cards, 2.0)
-                }
-                (1, 0) => 1.0,
-                (1, 1) => showdown(cards, 2.0),
-                _ => unreachable!(),
-            },
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn br_value_p0(&self) -> f32 {
-        let mut total = 0.0f32;
-        for c0 in 0..3u8 {
-            for c1 in 0..3u8 {
-                if c0 == c1 {
-                    continue;
-                }
-                total += self.br_tree_p0([c0, c1], &[]) / 6.0;
-            }
-        }
-        total
-    }
-
-    fn br_tree_p0(&self, cards: [u8; 2], history: &[u8]) -> f32 {
-        match history.len() {
-            0 => {
-                let v0 = self.br_tree_p0(cards, &[0]);
-                let v1 = self.br_tree_p0(cards, &[1]);
-                v0.max(v1)
-            }
-            1 => {
-                let dp = if history[0] == 0 { 0 } else { 1 };
-                let s1 = self.average_strategy_at(infoset_index(1, cards[1], dp));
-                let v0 = self.br_tree_p0(cards, &[history[0], 0]);
-                let v1 = self.br_tree_p0(cards, &[history[0], 1]);
-                s1[0] * v0 + s1[1] * v1
-            }
-            2 => match (history[0], history[1]) {
-                (0, 0) => showdown(cards, 1.0),
-                (0, 1) => {
-                    let v_fold: f32 = -1.0;
-                    let v_call: f32 = showdown(cards, 2.0);
-                    v_fold.max(v_call)
-                }
-                (1, 0) => 1.0,
-                (1, 1) => showdown(cards, 2.0),
-                _ => unreachable!(),
-            },
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn br_value_p0_given_br1(&self) -> f32 {
-        let mut total = 0.0f32;
-        for c0 in 0..3u8 {
-            for c1 in 0..3u8 {
-                if c0 == c1 {
-                    continue;
-                }
-                total += self.br_tree_p1([c0, c1], &[]) / 6.0;
-            }
-        }
-        total
-    }
-
-    fn br_tree_p1(&self, cards: [u8; 2], history: &[u8]) -> f32 {
-        match history.len() {
-            0 => {
-                let s0 = self.average_strategy_at(infoset_index(0, cards[0], 0));
-                let v0 = self.br_tree_p1(cards, &[0]);
-                let v1 = self.br_tree_p1(cards, &[1]);
-                s0[0] * v0 + s0[1] * v1
-            }
-            1 => {
-                let v0 = self.br_tree_p1(cards, &[history[0], 0]);
-                let v1 = self.br_tree_p1(cards, &[history[0], 1]);
-                v0.min(v1)
-            }
-            2 => match (history[0], history[1]) {
-                (0, 0) => showdown(cards, 1.0),
-                (0, 1) => {
-                    let s0 = self.average_strategy_at(infoset_index(0, cards[0], 1));
-                    s0[0] * -1.0 + s0[1] * showdown(cards, 2.0)
                 }
                 (1, 0) => 1.0,
                 (1, 1) => showdown(cards, 2.0),
