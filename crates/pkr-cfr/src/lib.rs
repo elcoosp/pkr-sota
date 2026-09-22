@@ -122,9 +122,7 @@ impl Trainer {
         let t_merge = t1.elapsed();
 
         let t2 = Instant::now();
-        for op in &merged_strategy {
-            table.add_strategy_sum_at(op.index as usize, op.action as usize, op.prob);
-        }
+        table.apply_strategy_batch(&merged_strategy);
         table.flush_cpu_batch(&merged_batch);
         let t_flush = t2.elapsed();
 

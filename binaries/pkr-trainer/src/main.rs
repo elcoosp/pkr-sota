@@ -74,10 +74,13 @@ fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
+    // On Apple Silicon, M1 has 4 P-cores + 4 slow E-cores. Scaling past
+    // 4 threads makes wall time worse because the coordinator barrier
+    // waits on the slowest (E-core) worker. Cap the default at 4.
     let num_threads = cli.threads.unwrap_or_else(|| {
         std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(8)
+            .map(|p| p.get().min(4))
+            .unwrap_or(4)
     });
 
     ThreadPoolBuilder::new()
