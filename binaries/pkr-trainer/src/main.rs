@@ -407,6 +407,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "entropy_histogram_0p25bit": entropy_hist,
                 "dominant_action_counts": dominant,
                 "nonzero_strategy_sum_cells": analysis.nonzero_strategy_sum_cells,
+                "uniform_fallback": analysis.uniform_fallback,
             },
             "sample_infosets": samples.iter().map(|d| {
                 let strategy: Vec<f32> = d.strategy.iter().copied().collect();

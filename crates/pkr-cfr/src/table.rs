@@ -59,10 +59,13 @@ pub struct StrategyAnalysis {
     pub entropy_histogram: [usize; 8],
     /// For each action, how many infosets have it as the argmax.
     pub dominant_counts: [usize; K],
-    /// Count of (idx, action) cells whose strategy_sum is > 0. Under the
-    /// old fixed-point accumulator this was tiny; with f64 it should be
-    /// close to `visited * K`.
+    /// Count of (idx, action) cells whose strategy_sum is > 0.
     pub nonzero_strategy_sum_cells: usize,
+    /// Of the visited infosets, how many fell all the way through to the
+    /// uniform last resort (flat regrets AND zero strategy sum). These
+    /// are the infosets where we have genuinely no signal, and they are
+    /// the ones that should worry you if the count is high.
+    pub uniform_fallback: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -318,21 +321,64 @@ impl CompactRegretTable {
         }
     }
 
+    /// Compute the strategy that will actually be exported for this idx.
+    ///
+    /// Preferred path: normalize the reach-weighted strategy sum.
+    /// Fallback: if no reach has accumulated (the infoset is only
+    /// reachable through zero-probability actions of some ancestor),
+    /// fall back to the current regret-matched strategy. That strategy
+    /// is populated for every visited infoset regardless of reach,
+    /// because regret updates are weighted by opponent reach, not own
+    /// reach.
+    ///
+    /// Last resort: uniform, only if regrets are also flat.
+    ///
+    /// This function is what the exporter, the analysis pass, and the
+    /// sampled infosets all call. Reporting and export agree by
+    /// construction.
+    #[inline]
+    fn compute_export_strategy(&self, idx: usize) -> [f32; K] {
+        let mut out = [0.0f32; K];
+
+        // Preferred: normalize strategy sum.
+        let mut sum = 0.0f64;
+        for i in 0..K {
+            sum += self.load_sum(idx, i);
+        }
+        if sum > 0.0 {
+            let inv = 1.0 / sum;
+            for i in 0..K {
+                out[i] = (self.load_sum(idx, i) * inv) as f32;
+            }
+            return out;
+        }
+
+        // Fallback: regret-matched current strategy.
+        let mut rsum = 0.0f32;
+        for i in 0..K {
+            let raw = self.load_rm(idx, i, RM_REGRET) as f32 / SCALE;
+            let val = raw.max(0.0);
+            out[i] = val;
+            rsum += val;
+        }
+        if rsum > 0.0 {
+            let inv = 1.0 / rsum;
+            for i in 0..K {
+                out[i] *= inv;
+            }
+            return out;
+        }
+
+        // Last resort: uniform.
+        out.fill(1.0 / K as f32);
+        out
+    }
+
     pub fn get_average_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
         let guard = self.hash_to_idx.pin();
         if let Some(idx) = guard.get(&infoset_hash) {
-            let idx = *idx;
-            let mut sum = 0.0f64;
-            for i in 0..K {
-                sum += self.load_sum(idx, i);
-            }
-            if sum > 0.0 {
-                let inv = 1.0 / sum;
-                for i in 0..K {
-                    out[i] = (self.load_sum(idx, i) * inv) as f32;
-                }
-                return;
-            }
+            *out = self.compute_export_strategy(*idx);
+            return;
         }
         out.fill(1.0 / K as f32);
     }
@@ -544,35 +590,50 @@ impl CompactRegretTable {
             entropy_histogram: [0usize; 8],
             dominant_counts: [0usize; K],
             nonzero_strategy_sum_cells: 0,
+            uniform_fallback: 0,
         };
         let mut entropy_sum = 0.0f64;
         let mut visited = 0usize;
 
         for (_, &idx) in guard.iter() {
             analysis.total += 1;
-            let mut s = [0.0f64; K];
-            let mut sum = 0.0f64;
+            // Count nonzero cells for the diagnostic.
+            let mut sum_raw = 0.0f64;
             for a in 0..K {
-                s[a] = self.load_sum(idx, a);
-                if s[a] > 0.0 {
+                let v = self.load_sum(idx, a);
+                if v > 0.0 {
                     analysis.nonzero_strategy_sum_cells += 1;
                 }
-                sum += s[a];
+                sum_raw += v;
             }
-            if sum <= 0.0 {
+            if sum_raw <= 0.0 {
                 analysis.empty += 1;
-                continue;
             }
+
+            // The strategy that will actually be exported for this
+            // infoset. Uses the same fallback chain as the exporter.
+            let strat = self.compute_export_strategy(idx);
             visited += 1;
-            for a in 0..K {
-                s[a] /= sum;
+
+            // Classify: uniform when all six equal (the last-resort case,
+            // where even regrets were flat). Counted separately because
+            // these are the infosets where we genuinely have no signal.
+            let mut is_uniform = true;
+            for a in 1..K {
+                if (strat[a] - strat[0]).abs() > 1e-6 {
+                    is_uniform = false;
+                    break;
+                }
+            }
+            if is_uniform {
+                analysis.uniform_fallback += 1;
             }
 
             let mut best_a = 0usize;
-            let mut best_p = 0.0f64;
+            let mut best_p = 0.0f32;
             for a in 0..K {
-                if s[a] > best_p {
-                    best_p = s[a];
+                if strat[a] > best_p {
+                    best_p = strat[a];
                     best_a = a;
                 }
             }
@@ -583,7 +644,7 @@ impl CompactRegretTable {
             }
             let mut above_tenth = 0usize;
             for a in 0..K {
-                if s[a] >= 0.10 {
+                if strat[a] >= 0.10 {
                     above_tenth += 1;
                 }
             }
@@ -593,7 +654,7 @@ impl CompactRegretTable {
 
             let mut h = 0.0f64;
             for a in 0..K {
-                let p = s[a];
+                let p = strat[a] as f64;
                 if p > 0.0 {
                     h -= p * p.log2();
                 }
@@ -624,19 +685,7 @@ impl CompactRegretTable {
             if out.len() >= n {
                 break;
             }
-            let mut strategy = [0.0f32; K];
-            let mut sum = 0.0f64;
-            for a in 0..K {
-                sum += self.load_sum(idx, a);
-            }
-            if sum > 0.0 {
-                let inv = 1.0 / sum;
-                for a in 0..K {
-                    strategy[a] = (self.load_sum(idx, a) * inv) as f32;
-                }
-            } else {
-                strategy = [1.0 / K as f32; K];
-            }
+            let strategy = self.compute_export_strategy(idx);
             let mut regrets = [0.0f32; K];
             for a in 0..K {
                 regrets[a] = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
