@@ -50,3 +50,11 @@ impl BlueprintProvider for SolverHandle {
         self.get_advice_fast(infoset_hash)
     }
 }
+
+impl SolverHandle {
+    /// Raw bytes of the sorted key table. Intended for diagnostics and tests;
+    /// do not use on the hot path.
+    pub fn debug_keys(&self) -> &[u8] {
+        self.mmap.keys_data()
+    }
+}

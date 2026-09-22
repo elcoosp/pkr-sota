@@ -1,20 +1,26 @@
-
 # Generated assets
-# IDE
-# OS files
-# Release build artifacts
 *.bin
-.DS_Store
+.ckpt
+*.ckpt
+.smoke/
+
+# IDE
 .idea/
 .vscode/
+
+# OS files
+.DS_Store
+
+# Release build artifacts
+target
+target/
+wr.sh
+dump.txt
 blueprint.bin
 centroids.bin
 flop_buckets.bin
 hand_ranks.bin
 preflop_abstraction.bin
-target
-target/
-wr.sh
-dump.txt
 turn_abstraction.bin
 abstraction.bin
+train.ckpt

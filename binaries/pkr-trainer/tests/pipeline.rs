@@ -79,6 +79,70 @@ fn full_pipeline_trains_exports_loads_queries() {
     );
 }
 
+/// Verifies that a blueprint file produced by the real CLI is loadable.
+/// Skipped unless the PKR_BLUEPRINT env var points at a blueprint.
+/// Run via `PKR_BLUEPRINT=path cargo test -p pkr-trainer --test pipeline -- --ignored`.
+#[test]
+#[ignore]
+fn load_external_blueprint() {
+    let path = match std::env::var("PKR_BLUEPRINT") {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("PKR_BLUEPRINT not set; skipping");
+            return;
+        }
+    };
+    let reader = MmapReader::new(&path).unwrap_or_else(|e| panic!("open {path}: {e}"));
+    let header = *reader.file_header();
+    assert_eq!(&header.magic, b"PKRSOTA1", "bad magic");
+    assert!(
+        header.infoset_count > 0,
+        "blueprint has zero infosets — trainer produced nothing"
+    );
+    assert_eq!(
+        reader.keys_data().len() as u64,
+        header.infoset_count * 8,
+        "key table size mismatch"
+    );
+    assert_eq!(
+        reader.cdf_data().len() as u64,
+        header.infoset_count * header.max_actions_k as u64,
+        "cdf table size mismatch"
+    );
+
+    let handle = SolverHandle::new(reader);
+    let k = header.max_actions_k as usize;
+    let num = header.infoset_count as usize;
+    let mut hits = 0usize;
+    for i in 0..num.min(64) {
+        let key = u64::from_le_bytes(
+            handle_slice_key(&handle, i),
+        );
+        if let Some(a) = handle.get_advice_fast(key) {
+            hits += 1;
+            let probs = &a.cdf_probabilities[..a.len as usize];
+            assert!(probs.len() <= k);
+            for j in 1..probs.len() {
+                assert!(probs[j] >= probs[j - 1], "non-monotonic CDF");
+            }
+            assert_eq!(*probs.last().unwrap(), 255, "CDF must end at 255");
+        }
+    }
+    assert!(hits > 0, "no keys from the file could be queried");
+    eprintln!("Loaded {num} infosets, queried {hits} successfully");
+}
+
+/// Helper: read the i-th 8-byte key from the handle's key region.
+/// Uses unsafe pointer arithmetic on the mmap'd data to avoid exposing
+/// the raw MmapReader again after it has been moved into SolverHandle.
+fn handle_slice_key(handle: &SolverHandle, i: usize) -> [u8; 8] {
+    let data = handle.debug_keys();
+    let start = i * 8;
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&data[start..start + 8]);
+    out
+}
+
 #[test]
 fn checkpoint_roundtrip_preserves_table() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
