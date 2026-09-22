@@ -1,9 +1,6 @@
 //! Run DCFR discount × momentum combinations on Kuhn poker to a fixed
-//! iteration count and print exploitability at log-spaced checkpoints.
-//!
-//! The two questions:
-//!   1. Does canonical discount (bounded) beat ratio-power (unbounded)?
-//!   2. Does PCFR+ momentum accelerate convergence or block it?
+//! iteration count and print exploitability at log-spaced checkpoints,
+//! plus a strategy dump at the end so non-convergence is debuggable.
 //!
 //! Run: cargo run --release -p pkr-testgames --bin kuhn-experiment
 
@@ -22,15 +19,15 @@ struct Config {
 
 fn main() {
     let configs = [
-        Config { label: "vanilla", discount: DiscountMode::None, momentum: MomentumMode::Off },
-        Config { label: "van-mom", discount: DiscountMode::None, momentum: MomentumMode::On },
-        Config { label: "canon", discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::Off },
-        Config { label: "canon-mom", discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::On },
-        Config { label: "ratio", discount: DiscountMode::RatioPower, momentum: MomentumMode::Off },
-        Config { label: "ratio-mom", discount: DiscountMode::RatioPower, momentum: MomentumMode::On },
+        Config { label: "vanilla",   discount: DiscountMode::None,          momentum: MomentumMode::Off },
+        Config { label: "van-mom",   discount: DiscountMode::None,          momentum: MomentumMode::On  },
+        Config { label: "canon",     discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::Off },
+        Config { label: "canon-mom", discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::On  },
+        Config { label: "ratio",     discount: DiscountMode::RatioPower,    momentum: MomentumMode::Off },
+        Config { label: "ratio-mom", discount: DiscountMode::RatioPower,    momentum: MomentumMode::On  },
     ];
 
-    println!("=== Kuhn poker: discount × momentum ===");
+    println!("=== Kuhn poker: discount x momentum ===");
     println!("Nash value to P0: -1/18 = -{:.6}", 1.0f32 / 18.0);
     println!();
 
@@ -39,7 +36,6 @@ fn main() {
         .map(|c| (c.label, KuhnCfr::new_full(c.discount, c.momentum)))
         .collect();
 
-    // Header
     print!("{:>10}", "iter");
     for c in configs.iter() {
         print!("  {:>12}", c.label);
@@ -80,6 +76,48 @@ fn main() {
     }
 
     println!();
+    println!("=== Strategy dumps (avg strategy at t={}) ===", max_iter);
+    println!();
+    println!("Nash reference:");
+    println!("  P0 J dp=0:  check=2/3  bet=1/3");
+    println!("  P0 Q dp=0:  check=1.0  bet=0.0");
+    println!("  P0 K dp=0:  check=0.0  bet=1.0  (or 1/3 bet, but pure bet typical)");
+    println!("  P0 Q dp=1:  fold=2/3   call=1/3");
+    println!("  P1 J dp=1:  fold=1.0   call=0.0");
+    println!("  P1 Q dp=1:  fold=1/3   call=2/3");
+    println!("  P1 K dp=1:  fold=0.0   call=1.0");
+    println!();
+
+    for (name, cfr) in runs.iter() {
+        if cfr.nan_flag {
+            println!("  [{}] (skipped: NaN)", name);
+            continue;
+        }
+        println!("  [{}]", name);
+        for i in 0..12usize {
+            let s = cfr.average_strategy_at(i);
+            let player = i / 6;
+            let card_idx = (i % 6) / 2;
+            let dp = i % 2;
+            let card_name = ["J", "Q", "K"][card_idx];
+            let action_names: [&str; 2] = match (player, dp) {
+                (0, 0) => ["check", "bet"],
+                (0, 1) => ["fold",  "call"],
+                (1, 0) => ["check", "bet"],
+                (1, 1) => ["fold",  "call"],
+                _ => ["a0", "a1"],
+            };
+            println!(
+                "    P{} {} dp={}:  {:>5}={:.4}  {:>5}={:.4}",
+                player, card_name, dp,
+                action_names[0], s[0],
+                action_names[1], s[1],
+            );
+        }
+        println!();
+    }
+
+    println!("=== Verdict ===");
     let mut best: Option<(&str, f32)> = None;
     let mut disq: Vec<&str> = Vec::new();
     for (name, cfr) in runs.iter() {
@@ -98,9 +136,9 @@ fn main() {
     );
     match best {
         Some((name, val)) => println!(
-            "VERDICT: best_mode={} best_exploitability={:.3e}",
+            "best_mode={} best_exploitability={:.3e}",
             name, val
         ),
-        None => println!("VERDICT: no finite mode — investigate."),
+        None => println!("no finite mode."),
     }
 }
