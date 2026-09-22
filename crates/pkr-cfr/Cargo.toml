@@ -18,5 +18,8 @@ bytemuck = { workspace = true }
 pollster = "0.3"
 
 [features]
-default = ["gpu"]
+default = []
+gpu = ["wgpu"]
+
+["gpu"]
 gpu = ["wgpu"]
