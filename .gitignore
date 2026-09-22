@@ -24,3 +24,6 @@ preflop_abstraction.bin
 turn_abstraction.bin
 abstraction.bin
 train.ckpt
+.proftest/
+metrics.csv
+stats.json

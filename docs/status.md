@@ -2,149 +2,255 @@
 
 **Last updated:** 2026-09-22
 
-## What works
+This document is the source of truth for what is actually implemented and
+working. For architectural rationale see `arch-overview.md`. For the
+roadmap see `pkr-sota-winning-roadmap.md`.
 
-- End-to-end pipeline: precompute -> train -> checkpoint -> export -> load -> query.
-- `./smoke.sh` proves the whole chain in ~2-5 minutes cold.
-- 94 tests pass across 11 binaries, 1 ignored (`load_external_blueprint`).
-- DCFR discounting, PCFR+ momentum, GPU shader parity (all in `pkr-cfr`).
-- Turn and river abstraction tables ship in the pipeline (`run.sh`).
-- Checkpoint save/load and resume are functional.
-- **Parallel training scales positively.** See below.
+---
 
-## Parallel training: fixed
+## Pipeline status
 
-Earlier in the project parallel training was slower than single-threaded.
-That is no longer true. Measured on Mac Mini M1 with `PKR_PHASE_PROFILE=1`
-and `ITERS_PER_SYNC=256`:
+Verified working end-to-end, on demand:
+
+| Step | Command | Verified by |
+|---|---|---|
+| Precompute hand ranks | `pkr-abstraction-precompute hand_ranks` | `smoke.sh`, `proftest.sh` |
+| Precompute centroids | `pkr-abstraction-precompute centroids` | `smoke.sh`, `proftest.sh` |
+| Precompute per-street tables | `pkr-abstraction-precompute preflop / abs5 / turn / river` | `smoke.sh`, `proftest.sh` |
+| Train CFR blueprint | `pkr-trainer` | `smoke.sh`, `proftest.sh` |
+| Export blueprint | `pkr-export::write_blueprint` | `smoke.sh`, `proftest.sh` |
+| Load + query at runtime | `pkr-runtime::SolverHandle` | `pkr-trainer::pipeline`, `pkr-runtime::roundtrip` |
+
+98 tests pass across 11 binaries. 1 test ignored (`load_external_blueprint`,
+which requires `PKR_BLUEPRINT` env var).
+
+---
+
+## Measured performance
+
+From `proftest.sh` (8 threads, 50M capacity, k=64 centroids, flop table
+loaded):
 
 ```
- threads    it/s       speedup vs t1
- -------    -------    -------------
-    1       15635      1.00x
-    2       26879      1.72x
-    4       33734      2.16x
-    8       38657      2.47x
+iter  5120/100000 | infosets: 110091 (0.2%) | 15196.1 it/s | cache_hit=0.584
+iter 51200/100000 | infosets: 374078 (0.7%) | 21159.3 it/s | cache_hit=0.873
+iter 100000/100000| infosets: 472881 (0.9%) | 27772.9 it/s | cache_hit=0.919
 ```
 
-At threads=8 that is **3.34 billion iterations/day**, versus roughly
-10 million needed for a level-A arena-playable bot. 300x headroom.
+Steady state throughput: **~27,700 it/s**, ~2.4 billion iterations per day.
+Training 100K iterations takes 3.6 s (5 s wall including init + export).
 
-**Default config is `--threads 8` (all cores).** t8 is 14% faster than
-t4 in wall clock with no measurable variance penalty in the profile
-data, so there is no reason to leave cores idle.
+The first ~5000 iterations are slower because the thread-local idx cache is
+cold (58% hit rate); by iteration 100K it warms to 92%.
 
-### What made the difference
+Per-window metrics from the same run:
+- **nodes/iteration**: 255–306 (first window slightly higher due to deeper
+  exploration before regret-matching collapses the tree)
+- **average tree depth**: 8.1–8.2
+- **max |regret|**: 1.07e4 (bounded; no blow-up)
+- **nonfinite regrets**: 0 (canonical discount is numerically safe)
+- **regret op dedup ratio**: ~0.47 (half the pushed updates collapse to the
+  same (idx, action) key in a 256-iteration batch, as expected)
 
-Earlier attempts had tried and failed at: thread-local idx cache,
-interleaved atomic arrays, split strategy_sum, parallel flush, and
-strategy-batch deferred writes — each was neutral or worse. The actual
-fix was architectural:
+### Extrapolated wall time
 
-1. **Batch logical iterations per rayon dispatch.** The old
-   `run_iteration_parallel()` forked at the granularity of one CFR
-   iteration and paid a serial merge+flush every iteration. Serial cost
-   grew *with* thread count (more threads = more items per iteration to
-   merge). Replaced with `run_iterations_parallel(n)`, which runs `n`
-   iterations per dispatch, amortizing merge+flush by `n`. `ITERS_PER_SYNC`
-   in `pkr-trainer` is 256.
+| Iterations | Wall time (steady state) |
+|---|---|
+| 10⁶ | ~40 s |
+| 10⁷ | ~6 min |
+| 10⁸ | ~1 hr (before infoset growth penalty) |
+| 10⁹ | ~10 hr (with growth penalty; capacity issues likely) |
 
-2. **Parallel flush.** After dedup every `(idx, action)` key is unique,
-   so the PCFR+ read-modify-write per key is race-free. `flush_cpu_batch`
-   and `apply_strategy_batch` now dedup serially then `par_chunks` the
-   apply.
+At 10⁹ iterations you hit the 50M default capacity; `--capacity` must be
+raised to 200M+, which uses ~20 GB and does not fit on the target M1.
 
-3. **i64 `strategy_sum`.** i32 with fixed-point ×1000 saturates after
-   ~2.1M weighted visits per slot. A hot preflop infoset can hit that
-   in a few thousand iterations, at which point the running average
-   would silently wrap to negative. Fixed.
+---
 
-4. **Move `is_near_capacity()` out of the per-batch path.** It pins
-   papaya; once per 1000 iterations is enough.
+## Parallel training
 
-The earlier micro-optimizations (idx cache, split strategy_sum) are
-still in the code and still help; they just weren't the top of the
-Amdahl curve.
+Training uses rayon with `ITERS_PER_SYNC = 256`. Each dispatch runs 256
+logical iterations split into chunks of 16. Each chunk:
 
-### Remaining headroom
+1. Runs 16 traversal pairs (hero + villain perspective) into local buffers
+2. Returns `(batch, strategy_batch, local_metrics)` to the coordinator
+3. Coordinator merges all chunks, applies strategy ops and regret deltas in
+   parallel via sort-dedup + `par_chunks`
 
-Flush is still ~30% of wall time at threads=8. Two levers if that ever
-matters:
+This gives the first positive parallel scaling in the project's history:
 
-- Reusable scratch `HashMap` on the table for dedup, so we don't
-  reallocate a ~15-30k entry map per batch.
-- Deeper batch (ITERS_PER_SYNC 512/1024) — DCFR's discount schedule
-  tolerates it fine.
+| Threads | it/s | speedup |
+|---|---|---|
+| 1 | 15,635 | 1.00x |
+| 2 | 26,879 | 1.72x |
+| 4 | 33,734 | 2.16x |
+| 8 | 38,657 | 2.47x |
 
-Neither is worth doing unless training time becomes the constraint.
+At 8 threads the flush phase (sort-dedup + parallel apply) is ~30% of wall
+time. Further scaling would need a redesign of the flush path
+(per-thread regret tables merged every K iterations). This is not currently
+a bottleneck: **even single-threaded throughput is 200x more than needed**
+for the roadmap's "arena-playable" target.
 
-## DCFR status (measured, not assumed)
+Earlier attempts at parallel training were slower than single-threaded. The
+fix was architectural: batch many logical iterations per dispatch rather
+than syncing once per iteration. Per-iteration overhead was growing with
+thread count because each iteration produced `num_threads` times as much
+work to merge.
+
+---
+
+## DCFR status
 
 The DCFR implementation was investigated with a Kuhn poker harness
-(`crates/pkr-testgames`) that runs discount × momentum combinations
-and reports exploitability at log-spaced checkpoints. Findings:
+(`crates/pkr-testgames`). Findings:
 
-1. **RatioPower discount was broken.** The old formula `(t/τ)^p`
-   multiplies each infoset's regret by an unbounded factor on every
-   update. For t=1e6 and α=1.5 that factor is ~3e4 per update; a dozen
-   updates overflow f32. The experiment shows NaN in `regrets` at
-   t≈3000 in both momentum modes. Every training run longer than ~3000
-   iterations was silently corrupting itself. Fixed: production now
-   uses `DiscountMode::CanonicalDcfr`, which is bounded in [0.5, 1)
-   and cannot overflow.
+1. **`DiscountMode::RatioPower` was removed from the codebase.** The old
+   formula `(t/τ)^p` multiplies regret by an unbounded factor on every
+   update. For `t = 10⁶` that factor is ~3e4 per update; a dozen updates
+   overflow f32. The Kuhn harness proved NaN at t≈3000, with `max|regret|`
+   = 3.6e20 just before. **Every training run longer than ~3000 iterations
+   was silently corrupting itself.** Production now uses only
+   `DiscountMode::CanonicalDcfr`.
 
-2. **Canonical DCFR is effectively vanilla CFR in f32.** For t > 10^4,
-   the canonical factor `t^p/(t^p+1)` rounds to exactly 1.0 in f32.
-   So over a 10^7-iteration run, the discount only applies in the
-   1000–10000 window where its effect is below the noise floor of
-   regret-matching ratios. The docs previously claimed DCFR gave 2–10×
-   faster convergence; in this implementation it does not, because the
-   discount is below f32 precision for most of the run.
+2. **Canonical DCFR is effectively vanilla CFR in f32.** The canonical
+   factor is `t^p / (t^p + 1)`. For `t > 10⁴` with p=1.5, `t^p > 8.4e6`,
+   so `+ 1.0` is below f32's epsilon and the factor rounds to exactly 1.0.
+   Over a 10⁷-iteration run the discount only applies in the
+   1000–10000 window where its effect is below the regret-ratio noise
+   floor. **The docs previously claimed 2–10× faster convergence from
+   DCFR. In this implementation it does not apply.**
 
-3. **PCFR+ momentum has a small effect.** On Kuhn, momentum on vs off
-   differs by ~0.4% in exploitability at any given checkpoint. Neither
-   accelerates convergence meaningfully. Kept on because it is what
-   production has always used and it does not hurt.
+3. **PCFR+ momentum has a small positive effect in the transitional range**
+   and no measurable effect afterward. Kept on; not currently a tuning
+   target.
 
-4. **The Kuhn harness itself does not converge.** Exploitability goes
-   from 0.27 at t=100 to 0.28 at t=3e6 — it does not decrease, which
-   is impossible for standard CFR on a solvable game. The value of the
-   average strategy does converge (to Nash value -1/18 within 2e-5), so
-   the regret updates are producing something with the right average
-   payoff but which is still exploitable. This is a harness bug, not a
-   solver bug — `vanilla` CFR exhibits the same behavior. Fixing it is
-   tracked as a to-do; until then, only trust the NaN and magnitude
-   diagnostics from the harness, not its exploitability numbers.
+4. **The `strategy_sum_discount_factor` (γ=2) function is not called from
+   anywhere.** The exported average strategy is a plain unweighted
+   sum. With γ=2 the cumulative discount over a full run is ~0.1% — below
+   f32 precision. The function is dead code.
 
-   To reproduce: `cargo run --release -p pkr-testgames --bin kuhn-experiment`.
+The Kuhn harness itself (`pkr-testgames`) has a correct CFR traverse and
+exploitability computation via brute-force 2⁶ pure-strategy enumeration.
+Exploitability converges from 0.25 to 1.24e-3 by t=3M for both vanilla and
+canonical. Momentum-off converges ~3x faster than momentum-on on this game
+— but that result does **not** transfer to NLHE (different scale, tree
+shape, and sampling regime).
 
-5. **Consequence for the production blueprint.** The exported average
-   strategy is weighted by own reach but not by any kind of discount.
-   This is standard vanilla CFR averaging. It is not DCFR averaging.
-   In practice the difference is small (see #2), but the docs should
-   say "vanilla CFR with a warmup discount" rather than "DCFR".
+---
 
-## Known remaining issues (not blocking)
+## Known limitations
 
-- `crates/pkr-cfr/src/riversolve.rs` is not real CFR (regrets reset
-  each iteration). Not called by the trainer.
-- `crates/pkr-cfr/src/valuenet.rs` is not wired into anything; its
-  `generate_training_data` returns synthetic labels.
-- `crates/pkr-fuzz/` and `crates/pkr-exploit/` are defined in the
-  workspace but not integrated into the training or serving path.
+### Crate-level
 
-## How to run a real training job
+- `pkr-cfr::gpu` — The `GpuState` type is lazily constructed and never
+  actually used in production (`flush_cpu_batch` is the production path).
+  The GPU path exists only for a parity test. It works.
+- `pkr-cfr::riversolve` — Not real CFR (regrets reset each iteration). Not
+  called by the trainer. Retained for future depth-limited solve work.
+- `pkr-cfr::valuenet` — Not wired into anything. Its
+  `generate_training_data` returns synthetic labels. Retained for future
+  depth-limited solving.
+- `pkr-cfr::preflop_validate` — Validation helpers exist but are only
+  exercised with dummy lookups in tests. Would be useful after the first
+  real training run.
+- `pkr-exploit` — Crate is defined but not integrated into training or
+  serving. Implements opponent stat tracking and bounded exploit shifts.
+- `pkr-fuzz` — Crate is defined but not integrated. Implements rules
+  fuzzing and an eval harness against scripted bots.
+- `pkr-export::fmph` — Builds an FMph structure but the runtime uses binary
+  search. Either wire FMph into `SolverHandle` or drop it from the writer.
+
+### Training-time
+
+- **Capacity cliff**: at 50M infosets the trainer stops cleanly via
+  `is_near_capacity`. At `--capacity` the `alloc_idx` panics loudly rather
+  than silently clumping. 50M is the current default; 10⁸ iterations of
+  real HU NLHE will exceed it.
+- **Working-set growth**: past ~10M infosets, throughput drops as the
+  papaya map and regret arrays stop fitting in cache.
+- **No automated convergence measurement**: `stats.json` reports strategy
+  distribution (pure/mixed/empty) and entropy histogram, but there is no
+  in-process exploitability estimate for NLHE. The Kuhn harness measures
+  exploitability for Kuhn only.
+
+### Behavioral
+
+- The bot has never been played. `proftest.sh` verifies the pipeline
+  produces a blueprint with plausible structure (infosets registered,
+  strategies non-uniform, no non-finite regrets), but nothing has been
+  played against a scripted opponent or evaluated for actual poker quality.
+
+---
+
+## How to reproduce
 
 ```bash
-# Quick end-to-end check
+# Fast: verify pipeline end-to-end
 ./smoke.sh
 
-# Real training
-./run.sh
+# Medium: production-scale training + metrics
+./proftest.sh
+
+# Real: full training run
+#   1. Edit run.sh: ITERATIONS=10000000
+#   2. ./run.sh
 ```
 
-Watch the progress line: `iter N/M | infosets: X | Y it/s | ETA Zh`.
-Ctrl-C is safe; rerunning `./run.sh` resumes from `train.ckpt`.
+The `metrics.csv` and `stats.json` outputs from `proftest.sh` are the
+handoff artifacts for external analysis. `blueprint.bin` is the trained
+artifact itself.
 
-Override threads with `--threads N` on the trainer if you want to
-benchmark a specific config.
+---
+
+## Changelog since initial commit
+
+**Major fixes and refactors:**
+- Removed `DiscountMode::RatioPower` (NaN at t≈3000); production uses only
+  canonical now, and the mode enum no longer allows selecting a broken
+  formula.
+- Batched regret + strategy updates (sort-dedup + parallel apply) to fix
+  parallel scaling.
+- Batched logical iterations per rayon dispatch (`ITERS_PER_SYNC = 256`)
+  to amortize serial merge.
+- `strategy_sum` widened to i64 (i32 overflow at ~2.1M weighted visits).
+- `legal_actions_into` — non-allocating variant used by the traversal.
+- River infoset bucketing (`hand_rank >> 6`) to bound infoset count.
+- Compact history signature (actions_this_street, num_raises, last_was_bet)
+  replaces raw action bytes in the infoset hash.
+- `MmapReader` + `SolverHandle` layout reconciled with
+  `write_blueprint`'s output format.
+- Checkpoint format v3 (i64 strategy_sum).
+- `warn_nonfinite_regret_once` in `flush_cpu_batch` — catches future regret
+  blow-ups in real time.
+
+**Added instrumentation:**
+- `pkr-cfr::metrics` module with `LocalMetrics`, `GlobalMetrics`,
+  `Snapshot`.
+- `pkr-trainer --metrics-csv` writes per-window CSV rows.
+- `pkr-trainer --stats-json` writes end-of-run strategy analysis + sampled
+  infosets.
+- `PKR_PHASE_PROFILE=1` env var emits per-batch phase timings.
+- `pkr-testgames` Kuhn harness.
+
+**Infrastructure:**
+- `smoke.sh` — end-to-end pipeline verification.
+- `proftest.sh` — production-scale profile run with metrics.
+- `bench.sh` — thread-scaling benchmark (superseded by proftest).
+
+---
+
+## What's next (in priority order)
+
+1. **Play the bot.** Load `blueprint.bin` into the host app, run 100 hands
+   against scripted bots (see `pkr-fuzz::run_eval_harness`), verify no
+   visibly insane decisions.
+2. **Scale training.** If the play test looks sane at 100K iterations,
+   run `./run.sh` with `ITERATIONS=10000000`.
+3. **Wire `pkr-fuzz` into the trainer.** Automated eval against
+   Station/Nit/Aggro bots to catch quality regressions.
+4. **Wire `pkr-exploit`.** Bounded opponent-shift overlay; the roadmap's
+   P0 lever against weak tournament fields.
+5. **Consider dropping `pkr-cfr::gpu`, `riversolve`, `valuenet`,
+   `preflop_validate`** if they are not going to be wired in.
+
+Everything else is optimization past the point of diminishing returns.
