@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PROF_DIR="${PROF_DIR:-./.proftest}"
+PROF_DIR="${PROF_DIR:-./outputs/v0-proftest}"
 mkdir -p "$PROF_DIR"
 PROF_DIR_ABS="$(cd "$PROF_DIR" && pwd)"
 

@@ -2,7 +2,6 @@
 *.bin
 .ckpt
 *.ckpt
-.smoke/
 
 # IDE
 .idea/
@@ -16,15 +15,6 @@ target
 target/
 wr.sh
 dump.txt
-blueprint.bin
-centroids.bin
-flop_buckets.bin
-hand_ranks.bin
-preflop_abstraction.bin
-turn_abstraction.bin
-abstraction.bin
-train.ckpt
-metrics.csv
-stats.json
 
-.proftest/
+# All generated artifacts live under outputs/
+outputs/
