@@ -71,6 +71,15 @@ time cargo run --release -p pkr-trainer -- \
     --stats-json "$PROF_DIR_ABS/stats.json"
 
 echo ""
+echo "=== Validating JSON output ==="
+if python3 -c "import json; json.load(open('$PROF_DIR_ABS/stats.json'))" 2>/dev/null; then
+    echo "  stats.json is valid JSON"
+else
+    echo "  ERROR: stats.json is not valid JSON"
+    exit 1
+fi
+
+echo ""
 echo "=== Artifacts ==="
 ls -la "$PROF_DIR_ABS" | grep -E "(metrics\.csv|stats\.json|blueprint\.bin)"
 echo ""

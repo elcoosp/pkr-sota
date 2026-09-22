@@ -143,7 +143,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cli.capacity
     );
 
-    // Optional resume.
     let start_iter = if let Some(ckpt) = &cli.checkpoint {
         if ckpt.exists() {
             match trainer.load_checkpoint(ckpt.to_str().unwrap()) {
@@ -164,7 +163,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         0
     };
 
-    // CSV writer for live metrics.
     let mut csv_writer: Option<std::io::BufWriter<std::fs::File>> = match &cli.metrics_csv {
         Some(path) => {
             let f = std::fs::File::create(path)?;
@@ -199,14 +197,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cli.iterations
     };
 
-    // Logical CFR iterations per rayon dispatch. Larger batches amortize
-    // the serial merge + flush further, at the cost of slightly staler
-    // discount-schedule timing (DCFR tolerates this well).
     const ITERS_PER_SYNC: u32 = 256;
 
     let mut done = start_iter;
-
-    // Reset the global metrics counters so window deltas start at zero.
     let mut prev_metrics_snapshot = pkr_cfr::metrics::global().snapshot();
 
     while done < max_iters {
@@ -238,7 +231,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 0.0
             };
 
-            // Window delta of the global metrics since last report.
             let cur_metrics = pkr_cfr::metrics::global().snapshot();
             let delta = cur_metrics.delta(&prev_metrics_snapshot);
 
@@ -358,185 +350,86 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let samples = trainer.get_table().sample_infosets(200);
         let cumulative = pkr_cfr::metrics::global().snapshot();
 
-        let mut json = String::with_capacity(1 << 20);
-        json.push_str("{\n");
-        json.push_str("  \"config\": {\n");
-        json.push_str(&format!("    \"iterations\": {},\n", cli.iterations));
-        json.push_str(&format!("    \"threads\": {},\n", num_threads));
-        json.push_str(&format!("    \"capacity\": {},\n", cli.capacity));
-        json.push_str(&format!("    \"iters_per_sync\": {},\n", ITERS_PER_SYNC));
-        json.push_str(&format!("    \"report_every\": {},\n", cli.report_every));
-        json.push_str(&format!("    \"start_iter\": {},\n", start_iter));
-        json.push_str(&format!("    \"end_iter\": {},\n", trainer.iteration()));
-        json.push_str(&format!("    \"stopped_early\": {}\n", stopped_early));
-        json.push_str("  },\n");
+        let depth_hist: Vec<u64> = cumulative.depth_hist.iter().copied().collect();
+        let entropy_hist: Vec<usize> = analysis.entropy_histogram.iter().copied().collect();
+        let dominant: Vec<usize> = analysis.dominant_counts.iter().copied().collect();
 
-        json.push_str(&format!("  \"wall_seconds\": {:.3},\n", elapsed_total));
+        let stats = serde_json::json!({
+            "config": {
+                "iterations": cli.iterations,
+                "threads": num_threads,
+                "capacity": cli.capacity,
+                "iters_per_sync": ITERS_PER_SYNC,
+                "report_every": cli.report_every,
+                "start_iter": start_iter,
+                "end_iter": trainer.iteration(),
+                "stopped_early": stopped_early,
+            },
+            "wall_seconds": elapsed_total,
+            "snapshot": {
+                "infosets": snap.infosets,
+                "capacity": snap.capacity,
+                "capacity_pct": if snap.capacity > 0 {
+                    100.0 * snap.infosets as f64 / snap.capacity as f64
+                } else { 0.0 },
+                "max_abs_regret": snap.max_abs_regret,
+                "mean_abs_regret": snap.mean_abs_regret,
+                "nonfinite_count": snap.nonfinite_count,
+                "strategy_sum_mass": snap.strategy_sum_mass,
+            },
+            "cumulative_metrics": {
+                "nodes": cumulative.nodes,
+                "nodes_per_iteration": if cumulative.iterations > 0 {
+                    cumulative.nodes as f64 / cumulative.iterations as f64
+                } else { 0.0 },
+                "avg_depth": cumulative.avg_depth(),
+                "max_depth": cumulative.max_depth,
+                "cache_hit_rate": cumulative.cache_hit_rate(),
+                "infosets_created": cumulative.infosets_created,
+                "strategy_ops_pushed": cumulative.strategy_pushed,
+                "strategy_ops_applied": cumulative.strategy_applied,
+                "regret_ops_input": cumulative.regret_input,
+                "regret_ops_unique": cumulative.regret_unique,
+                "regret_dedup_ratio": cumulative.regret_dedup_ratio(),
+                "batches": cumulative.batches,
+                "total_traverse_s": cumulative.traverse_ns as f64 / 1.0e9,
+                "total_merge_s": cumulative.merge_ns as f64 / 1.0e9,
+                "total_flush_s": cumulative.flush_ns as f64 / 1.0e9,
+                "total_wall_s": cumulative.wall_ns as f64 / 1.0e9,
+                "depth_histogram": depth_hist,
+            },
+            "strategy_analysis": {
+                "total": analysis.total,
+                "empty": analysis.empty,
+                "pure": analysis.pure,
+                "mixed": analysis.mixed,
+                "mean_entropy_bits": analysis.mean_entropy,
+                "entropy_histogram_0p25bit": entropy_hist,
+                "dominant_action_counts": dominant,
+            },
+            "sample_infosets": samples.iter().map(|d| {
+                let strategy: Vec<f32> = d.strategy.iter().copied().collect();
+                let regrets: Vec<f32> = d.regrets.iter().copied().collect();
+                serde_json::json!({
+                    "hash": format!("0x{:016x}", d.hash),
+                    "strategy": strategy,
+                    "regrets": regrets,
+                })
+            }).collect::<Vec<_>>(),
+        });
 
-        json.push_str("  \"snapshot\": {\n");
-        json.push_str(&format!("    \"infosets\": {},\n", snap.infosets));
-        json.push_str(&format!("    \"capacity\": {},\n", snap.capacity));
-        json.push_str(&format!(
-            "    \"capacity_pct\": {:.3},\n",
-            if snap.capacity > 0 {
-                100.0 * snap.infosets as f64 / snap.capacity as f64
-            } else {
-                0.0
-            }
-        ));
-        json.push_str(&format!(
-            "    \"max_abs_regret\": {:.6e},\n",
-            snap.max_abs_regret
-        ));
-        json.push_str(&format!(
-            "    \"mean_abs_regret\": {:.6e},\n",
-            snap.mean_abs_regret
-        ));
-        json.push_str(&format!(
-            "    \"nonfinite_count\": {},\n",
-            snap.nonfinite_count
-        ));
-        json.push_str(&format!(
-            "    \"strategy_sum_mass\": {:.6e}\n",
-            snap.strategy_sum_mass
-        ));
-        json.push_str("  },\n");
-
-        json.push_str("  \"cumulative_metrics\": {\n");
-        json.push_str(&format!("    \"nodes\": {},\n", cumulative.nodes));
-        json.push_str(&format!(
-            "    \"nodes_per_iteration\": {:.3},\n",
-            if cumulative.iterations > 0 {
-                cumulative.nodes as f64 / cumulative.iterations as f64
-            } else {
-                0.0
-            }
-        ));
-        json.push_str(&format!(
-            "    \"avg_depth\": {:.4},\n",
-            cumulative.avg_depth()
-        ));
-        json.push_str(&format!("    \"max_depth\": {},\n", cumulative.max_depth));
-        json.push_str(&format!(
-            "    \"cache_hit_rate\": {:.4},\n",
-            cumulative.cache_hit_rate()
-        ));
-        json.push_str(&format!(
-            "    \"infosets_created\": {},\n",
-            cumulative.infosets_created
-        ));
-        json.push_str(&format!(
-            "    \"strategy_ops_pushed\": {},\n",
-            cumulative.strategy_pushed
-        ));
-        json.push_str(&format!(
-            "    \"strategy_ops_applied\": {},\n",
-            cumulative.strategy_applied
-        ));
-        json.push_str(&format!(
-            "    \"regret_ops_input\": {},\n",
-            cumulative.regret_input
-        ));
-        json.push_str(&format!(
-            "    \"regret_ops_unique\": {},\n",
-            cumulative.regret_unique
-        ));
-        json.push_str(&format!(
-            "    \"regret_dedup_ratio\": {:.4},\n",
-            cumulative.regret_dedup_ratio()
-        ));
-        json.push_str(&format!(
-            "    \"batches\": {},\n",
-            cumulative.batches
-        ));
-        json.push_str(&format!(
-            "    \"total_traverse_s\": {:.4},\n",
-            cumulative.traverse_ns as f64 / 1.0e9
-        ));
-        json.push_str(&format!(
-            "    \"total_merge_s\": {:.4},\n",
-            cumulative.merge_ns as f64 / 1.0e9
-        ));
-        json.push_str(&format!(
-            "    \"total_flush_s\": {:.4},\n",
-            cumulative.flush_ns as f64 / 1.0e9
-        ));
-        json.push_str(&format!(
-            "    \"total_wall_s\": {:.4},\n",
-            cumulative.wall_ns as f64 / 1.0e9
-        ));
-        json.push_str("    \"depth_histogram\": [");
-        for (i, v) in cumulative.depth_hist.iter().enumerate() {
-            if i > 0 {
-                json.push_str(", ");
-            }
-            json.push_str(&format!("{}", v));
-        }
-        json.push_str("]\n");
-        json.push_str("  },\n");
-
-        json.push_str("  \"strategy_analysis\": {\n");
-        json.push_str(&format!("    \"total\": {},\n", analysis.total));
-        json.push_str(&format!("    \"empty\": {},\n", analysis.empty));
-        json.push_str(&format!("    \"pure\": {},\n", analysis.pure));
-        json.push_str(&format!("    \"mixed\": {},\n", analysis.mixed));
-        json.push_str(&format!(
-            "    \"mean_entropy_bits\": {:.4},\n",
-            analysis.mean_entropy
-        ));
-        json.push_str("    \"entropy_histogram_0p25bit\": [");
-        for (i, v) in analysis.entropy_histogram.iter().enumerate() {
-            if i > 0 {
-                json.push_str(", ");
-            }
-            json.push_str(&format!("{}", v));
-        }
-        json.push_str("],\n");
-        json.push_str("    \"dominant_action_counts\": [");
-        for (i, v) in analysis.dominant_counts.iter().enumerate() {
-            if i > 0 {
-                json.push_str(", ");
-            }
-            json.push_str(&format!("{}", v));
-        }
-        json.push_str("]\n");
-        json.push_str("  },\n");
-
-        json.push_str("  \"sample_infosets\": [\n");
-        for (i, d) in samples.iter().enumerate() {
-            json.push_str("    {");
-            json.push_str(&format!("\"hash\": \"0x{:016x}\", ", d.hash));
-            json.push_str("\"strategy\": [");
-            for (j, p) in d.strategy.iter().enumerate() {
-                if j > 0 {
-                    json.push_str(", ");
+        match serde_json::to_string_pretty(&stats) {
+            Ok(s) => {
+                if let Err(e) = std::fs::write(path, s) {
+                    eprintln!("WARNING: failed to write stats JSON: {}", e);
+                } else {
+                    eprintln!("stats JSON written to {}", path.display());
                 }
-                json.push_str(&format!("{:.6}", p));
             }
-            json.push_str("], \"regrets\": [");
-            for (j, r) in d.regrets.iter().enumerate() {
-                if j > 0 {
-                    json.push_str(", ");
-                }
-                json.push_str(&format!("{:.6e}", r));
-            }
-            json.push_str("]");
-            if i + 1 < samples.len() {
-                json.push_str(",");
-            }
-            json.push('\n');
-        }
-        json.push_str("  ]\n");
-        json.push_str("}\n");
-
-        if let Err(e) = std::fs::write(path, json) {
-            eprintln!("WARNING: failed to write stats JSON: {}", e);
-        } else {
-            eprintln!("stats JSON written to {}", path.display());
+            Err(e) => eprintln!("WARNING: failed to serialize stats JSON: {}", e),
         }
     }
 
-    // Export blueprint.
     let mut keys = trainer.get_table().get_keys();
     keys.sort_unstable();
     eprintln!("Exporting {} infosets...", keys.len());

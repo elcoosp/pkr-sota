@@ -27,6 +27,7 @@ pkr-export = { path = "crates/pkr-export" }
 pkr-runtime = { path = "crates/pkr-runtime" }
 pkr-testgames = { path = "crates/pkr-testgames" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 bytemuck = { version = "1", features = ["derive"] }
 dashmap = "6"
 papaya = "0.1"
