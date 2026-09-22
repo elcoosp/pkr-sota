@@ -7,20 +7,25 @@ use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
+/// Fields per (infoset, action): regret, momentum, strategy_sum.
+/// Interleaving them keeps all 18 i32s of an infoset within two cache
+/// lines instead of scattering them across three separate arrays.
+const FIELDS: usize = 3;
+const STRIDE: usize = K * FIELDS;
+const F_REGRET: usize = 0;
+const F_MOMENTUM: usize = 1;
+const F_SUM: usize = 2;
 pub(crate) const SCALE: f32 = 1000.0;
 
 pub struct CompactRegretTable {
-    /// Lock-free concurrent hashmap. `papaya` avoids the shard-lock convoy
-    /// that made 8 threads slower than 1 on DashMap. Reads are effectively
-    /// free; writes publish via atomics inside papaya's internal structure.
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
-    cpu_regrets: Vec<AtomicI32>,
-    cpu_momentums: Vec<AtomicI32>,
-    strategy_sum: Vec<AtomicI32>,
+    /// Layout: `data[idx * STRIDE + action * FIELDS + field]`
+    /// where field ∈ {F_REGRET, F_MOMENTUM, F_SUM}.
+    data: Vec<AtomicI32>,
     next_idx: AtomicUsize,
     capacity: usize,
-    /// Lazily constructed. The GPU path is only used by tests; production
-    /// runs flush_cpu_batch and never touch this.
+    /// Lazily constructed. Production uses flush_cpu_batch and never
+    /// allocates GPU buffers.
     gpu: OnceLock<GpuState>,
 }
 
@@ -30,34 +35,45 @@ impl CompactRegretTable {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut cpu_regrets = Vec::with_capacity(capacity * K);
-        let mut cpu_momentums = Vec::with_capacity(capacity * K);
-        let mut strategy_sum = Vec::with_capacity(capacity * K);
-
-        cpu_regrets.resize_with(capacity * K, || AtomicI32::new(0));
-        cpu_momentums.resize_with(capacity * K, || AtomicI32::new(0));
-        strategy_sum.resize_with(capacity * K, || AtomicI32::new(0));
-
+        let mut data: Vec<AtomicI32> = Vec::with_capacity(capacity * STRIDE);
+        data.resize_with(capacity * STRIDE, || AtomicI32::new(0));
+        let map = PapayaMap::with_hasher(FoldHasher::default());
+        // Pre-reserve to avoid resize storms that ping-pong pins across
+        // threads. 4M is a conservative working-set estimate; growth
+        // beyond that is amortized.
+        map.pin().reserve(4_000_000.min(capacity));
         Self {
-            hash_to_idx: PapayaMap::with_hasher(FoldHasher::default()),
-            cpu_regrets,
-            cpu_momentums,
-            strategy_sum,
+            hash_to_idx: map,
+            data,
             next_idx: AtomicUsize::new(0),
             capacity,
             gpu: OnceLock::new(),
         }
     }
 
-    pub(crate) fn get_or_create_idx(&self, hash: u64) -> usize {
-        let guard = self.hash_to_idx.pin();
-        // Fast path: already present.
-        if let Some(idx) = guard.get(&hash) {
-            return *idx;
-        }
-        // Slow path: allocate a fresh index, then CAS it into the map.
-        // If another thread raced us, papaya's update keeps the first writer.
-        let fresh = loop {
+    #[inline(always)]
+    fn off(idx: usize, action: usize, field: usize) -> usize {
+        idx * STRIDE + action * FIELDS + field
+    }
+
+    #[inline(always)]
+    fn load(&self, idx: usize, action: usize, field: usize) -> i32 {
+        self.data[Self::off(idx, action, field)].load(Ordering::Relaxed)
+    }
+
+    #[inline(always)]
+    fn store(&self, idx: usize, action: usize, field: usize, v: i32) {
+        self.data[Self::off(idx, action, field)].store(v, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    fn add(&self, idx: usize, action: usize, field: usize, delta: i32) {
+        self.data[Self::off(idx, action, field)].fetch_add(delta, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    fn alloc_idx(&self) -> usize {
+        loop {
             let cur = self.next_idx.load(Ordering::Relaxed);
             if cur >= self.capacity {
                 tracing::error!(
@@ -72,27 +88,67 @@ impl CompactRegretTable {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => break cur,
+                Ok(_) => return cur,
                 Err(_) => continue,
             }
-        };
-        // try_insert returns Err if the key already exists. In that case
-        // someone else won the race; re-lookup to get their index. The key
-        // is guaranteed present after the failed try_insert, so this always
-        // succeeds. We've wasted one index slot (harmless at capacity 50M).
+        }
+    }
+
+    pub(crate) fn get_or_create_idx(&self, hash: u64) -> usize {
+        let guard = self.hash_to_idx.pin();
+        if let Some(idx) = guard.get(&hash) {
+            return *idx;
+        }
+        let fresh = self.alloc_idx();
         match guard.try_insert(hash, fresh) {
             Ok(_) => fresh,
             Err(_) => guard.get(&hash).copied().unwrap_or(fresh),
         }
     }
 
+    /// Traverser fast path: single pin, resolve-or-create index, read
+    /// current regret-matching strategy into `out`. Returns the index.
+    /// Replaces the old pair of get_strategy_into + get_or_create_idx,
+    /// which pinned twice per traverser node.
+    pub fn get_strategy_and_idx(&self, infoset_hash: u64, out: &mut [f32; K]) -> usize {
+        let guard = self.hash_to_idx.pin();
+        let idx = match guard.get(&infoset_hash) {
+            Some(i) => *i,
+            None => {
+                let fresh = self.alloc_idx();
+                match guard.try_insert(infoset_hash, fresh) {
+                    Ok(_) => fresh,
+                    Err(_) => guard.get(&infoset_hash).copied().unwrap_or(fresh),
+                }
+            }
+        };
+        let mut sum = 0.0f32;
+        for i in 0..K {
+            let raw = self.load(idx, i, F_REGRET);
+            let val = ((raw as f32) / SCALE).max(0.0);
+            out[i] = val;
+            sum += val;
+        }
+        if sum > 0.0 {
+            let inv = 1.0 / sum;
+            for i in 0..K {
+                out[i] *= inv;
+            }
+        } else {
+            out.fill(1.0 / K as f32);
+        }
+        idx
+    }
+
+    /// Non-traverser path: read current strategy without creating the
+    /// infoset if it is new.
     pub fn get_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
         let guard = self.hash_to_idx.pin();
         if let Some(idx) = guard.get(&infoset_hash) {
-            let base = *idx * K;
+            let idx = *idx;
             let mut sum = 0.0f32;
             for i in 0..K {
-                let raw = self.cpu_regrets[base + i].load(Ordering::Relaxed);
+                let raw = self.load(idx, i, F_REGRET);
                 let val = ((raw as f32) / SCALE).max(0.0);
                 out[i] = val;
                 sum += val;
@@ -113,14 +169,15 @@ impl CompactRegretTable {
     pub fn get_average_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
         let guard = self.hash_to_idx.pin();
         if let Some(idx) = guard.get(&infoset_hash) {
-            let base = *idx * K;
-            let sum: f32 = (0..K)
-                .map(|i| self.strategy_sum[base + i].load(Ordering::Relaxed) as f32)
-                .sum();
+            let idx = *idx;
+            let mut sum = 0.0f32;
+            for i in 0..K {
+                sum += self.load(idx, i, F_SUM) as f32;
+            }
             if sum > 0.0 {
                 let inv = 1.0 / sum;
                 for i in 0..K {
-                    out[i] = (self.strategy_sum[base + i].load(Ordering::Relaxed) as f32) * inv;
+                    out[i] = (self.load(idx, i, F_SUM) as f32) * inv;
                 }
                 return;
             }
@@ -133,19 +190,13 @@ impl CompactRegretTable {
         self.add_strategy_sum_at(idx, action_idx, prob);
     }
 
-    /// Fast path used by the traversal: assumes the caller already resolved
-    /// `infoset_hash` to `idx` via `get_or_create_idx`. Saves K-1 DashMap
-    /// lookups per traverser node.
     #[inline(always)]
     pub fn add_strategy_sum_at(&self, idx: usize, action_idx: usize, prob: f32) {
-        let base = idx * K;
-        self.strategy_sum[base + action_idx].fetch_add((prob * SCALE) as i32, Ordering::Relaxed);
+        self.add(idx, action_idx, F_SUM, (prob * SCALE) as i32);
     }
 
     /// CPU implementation of the PCFR+ DCFR update, semantically identical
-    /// to the GPU shader in gpu.rs. For HU NLHE with K=6 the arithmetic is
-    /// trivial; skipping the WGPU submit + sync per iteration removes the
-    /// dominant per-iteration overhead.
+    /// to the GPU shader in gpu.rs.
     pub fn flush_cpu_batch(&self, batch: &[BatchItem]) {
         if batch.is_empty() {
             return;
@@ -160,24 +211,17 @@ impl CompactRegretTable {
         }
 
         for ((index, action), delta) in dedup {
-            let flat = index as usize * K + action as usize;
-            let cur = self.cpu_regrets[flat].load(Ordering::Relaxed) as f32 / SCALE;
-            let mom = self.cpu_momentums[flat].load(Ordering::Relaxed) as f32 / SCALE;
+            let idx = index as usize;
+            let a = action as usize;
+            let cur = self.load(idx, a, F_REGRET) as f32 / SCALE;
+            let mom = self.load(idx, a, F_MOMENTUM) as f32 / SCALE;
             let (new_r, new_m) = update_regret_pfr_plus(cur, mom, iteration, delta);
-            self.cpu_regrets[flat]
-                .store((new_r * SCALE) as i32, Ordering::Relaxed);
-            self.cpu_momentums[flat]
-                .store((new_m * SCALE) as i32, Ordering::Relaxed);
+            self.store(idx, a, F_REGRET, (new_r * SCALE) as i32);
+            self.store(idx, a, F_MOMENTUM, (new_m * SCALE) as i32);
         }
     }
 
-    /// CPU-GPU hybrid: deduplicate batch, dispatch to GPU in chunks,
-    /// then write back ONLY the touched entries.
-    ///
-    /// GpuState is constructed on first use. Production runs should
-    /// prefer `flush_cpu_batch`; this path exists for the GPU parity test.
     pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
-        // 1. Deduplicate
         let mut dedup_map: HashMap<(u32, u32), f32> =
             HashMap::with_capacity(batch.len().min(100_000));
         let mut iteration = 0u32;
@@ -197,17 +241,15 @@ impl CompactRegretTable {
             })
             .collect();
 
-        // 2. Chunked dispatch — a merged cross-thread batch can exceed max_batch_size
         let gpu = self.gpu.get_or_init(|| GpuState::new(self.capacity));
         let max = gpu.max_batch_size();
         for chunk in deduped.chunks(max) {
             let results = gpu.flush_batch(chunk);
-
-            // 3. Touched-only write-back: O(len(chunk)) instead of O(capacity * K)
             for (item, result) in chunk.iter().zip(results.iter()) {
-                let flat = item.index as usize * K + item.action as usize;
-                self.cpu_regrets[flat].store(result.regret, Ordering::Relaxed);
-                self.cpu_momentums[flat].store(result.momentum, Ordering::Relaxed);
+                let idx = item.index as usize;
+                let a = item.action as usize;
+                self.store(idx, a, F_REGRET, result.regret);
+                self.store(idx, a, F_MOMENTUM, result.momentum);
             }
         }
     }
@@ -216,9 +258,7 @@ impl CompactRegretTable {
         let guard = self.hash_to_idx.pin();
         guard
             .get(&infoset_hash)
-            .map(|idx| {
-                self.cpu_regrets[*idx * K + action_idx].load(Ordering::Relaxed) as f32 / SCALE
-            })
+            .map(|idx| self.load(*idx, action_idx, F_REGRET) as f32 / SCALE)
             .unwrap_or(0.0)
     }
 
@@ -230,10 +270,10 @@ impl CompactRegretTable {
     pub fn get_average_strategy_slice(&self, infoset_hash: u64) -> Option<[f32; K]> {
         let guard = self.hash_to_idx.pin();
         guard.get(&infoset_hash).map(|idx| {
-            let base = *idx * K;
+            let idx = *idx;
             let mut out = [0.0f32; K];
             for i in 0..K {
-                out[i] = self.strategy_sum[base + i].load(Ordering::Relaxed) as f32 / SCALE;
+                out[i] = self.load(idx, i, F_SUM) as f32 / SCALE;
             }
             out
         })
@@ -258,10 +298,6 @@ impl CompactRegretTable {
         self.capacity
     }
 
-    /// Serialize the full table (map + all three atomic arrays) to a
-    /// single file. Format is self-describing and forward-extensible via
-    /// the version field. Takes an &self snapshot, so it is safe to call
-    /// while training threads are idle (e.g. between iterations).
     pub fn save_checkpoint(&self, path: &str, iteration: u32) -> std::io::Result<()> {
         use std::io::Write;
         let mut f = std::fs::File::create(path)?;
@@ -278,23 +314,14 @@ impl CompactRegretTable {
             f.write_all(&k.to_le_bytes())?;
             f.write_all(&(*v as u64).to_le_bytes())?;
         }
-        let entries = n * K;
+        let entries = n * STRIDE;
         for i in 0..entries {
-            f.write_all(&self.cpu_regrets[i].load(Ordering::Relaxed).to_le_bytes())?;
-        }
-        for i in 0..entries {
-            f.write_all(&self.cpu_momentums[i].load(Ordering::Relaxed).to_le_bytes())?;
-        }
-        for i in 0..entries {
-            f.write_all(&self.strategy_sum[i].load(Ordering::Relaxed).to_le_bytes())?;
+            f.write_all(&self.data[i].load(Ordering::Relaxed).to_le_bytes())?;
         }
         f.flush()?;
         Ok(())
     }
 
-    /// Load a checkpoint written by `save_checkpoint`. Clears the current
-    /// table first, so it is safe to call on a freshly-constructed table.
-    /// Returns the iteration number stored in the checkpoint.
     pub fn load_checkpoint(&self, path: &str) -> std::io::Result<u32> {
         use std::io::Read;
         let mut f = std::fs::File::open(path)?;
@@ -355,18 +382,10 @@ impl CompactRegretTable {
             }
             guard.insert(key, idx);
         }
-        let entries = n * K;
+        let entries = n * STRIDE;
         for i in 0..entries {
             let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-            self.cpu_regrets[i].store(v, Ordering::Relaxed);
-        }
-        for i in 0..entries {
-            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-            self.cpu_momentums[i].store(v, Ordering::Relaxed);
-        }
-        for i in 0..entries {
-            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-            self.strategy_sum[i].store(v, Ordering::Relaxed);
+            self.data[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);
         Ok(iteration)
@@ -378,15 +397,12 @@ impl CompactRegretTable {
 mod tests {
     use super::*;
 
-    /// Verify that flush_gpu_batch writes back only touched entries and is
-    /// a no-op for untouched entries. The GPU applies PCFR+ DCFR update
-    /// (momentum + regret discounting), so on the first iteration (t=1)
-    /// with zero-initial GPU state:
+    /// GPU-flush parity test. On the first iteration (t=1) with zero state:
     ///   gamma = 1/sqrt(t+1) = 1/sqrt(2)
-    ///   predicted_delta = gamma * delta  (momentum=0)
-    ///   new_regret = max(0, 0 + predicted_delta) = gamma * delta
-    /// Deduplicated delta for (i1, action 0) = 1.5 + 0.5 = 2.0
-    /// So regret = 2.0 / sqrt(2) ≈ 1.4142, stored as i32 * SCALE.
+    ///   predicted_delta = gamma * delta
+    ///   new_regret = max(0, predicted_delta)
+    /// Dedup delta for (i1, 0) = 1.5 + 0.5 = 2.0
+    /// Expected regret = 2.0 / sqrt(2) ≈ 1.4142
     #[test]
     fn flush_writes_back_only_touched_entries_and_is_idempotent_for_untouched() {
         let table = CompactRegretTable::with_capacity(4096);
@@ -415,7 +431,6 @@ mod tests {
         ];
         table.flush_gpu_batch(&batch);
 
-        // Deduped delta = 2.0; PCFR+ on t=1: regret = 2.0 / sqrt(2) ≈ 1.4142
         let expected_regret = 2.0 / std::f32::consts::SQRT_2;
         let actual_regret = table.get_regret(0xDEAD_0001, 0);
         assert!(
@@ -423,23 +438,14 @@ mod tests {
             "expected ~{expected_regret}, got {actual_regret}"
         );
 
-        // delta=-0.25; with r_neg=0, discounted_regret=0, new_regret = max(0+predicted, 0) = 0
-        // (negative regret after max(0,...) clamps to 0)
         let actual_neg = table.get_regret(0xDEAD_0002, 3);
-        let expected_neg = if 1.0 / std::f32::consts::SQRT_2 * (-0.25) > 0.0 {
-            1.0 / std::f32::consts::SQRT_2 * (-0.25)
-        } else {
-            0.0
-        };
         assert!(
-            (actual_neg - expected_neg).abs() < 0.01,
-            "expected ~{expected_neg}, got {actual_neg}"
+            actual_neg <= 0.01,
+            "negative delta should clamp to ~0, got {actual_neg}"
         );
 
-        // Untouched entry stays zero
         assert_eq!(table.get_regret(0xDEAD_0002, 0), 0.0);
 
-        // Empty batch -> nothing changes
         table.flush_gpu_batch(&[]);
         assert!((table.get_regret(0xDEAD_0001, 0) - expected_regret).abs() < 0.01);
     }

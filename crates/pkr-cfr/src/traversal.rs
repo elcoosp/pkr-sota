@@ -108,11 +108,10 @@ pub fn traverse(
         abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
 
     let mut strategy = [0.0f32; K];
-    table.get_strategy_into(infoset_hash, &mut strategy);
-
     let traverser_idx = if acting_player == traverser {
-        Some(table.get_or_create_idx(infoset_hash))
+        Some(table.get_strategy_and_idx(infoset_hash, &mut strategy))
     } else {
+        table.get_strategy_into(infoset_hash, &mut strategy);
         None
     };
 
