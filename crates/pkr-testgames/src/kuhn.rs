@@ -15,7 +15,7 @@
 //!   [1,0]      P1 folds, P1 -1  ->  P0 +1
 //!   [1,1]      showdown, stakes 2 each
 
-use pkr_cfr::dcfr::{update_regret_pfr_plus_mode, DiscountMode};
+use pkr_cfr::dcfr::{update_regret_full, DiscountMode, MomentumMode};
 
 const N_INFOSETS: usize = 12;
 const N_ACTIONS: usize = 2;
@@ -45,6 +45,7 @@ pub struct KuhnCfr {
     strategy_sum: [[f32; N_ACTIONS]; N_INFOSETS],
     iteration: u32,
     pub mode: DiscountMode,
+    pub momentum: MomentumMode,
     /// Set if any regret ever becomes non-finite; indicates numerical
     /// blow-up of the discount formula. Reported by the experiment.
     pub nan_flag: bool,
@@ -52,12 +53,17 @@ pub struct KuhnCfr {
 
 impl KuhnCfr {
     pub fn new(mode: DiscountMode) -> Self {
+        Self::new_full(mode, MomentumMode::On)
+    }
+
+    pub fn new_full(mode: DiscountMode, momentum: MomentumMode) -> Self {
         Self {
             regrets: [[0.0; N_ACTIONS]; N_INFOSETS],
             momentums: [[0.0; N_ACTIONS]; N_INFOSETS],
             strategy_sum: [[0.0; N_ACTIONS]; N_INFOSETS],
             iteration: 0,
             mode,
+            momentum,
             nan_flag: false,
         }
     }
@@ -217,7 +223,7 @@ impl KuhnCfr {
             let mom = self.momentums[infoset][a];
             let d = delta[a] * opp_reach;
             let (new_r, new_m) =
-                update_regret_pfr_plus_mode(cur, mom, t, d, self.mode);
+                update_regret_full(cur, mom, t, d, self.mode, self.momentum);
             self.regrets[infoset][a] = new_r;
             self.momentums[infoset][a] = new_m;
         }

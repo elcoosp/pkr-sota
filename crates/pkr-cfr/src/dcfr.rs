@@ -42,6 +42,16 @@ pub enum DiscountMode {
     RatioPower,
 }
 
+/// Whether to use the PCFR+ momentum term in the regret update.
+/// Off = plain CFR: regret_new = discount(regret_old) + delta.
+/// On  = PCFR+ (Farina et al. 2021): regret_new = discount(regret_old)
+///       + [(1-gamma)*prev_momentum + gamma*delta].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MomentumMode {
+    Off,
+    On,
+}
+
 #[inline(always)]
 pub fn discount_factor_mode(t: f32, p: f32, mode: DiscountMode) -> f32 {
     if t < TAU as f32 {
@@ -70,6 +80,40 @@ pub fn discount_factor(t: f32, p: f32) -> f32 {
 ///
 /// This is the CPU fallback path — the GPU shader in gpu.rs mirrors this.
 #[inline(always)]
+pub fn update_regret_full(
+    current: f32,
+    prev_momentum: f32,
+    iteration: u32,
+    delta: f32,
+    discount: DiscountMode,
+    momentum: MomentumMode,
+) -> (f32, f32) {
+    let t = iteration as f32;
+    if t == 0.0 {
+        return (delta, delta);
+    }
+
+    let predicted_delta = match momentum {
+        MomentumMode::On => {
+            let gamma = 1.0 / (t + 1.0).sqrt();
+            (1.0 - gamma) * prev_momentum + gamma * delta
+        }
+        MomentumMode::Off => delta,
+    };
+
+    let r_pos = current.max(0.0);
+    let r_neg = current.min(0.0);
+
+    let w_pos = discount_factor_mode(t, ALPHA, discount);
+    let w_neg = discount_factor_mode(t, BETA, discount);
+
+    let discounted_regret = w_pos * r_pos + w_neg * r_neg;
+    let new_regret = (discounted_regret + predicted_delta).max(0.0);
+
+    (new_regret, predicted_delta)
+}
+
+/// Backwards-compatible wrapper: canonical discount + PCFR+ momentum on.
 pub fn update_regret_pfr_plus_mode(
     current: f32,
     prev_momentum: f32,
@@ -77,28 +121,14 @@ pub fn update_regret_pfr_plus_mode(
     delta: f32,
     mode: DiscountMode,
 ) -> (f32, f32) {
-    let t = iteration as f32;
-    if t == 0.0 {
-        return (delta, delta);
-    }
-
-    // Momentum decay factor (RM+ style)
-    let gamma = 1.0 / (t + 1.0).sqrt();
-    let predicted_delta = (1.0 - gamma) * prev_momentum + gamma * delta;
-
-    // DCFR discounting on current regret
-    let r_pos = current.max(0.0);
-    let r_neg = current.min(0.0);
-
-    let w_pos = discount_factor_mode(t, ALPHA, mode);
-    let w_neg = discount_factor_mode(t, BETA, mode);
-
-    let discounted_regret = w_pos * r_pos + w_neg * r_neg;
-
-    // PCFR+ alternation: max(0, discounted + predicted)
-    let new_regret = (discounted_regret + predicted_delta).max(0.0);
-
-    (new_regret, predicted_delta)
+    update_regret_full(
+        current,
+        prev_momentum,
+        iteration,
+        delta,
+        mode,
+        MomentumMode::On,
+    )
 }
 
 #[inline(always)]
