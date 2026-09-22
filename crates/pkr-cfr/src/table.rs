@@ -60,6 +60,16 @@ fn cache_insert(hash: u64, idx: usize) {
     });
 }
 
+fn warn_nonfinite_regret_once(iteration: u32) {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        eprintln!(
+            "WARNING: regret became non-finite at iteration {}.              Training is corrupt from this point. This usually means a              discount formula with multiplicative growth (RatioPower).              Current default is CanonicalDcfr, which is bounded."
+        , iteration);
+    });
+}
+
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
     /// Interleaved regret+momentum: `data[idx*RM_STRIDE + action*2 + field]`.
@@ -337,6 +347,9 @@ impl CompactRegretTable {
                 let cur = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
                 let mom = self.load_rm(idx, a, RM_MOMENTUM) as f32 / SCALE;
                 let (new_r, new_m) = update_regret_pfr_plus(cur, mom, iteration, delta);
+                if !new_r.is_finite() || !new_m.is_finite() {
+                    warn_nonfinite_regret_once(iteration);
+                }
                 self.store_rm(idx, a, RM_REGRET, (new_r * SCALE) as i32);
                 self.store_rm(idx, a, RM_MOMENTUM, (new_m * SCALE) as i32);
             }

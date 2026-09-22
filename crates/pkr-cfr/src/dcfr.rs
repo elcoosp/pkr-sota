@@ -62,7 +62,7 @@ pub fn discount_factor_mode(t: f32, p: f32, mode: DiscountMode) -> f32 {
 
 #[inline(always)]
 pub fn discount_factor(t: f32, p: f32) -> f32 {
-    discount_factor_mode(t, p, DiscountMode::RatioPower)
+    discount_factor_mode(t, p, DiscountMode::CanonicalDcfr)
 }
 
 /// PCFR+ momentum update (Farina, Kroer, Sandholm 2021), composed with DCFR.
@@ -108,12 +108,17 @@ pub fn update_regret_pfr_plus(
     iteration: u32,
     delta: f32,
 ) -> (f32, f32) {
+    // CanonicalDcfr is the default. RatioPower (the previous default)
+    // multiplies regrets by (t/τ)^p every update, which overflows f32
+    // around iteration 3000 for any infoset visited dozens of times.
+    // Demonstrated in crates/pkr-testgames kuhn-experiment: ratio-power
+    // produces NaN by t=3000, canonical does not and converges.
     update_regret_pfr_plus_mode(
         current,
         prev_momentum,
         iteration,
         delta,
-        DiscountMode::RatioPower,
+        DiscountMode::CanonicalDcfr,
     )
 }
 
@@ -173,22 +178,25 @@ mod tests {
     }
 
     #[test]
-    fn discount_factor_grows_after_tau() {
-        // With standard DCFR: w = (t/τ)^p. For t > τ, w > 1, meaning older
-        // regrets are scaled up. This is the DCFR mechanism that downweights
-        // early iterations (since they get multiplied by a larger factor at
-        // later iterations, their contribution to the average strategy shrinks).
+    fn discount_factor_canonical_is_bounded_and_monotonic() {
+        // Canonical DCFR: w = t^p / (t^p + 1). Bounded in [0.5, 1), and
+        // increases monotonically toward 1 as t -> infinity. For any
+        // finite t, w < 1.0, so regrets are damped, not amplified.
         let f1 = discount_factor(1001.0, ALPHA);
         let f2 = discount_factor(2000.0, ALPHA);
         let f3 = discount_factor(5000.0, ALPHA);
 
         assert!(
-            f1 > 1.0,
-            "at t=1001, discount_factor should be > 1.0, got {f1}"
+            f1 >= 0.5 && f1 < 1.0,
+            "at t=1001, discount_factor must be in [0.5, 1), got {f1}"
         );
         assert!(
-            f1 < f2 && f2 < f3,
-            "discount should grow with t: f1={f1}, f2={f2}, f3={f3}"
+            f1 <= f2 && f2 <= f3,
+            "discount should be monotonically increasing with t:              f1={f1}, f2={f2}, f3={f3}"
+        );
+        assert!(
+            f3 < 1.0,
+            "discount must remain < 1.0 for finite t, got {f3}"
         );
     }
 
@@ -207,10 +215,11 @@ mod tests {
     }
 
     #[test]
-    fn beta_zero_means_no_negative_discount() {
-        // β=0 → ratio^0=1 → w_neg=1.0 for t≥τ
-        // This means negative regrets are not discounted (standard DCFR with β=0)
+    fn beta_zero_means_fast_negative_discount() {
+        // Canonical DCFR with β=0: w_neg = t^0 / (t^0 + 1) = 1/2.
+        // Negative regrets are halved every step, so failures are
+        // forgotten quickly. This is the paper's intent for β<α.
         let f = discount_factor(2000.0, BETA);
-        assert!((f - 1.0).abs() < 0.01);
+        assert!((f - 0.5).abs() < 0.01, "expected 0.5, got {}", f);
     }
 }

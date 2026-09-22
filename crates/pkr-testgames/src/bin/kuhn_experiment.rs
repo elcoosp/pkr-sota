@@ -59,29 +59,41 @@ fn main() {
     for (name, cfr) in runs.iter() {
         let e = cfr.exploitability();
         let v = cfr.value_of_avg();
+        let max_r = cfr.max_abs_regret();
         println!(
-            "  {:<14}  exploitability = {:.3e}   value = {:+.6}   NaN = {}",
-            name, e, v, cfr.nan_flag
+            "  {:<14}  exploitability = {:.3e}   value = {:+.6}   max|regret| = {:.3e}   NaN = {}",
+            name, e, v, max_r, cfr.nan_flag
         );
     }
 
-    // Verdict: lowest exploitability at the final checkpoint wins.
-    let mut best = (runs[0].0, runs[0].1.exploitability());
-    for (name, cfr) in runs.iter().skip(1) {
+    // Verdict: lowest finite exploitability at the final checkpoint wins.
+    // A mode that produced NaN is disqualified, not "best".
+    let mut best: Option<(&str, f32)> = None;
+    let mut disqualified: Vec<&str> = Vec::new();
+    for (name, cfr) in runs.iter() {
+        if cfr.nan_flag {
+            disqualified.push(name);
+            continue;
+        }
         let e = cfr.exploitability();
-        if e < best.1 {
-            best = (name, e);
+        if e.is_finite() && best.map_or(true, |(_, b)| e < b) {
+            best = Some((name, e));
         }
     }
-    let current = runs
-        .iter()
-        .find(|(n, _)| *n == "ratio-power")
-        .map(|(_, c)| c.exploitability())
-        .unwrap_or(f32::INFINITY);
-    let ratio = current / best.1.max(1e-12);
     println!();
     println!(
-        "VERDICT: best_mode={} best_exploitability={:.3e} ratio_power_vs_best={:.2}x",
-        best.0, best.1, ratio
+        "DISQUALIFIED (NaN in regrets): {}",
+        if disqualified.is_empty() {
+            "(none)".to_string()
+        } else {
+            disqualified.join(", ")
+        }
     );
+    match best {
+        Some((name, val)) => println!(
+            "VERDICT: best_mode={} best_exploitability={:.3e}",
+            name, val
+        ),
+        None => println!("VERDICT: no finite mode — investigate immediately."),
+    }
 }

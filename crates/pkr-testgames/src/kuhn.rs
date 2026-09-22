@@ -66,6 +66,21 @@ impl KuhnCfr {
         self.iteration
     }
 
+    /// Largest |regret| across all infosets and actions. Used by the
+    /// experiment to reveal multiplicative blow-up before it becomes NaN.
+    pub fn max_abs_regret(&self) -> f32 {
+        let mut m = 0.0f32;
+        for row in self.regrets.iter() {
+            for &v in row.iter() {
+                let a = v.abs();
+                if a > m {
+                    m = a;
+                }
+            }
+        }
+        m
+    }
+
     fn strategy_at(&self, infoset: usize) -> [f32; N_ACTIONS] {
         let r = &self.regrets[infoset];
         let pos0 = r[0].max(0.0);
@@ -158,7 +173,9 @@ impl KuhnCfr {
                 }
                 let v = strat[0] * vs[0] + strat[1] * vs[1];
 
-                let delta = [vs[0] - v, vs[1] - v];
+                // traverse returns value-to-P0. P1 maximizes their own
+                // value = minimizes v_to_P0, so regret[a] is negated.
+                let delta = [v - vs[0], v - vs[1]];
                 self.apply_regret_update(infoset, delta, reach[0], t);
                 self.add_strategy_sum(infoset, strat, reach[1]);
                 v
