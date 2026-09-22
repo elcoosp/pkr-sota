@@ -33,6 +33,7 @@ pub struct UndoRecord {
     street_bets: [f32; 2],
     total_invested: [f32; 2],
     actions_this_street: u8,
+    raises_this_street: u8,
     history_len: usize,        // length of abstract_history before action
     board_len: usize,          // length of board before action
     folded: [bool; 2],
@@ -55,6 +56,7 @@ pub struct GameState {
     pub history_len: u8,
     pub folded: [bool; 2],
     pub actions_this_street: u8,
+    pub raises_this_street: u8,
     pub abstract_history: [u8; 32], // abstract action buckets
     pub abstract_history_len: u8,
     pub undo_stack: [UndoRecord; 32],
@@ -79,13 +81,14 @@ impl GameState {
             history_len: 0,
             folded: [false; 2],
             actions_this_street: 0,
+            raises_this_street: 0,
             abstract_history: [0u8; 32],
             abstract_history_len: 0,
             undo_stack: [UndoRecord {
                 actor: 0, street: Street::Preflop, pot: 0.0,
                 stacks: [0.0; 2], street_bets: [0.0; 2],
                 total_invested: [0.0; 2],
-                actions_this_street: 0, history_len: 0,
+                actions_this_street: 0, raises_this_street: 0, history_len: 0,
                 board_len: 0, folded: [false; 2],
             }; 32],
             undo_len: 0,
@@ -146,47 +149,59 @@ impl GameState {
         if self.folded[self.actor] {
             return 0;
         }
+        // Raise cap: after MAX_RAISES_PER_STREET aggressive actions on this
+        // street, only fold/check/call remain legal. This is a standard
+        // action abstraction (Libratus, DeepStack). It bounds the tree
+        // regardless of bet sizing and eliminates the rare 5-raise wars
+        // that dominate tree size when small sizings are available.
+        const MAX_RAISES_PER_STREET: u8 = 3;
+        let can_raise = self.raises_this_street < MAX_RAISES_PER_STREET;
+
         let mut n = 0usize;
         let to_call = self.bet_to_call();
         if to_call == 0.0 {
             out[n] = Action { player: self.actor, kind: ActionKind::Check };
             n += 1;
-            let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
-                if n >= 8 { break; }
-                let bet = pot * frac;
-                if bet <= self.stacks[self.actor] {
-                    out[n] = Action { player: self.actor, kind: ActionKind::Bet(bet) };
+            if can_raise {
+                let pot = self.pot;
+                for &frac in &[0.5, 1.0, 2.0] {
+                    if n >= 8 { break; }
+                    let bet = pot * frac;
+                    if bet <= self.stacks[self.actor] {
+                        out[n] = Action { player: self.actor, kind: ActionKind::Bet(bet) };
+                        n += 1;
+                    }
+                }
+                if n < 8 && self.stacks[self.actor] > 0.0 {
+                    out[n] = Action {
+                        player: self.actor,
+                        kind: ActionKind::Bet(self.stacks[self.actor]),
+                    };
                     n += 1;
                 }
-            }
-            if n < 8 && self.stacks[self.actor] > 0.0 {
-                out[n] = Action {
-                    player: self.actor,
-                    kind: ActionKind::Bet(self.stacks[self.actor]),
-                };
-                n += 1;
             }
         } else {
             out[n] = Action { player: self.actor, kind: ActionKind::Fold };
             n += 1;
             out[n] = Action { player: self.actor, kind: ActionKind::Call };
             n += 1;
-            let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
-                if n >= 8 { break; }
-                let raise = to_call + pot * frac;
-                if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
-                    out[n] = Action { player: self.actor, kind: ActionKind::Bet(raise) };
+            if can_raise {
+                let pot = self.pot;
+                for &frac in &[0.5, 1.0, 2.0] {
+                    if n >= 8 { break; }
+                    let raise = to_call + pot * frac;
+                    if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
+                        out[n] = Action { player: self.actor, kind: ActionKind::Bet(raise) };
+                        n += 1;
+                    }
+                }
+                if n < 8 && self.stacks[self.actor] > 0.0 {
+                    out[n] = Action {
+                        player: self.actor,
+                        kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
+                    };
                     n += 1;
                 }
-            }
-            if n < 8 && self.stacks[self.actor] > 0.0 {
-                out[n] = Action {
-                    player: self.actor,
-                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
-                };
-                n += 1;
             }
         }
         n
@@ -233,6 +248,7 @@ impl GameState {
             street_bets: self.street_bets,
             total_invested: self.total_invested,
             actions_this_street: self.actions_this_street,
+            raises_this_street: self.raises_this_street,
             history_len: self.history_len as usize,
             board_len: self.board_len as usize,
             folded: self.folded,
@@ -270,6 +286,7 @@ impl GameState {
                 self.pot += chips;
                 self.total_invested[actor] += chips;
                 self.street_bets[actor] = total;
+                self.raises_this_street = self.raises_this_street.saturating_add(1);
             }
         }
 
@@ -308,6 +325,7 @@ impl GameState {
         self.street_bets = rec.street_bets;
         self.total_invested = rec.total_invested;
         self.actions_this_street = rec.actions_this_street;
+        self.raises_this_street = rec.raises_this_street;
         self.history_len = rec.history_len as u8;
         self.board_len = rec.board_len as u8;
         self.folded = rec.folded;
@@ -367,6 +385,7 @@ impl GameState {
         self.street_bets = [0.0; 2];
         self.actor = 1 - self.dealer;
         self.actions_this_street = 0;
+        self.raises_this_street = 0;
     }
 }
 
@@ -380,7 +399,7 @@ fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
             let fraction = amount / pot;
             if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
                 5 // all-in
-            } else if fraction < 0.6 {
+            } else if fraction < 1.5 {
                 2
             } else if fraction < 1.2 {
                 3

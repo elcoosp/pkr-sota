@@ -1,5 +1,10 @@
-# pkr-sota × Jev — Meta-Improvement Playbook & Integration Brief
+# pkr-sota × Jev — Meta-Improvement Playbook & Integration Brief (v2)
 
+> **v2 changes:** new §5.3 field-by-field provenance map (every state field → exact
+> crate/file/symbol, EXISTS / ADAPTER / NEW), corrected heads-up state schema, concrete JT1
+> builder code over real engine types (`GameState`, `SotaAdvice`, `calculate_ehs`), and
+> provenance-corrected M3/M4 cards. Everything else carries over from v1.
+>
 > Companion to `download/pkr-sota-M1-playbook.md` (the CFR/abstraction/training playbook).
 > That playbook makes the blueprint **better and faster on your Mac Mini M1 16GB**.
 > This playbook adds the **meta layer**: how to plug TypeSafe AI's **Jev** model around the
@@ -24,7 +29,13 @@
 - **13 concrete meta improvements** (§4) in 4 tiers: runtime meta-layer, tournament/meta-game edge,
   training-time labeling, dev workflow. Every card names the exact crate/file it touches.
 - **The state to send Jev** (§5): a compact, pre-computed JSON the Rust code builds — numbers and
-  bucket IDs, *not* raw math (Jev cannot do arithmetic; documented limitation).
+  bucket IDs, *not* raw math (Jev cannot do arithmetic; documented limitation). **New in v2:**
+  §5.3 is a field-by-field provenance map — every state field traced to the exact crate/file/
+  symbol that produces it (`GameState`, `calculate_ehs`, `SolverHandle::lookup`→`SotaAdvice`,
+  `compute_translation`, …), marked EXISTS / ADAPTER / NEW.
+- ⚠️ **Heads-up scope (v2):** `GameState` is a 2-player structure — the engine is HU-NLHE. The
+  meta layer is specified for heads-up play (one `villain` object); tournament context arrives
+  via a new feed-side `TournamentContext` struct, never through `pkr-core`.
 - **Ready-to-paste question packs** (§6): one runtime pack (~13 questions, one call per decision,
   speculative fan-out), one training-triage pack, one eval/calibration pack.
 - **Rollout:** shadow mode → parity mode → confidence-gated live, with a kill switch env var and
@@ -188,11 +199,12 @@ answers — exactly Jev's shape, and exactly where pure GTO engines leave EV on 
 | Crate / file | Change |
 |---|---|
 | `binaries/pkr-trainer/src/main.rs` | play mode: call advisor after blueprint lookup; add `--meta {off,shadow,live}` flag; consume curriculum weights file for sampling |
-| `crates/pkr-runtime/src/lookup.rs` | expose top-k candidate actions + probabilities (needed by M3 margin check) |
-| `crates/pkr-export/src/translate.rs` | expose translation as callable fn with selectable anchor (M4 target) |
+| `crates/pkr-runtime/src/lookup.rs` | **no change needed** — `SolverHandle::lookup(infoset_hash) -> Option<SotaAdvice>` already returns the CDF over buckets; `pkr-meta` converts CDF→PMF and derives top-k + margin |
+| `crates/pkr-export/src/translate.rs` | **no rewrite needed** — `compute_translation(lower, upper, actual, reach_lower, reach_upper) -> (u8,u8)` already exists and is fully tested; M4 only wires intent → anchor selection around it |
+| `crates/pkr-abstraction/src/lib.rs` | add `pub fn cluster_id(&self, hole, board) -> u64` wrapper (reuses private `flat_index_*` + `nearest_centroid` + flop-bucket table) so the state builder can label buckets without re-deriving them |
+| `crates/pkr-core/src/state.rs` | add `pub fn action_bucket(fraction_of_pot, is_allin) -> u8` — extracts the constant table from `abstract_action_index_static` so `pkr-meta` doesn't duplicate it |
 | `crates/pkr-cfr/src/riversolve.rs` | already a library fn; M5 gate wraps it at the call site (no change inside) |
 | `crates/pkr-exploit/src/lib.rs` | add `brier.rs` calibration metrics (M12) |
-| `crates/pkr-abstraction/src/lib.rs` | expose bucket/texture label helpers for the state builder (read-only) |
 
 **Never touched:** `crates/pkr-cfr/src/{dcfr.rs,traversal.rs,table.rs}` — the M1 training loop
 stays bit-identical; Jev has no dependency into it (R1).
@@ -255,9 +267,11 @@ Cross-reference: T-numbers below refer to task cards in the companion playbook
   (RL-CFR 2024; Fucus bet-sizing work). This buys granularity where it matters without retraining.
 - *Jev:* `size_intent` (Choice over ladder, criteria describe when each size is used) +
   `board_texture` (Score, P2).
-- *Integration:* only fires when `pkr-runtime` reports candidate-margin < τ; result merged with
-  blueprint mix (e.g. 70% blueprint / 30% Jev size, tunable constant), all in
-  `crates/pkr-meta/src/size_extend.rs`.
+- *Integration:* only fires when `pkr-runtime` reports candidate-margin < τ (computed from the
+  `SotaAdvice` CDF→PMF conversion, JT1); the chosen size snaps to the ladder `GameState::legal_actions`
+  already bets on (fractions `[0.5, 1.0, 2.0]` of pot + all-in — see
+  `pkr-core/src/state.rs`), result merged with blueprint mix (e.g. 70% blueprint / 30% Jev size,
+  tunable constant), all in `crates/pkr-meta/src/size_extend.rs`.
 - *Fallback:* margin ≥ τ, timeout, or confidence < 0.6 → blueprint sizes only.
 
 **M4 — Off-tree action interpreter** 🟡
@@ -268,8 +282,11 @@ Cross-reference: T-numbers below refer to task cards in the companion playbook
   anchor, thin value → nearest small anchor, etc.).
 - *Why:* Bad off-tree translation is a direct equity leak every time an opponent makes an
   unusual-size bet — which is exactly what weak tournament players do.
-- *Integration:* hook next to `crates/pkr-export/src/translate.rs` logic at runtime lookup
-  (`pkr-runtime/src/lookup.rs` wrapper), behind the same confidence gate.
+- *Integration:* the translation math already exists —
+  `crates/pkr-export/src/translate.rs :: compute_translation(lower, upper, actual, reach_lower,
+  reach_upper) -> (u8, u8)` (pseudo-harmonic, Ganzfried & Sandholm 2013) — it is fully unit-tested
+  but unwired. M4 = intent → anchor selection (which `lower`/`upper` pair to feed it) wrapped at
+  runtime lookup (`pkr-runtime/src/lookup.rs` consumer side), behind the same confidence gate.
 - *Fallback:* intent confidence < 0.55 → current translation function unchanged.
 
 **M5 — High-leverage re-solve gate** 🟡
@@ -367,69 +384,120 @@ Cross-reference: T-numbers below refer to task cards in the companion playbook
 
 ---
 
-## 5. The state you give Jev
+
+## 5. The state you give Jev — with field-by-field provenance
+
+Every field below is anchored to a concrete symbol in your codebase. Three statuses:
+**EXISTS** = the value is already produced by a public function/struct today;
+**ADAPTER** = thin glue in `pkr-meta` over existing public data (a few lines each);
+**NEW** = genuinely new computation, small and testable (never CFR math).
+
+> ⚠️ **Heads-up note:** `pkr_core::state::GameState` is a 2-player HU structure
+> (`stacks: [f32; 2]`, `hole: [[u8;2];2]`, `actor`/`dealer: usize`, actor flips via `1 - actor`).
+> The whole meta layer is therefore specified for **heads-up play**: `villain` is *the* single
+> opponent. Multiway tournaments still work — the engine plays HU subgames vs one live villain —
+> but the state carries exactly one villain. Do not invent multiway fields the engine can't fill.
 
 ### 5.1 Filtering doctrine (from docs: context rot is real)
 
-1. **Facts, not math.** All numbers are pre-computed in Rust: `pot_bb`, `spr`, `hero_stack_bb`,
-   `eff_stack_bb`, `m_ratio`, `bb_level`, `players_left`, `avg_stack_bb`, `hero_rank_by_stack`,
-   `stats` per opponent, `equity_bucket` (EHS² bucket id from `pkr-abstraction`), `board_flags`
-   (boolean/short labels: `paired`, `two_tone`, `straight_possible`).
-2. **Filter to what the questions reference.** One villain (the decision-relevant one), not the
-   full table dump. The state builder in §7 takes an explicit allowlist.
-3. **Stable enum names.** State keys and option keys never change meaning without a version bump
-   (`state_version` field) — replay tests (§9) key off it.
-4. **English text only** in labels and criteria (Jev's training is English-first per docs).
-5. **No adversarial content.** Never include opponent chat or free-text from the client; only
-   fields the engine produced.
+1. **Facts, not math.** Numbers are pre-computed in Rust from `GameState` and the tournament
+   feed: `pot_bb`, `spr`, stacks in bb, M, stats, EHS. Jev's questions are judgments *on those
+   facts*, never arithmetic ("never ask: what is 3/4 of the pot").
+2. **Filter to what the questions reference.** Only fields the §6 pack actually cites.
+3. **Stable enum names.** `state_version` gates replay tests (§9); bump on any field rename.
+4. **English text only** in labels/criteria (Jev is English-first per docs).
+5. **No adversarial content.** Only engine-produced fields; never opponent chat.
 
-### 5.2 Runtime decision state (exact JSON the Rust builder emits)
+### 5.2 Runtime decision state v2 (exact JSON the Rust builder emits)
 
 ```json
 {
-  "state_version": "1.0",
-  "format": "nlhe_mtt",
+  "state_version": "2.0",
+  "format": "nlhe_hu_mtt",
   "street": "river",
   "board_flags": { "paired": true, "two_tone": true, "straight_possible": false,
-                    "texture_label": "paired two-tone, top pair possible, no made straights" },
-  "hand_summary": { "hero_bucket_preflop": 214, "hero_made_label": "two pair top-best",
-                     "draw_label": "none" },
+                    "flush_draw_possible": false,
+                    "texture_label": "paired two-tone, no made straights, no flush draw" },
+  "hand_summary": { "hero_hand_rank": 2548, "hero_made_label": "two pair",
+                     "hero_equity_estimate": 0.62, "draw_label": "none",
+                     "preflop_bucket_hint": 214 },
   "pot": { "pot_bb": 18.5, "spr": 1.6, "pot_fraction_to_call": 0.33,
-           "facing": "single raised pot, villain bet 33% pot" },
-  "stacks": { "hero_stack_bb": 29.6, "eff_stack_bb": 31.0, "villain_stack_bb": 31.0 },
+           "facing": "river, villain bet 33% pot after check-call, check-call" },
+  "stacks": { "hero_stack_bb": 29.6, "villain_stack_bb": 31.0, "eff_stack_bb": 31.0 },
   "tournament": { "players_left": 24, "paid_places": 18, "avg_stack_bb": 26.0,
-                   "hero_rank_by_stack": 9, "bb_level": 12, "next_level_in_hands": 6,
+                   "hero_rank_by_stack": 9, "bb_level": 12, "hands_to_next_level": 6,
                    "payout_top3_share": "55/25/12 pct", "bubble_distance_places": 6,
                    "pay_jump_next": "min-cash to 3x min-cash" },
-  "villain": { "seat_ref": "UTG", "hands_seen": 41,
+  "villain": { "hands_seen": 41,
                "stats": { "vpip": 0.31, "pfr": 0.22, "threebet": 0.06,
                            "fold_to_river_bet": 0.41, "wtsd": 0.27 },
-               "line_history": "check-called two streets with pair+draw on a dry flop,",
+               "line_history": "flop: check-call 0.5 pot; turn: check-call 1.0 pot",
                "recent_showdowns": "lost showdown with second pair, made one big river call" },
   "hero_image": { "showdowns_last_10": "one shown bluff on turn, two thin value shows",
                    "aggression_index": 0.62 },
-  "engine": { "blueprint_top_actions": [ { "action": "bet_33", "p": 0.41 },
-                                          { "action": "check", "p": 0.38 },
-                                          { "action": "bet_75", "p": 0.12 } ],
+  "engine": { "bucket_ids": { "hand_bucket": 12, "board_bucket": 3, "flop_bucket": 7 },
+               "blueprint_top_actions": [ { "bucket": "half_pot", "p": 0.41 },
+                                          { "bucket": "check_call", "p": 0.38 },
+                                          { "bucket": "pot", "p": 0.12 } ],
                "candidate_margin": 0.03,
-               "off_tree_opponent_action": "villain bet 0.33 pot (in abstraction bucket 4)" }
+               "legal_size_ladder_bb": [ 9.3, 18.5, 37.0, "allin 29.6" ],
+               "off_tree_opponent_action": "villain bet 0.33 pot (not an abstract bucket)" }
 }
 ```
 
-Typical serialized size: ~1.3–1.8k tokens. With the question pack (§6), a runtime call is
-~1.6–2.4k input tokens ≈ **$0.00007–0.00010**.
+Typical serialized size: ~1.3–1.8k tokens → runtime call ≈ **$0.00007–0.00010**.
 
-### 5.3 Offline hand-record state (triage / M10)
+### 5.3 Provenance map — where every field comes from
 
-Same schema plus `actions_timeline` (array of `{street, actor, action, size_bb}`) and
-`outcome` (stack delta, showdown reveal). Timeline strings are machine-formatted, not prose —
-Jev reads the labels, it doesn't need a story. Keep ≤ 6k tokens/hand.
+Legend: **EXISTS** public symbol today · **ADAPTER** glue over public data in `pkr-meta` ·
+**NEW** new small computation. Path notation `file.rs :: item`.
 
-### 5.4 What never goes into state
+| JSON field (§5.2) | Source in the engine | Status |
+|---|---|---|
+| `street` | `pkr-core/src/state.rs :: GameState.street` (`Street::{Preflop,Flop,Turn,River}`) | EXISTS + ADAPTER (lowercase serde) |
+| `board_flags.*` (booleans) | computed from `GameState.board[..board_len]` (raw `u8` cards 0..51; decode rank = `c % 13`, suit = `c / 13` — matches `pkr-core/src/deck.rs :: Deck::new` ordering: suits outer, ranks inner, `Two=0..Ace=12`) | NEW (`pkr-meta/src/texture.rs`, pure fns + unit tests on fixed boards) |
+| `board_flags.texture_label` | same inputs, enum → `&'static str` mapping | NEW (same file; no generation) |
+| `hand_summary.hero_hand_rank` | `pkr-eval` `TableEvaluator::evaluate_hand(&hole, &board)` (trait `pkr-contracts/src/lib.rs :: Evaluator`; trainer already builds it — `binaries/pkr-trainer/src/main.rs :: TableEvaluator::new(&rank_table)`) | EXISTS |
+| `hand_summary.hero_made_label` | derive from `hero_hand_rank` via thresholds (pair/two-pair/trips/straight/flush/…) | NEW (`pkr-meta/src/handlabel.rs`; golden tests vs `TableEvaluator` on fixed hands) |
+| `hand_summary.hero_equity_estimate` | `pkr-abstraction/src/ehs.rs :: calculate_ehs(hole, board, evaluator) -> (f32, f32)` — already `pub`, re-exported as `pkr_abstraction::calculate_ehs`. Use the first tuple element (EHS = win prob vs random hand). ~1,000 MC samples (`EHS_SAMPLES` env) — ms-scale, play-time only (R1) | EXISTS |
+| `hand_summary.preflop_bucket_hint` | the EHS² cluster id. Today the cluster id is only embedded inside `get_infoset_hash`; add a 5-line public wrapper `pub fn cluster_id(&self, hole, board) -> u64` in `pkr-abstraction/src/lib.rs` reusing `flat_index_*` + `nearest_centroid` | NEW (tiny wrapper over EXISTS internals) |
+| `hand_summary.draw_label` | hole+board analysis (4-to-flush, open-ended, gutshot) | NEW (`texture.rs`) |
+| `pot.pot_bb` | `GameState.pot` ÷ `bb` (bb comes from `TournamentContext`, below) | ADAPTER |
+| `pot.spr` | `GameState.stacks[GameState.actor] ÷ GameState.pot` | ADAPTER |
+| `pot.pot_fraction_to_call` | `GameState.bet_to_call()` (EXISTS) ÷ `(pot + bet_to_call)` | EXISTS fn + ADAPTER |
+| `pot.facing` | formatted from `GameState.history`, `actions_this_street`, and `GameState.history_signature()` (EXISTS: raises count + aggressor flag packed in u32) | ADAPTER |
+| `stacks.*_bb` | `GameState.stacks` ÷ bb; `eff_stack_bb = min(hero_stack + hero_street_bet, villain_stack + villain_street_bet)` using `street_bets` | ADAPTER |
+| `tournament.*` (all) | **Not in the engine.** `GameState` has no tournament context. NEW struct `TournamentContext { players_left, paid_places, avg_stack_bb, hero_rank_by_stack, bb_level, hands_to_next_level, payout_table_facts, bubble_distance_places, pay_jump_next }` in `pkr-meta/src/context.rs`, filled by the platform/feed adapter once per hand. ICM numbers (when enabled, M7) come from `pkr-meta/src/icm.rs` and are passed as *facts* | NEW (struct + adapter; Jev never computes it) |
+| `villain.hands_seen`, `villain.stats.*` | NEW sliding-window counters in `pkr-meta/src/stats.rs` (JT4). Feed = observed `Action { player, kind }` stream (`ActionKind::{Fold,Check,Call,Bet}`) from play mode | NEW |
+| `villain.line_history` | last K actions formatted from `GameState.abstract_history` (bucket ids 0–5 via `abstract_action_index_static` semantics: 0 fold, 1 check/call, 2 <½, 3 ½–1, 4 ≥1, 5 all-in) + sizes from `history` | ADAPTER |
+| `villain.recent_showdowns` | play-feed showdown records (cards revealed + winner) — NEW ring buffer in `stats.rs` | NEW |
+| `hero_image.*` | NEW `ImageTracker` (JT4) over hero's own shown-down lines | NEW |
+| `engine.bucket_ids.hand_bucket / board_bucket` | river: `hand_rank >> 6` and board-bucket mix-in — same math as `pkr-abstraction/src/lib.rs :: get_infoset_hash` (lines already public in the fn); expose via the same `cluster_id`-style wrapper | NEW wrapper (EXISTS math) |
+| `engine.bucket_ids.flop_bucket` | flop-bucket table loaded via `load_flop_buckets`; id = `table[combinadic index of top-3 board cards]` (private `flop_bucket()` today — include in the wrapper PR) | NEW wrapper |
+| `engine.blueprint_top_actions` | `KMeansAbstraction::get_infoset_hash(hole, board, abstract_history, street)` → `pkr-runtime/src/lookup.rs :: SolverHandle::lookup` (trait `BlueprintProvider` in `pkr-contracts`) → `SotaAdvice { cdf_probabilities: [u8;16], len }` → **CDF→PMF by adjacent differences** → top-3 with bucket names | EXISTS + ADAPTER |
+| `engine.candidate_margin` | `pmf[0] − pmf[1]` of the same PMF (drives M3's trigger) | ADAPTER |
+| `engine.legal_size_ladder_bb` | the exact ladder `GameState::legal_actions` bets on — fractions `[0.5, 1.0, 2.0]` of `pot` + all-in (`stacks[actor]`), clamped by stack (`legal_actions_into`); emit in bb | EXISTS + ADAPTER |
+| `engine.off_tree_opponent_action` | villain's last `Action` from `GameState.history[history_len-1]`; for `Bet(total)`: fraction = `total ÷ pot`; if it matches none of {0.5, 1.0, 2.0, all-in} ⇒ off-tree. Same math as `pkr-core/src/state.rs :: abstract_action_index_static` — add `pub fn action_bucket(fraction) -> u8` in `pkr-core` to avoid duplicating the constant table | ADAPTER + tiny pkr-core helper |
 
-Opponent chat; raw card strings where a bucket label exists (cards invite math attempts);
-full payout tables (send the 2–3 relevant payout facts); other players' stats (one villain per
-call; a second call covers multiway spots); anything with coordinates/dates/timestamps math.
+**Provenance summary:** ~60% of the state is EXISTS/ADAPTER over symbols already in the dump
+(`GameState`, `calculate_ehs`, `get_infoset_hash`+`SolverHandle`+`SotaAdvice`,
+`compute_translation`, `history_signature`, `legal_actions`). Only three groups are genuinely
+NEW: tournament context, opponent stats/image windows, and board/hand label fns — all small,
+pure, and unit-tested (JT1/JT4/JT5).
+
+### 5.4 Offline hand-record state (triage / M10)
+
+Same schema plus a timeline built by replaying `GameState.history[0..history_len]`
+(each `Action { player, kind }` → `{street, actor, action, size_bb}` with street changes at
+`advance_street_in_place` boundaries) and an `outcome` block from `total_invested` +
+showdown reveal (`terminal_payoff` semantics: rank comparison via the same `Evaluator`).
+Machine-formatted labels, not prose; ≤ 6k tokens/hand.
+
+### 5.5 What never goes into state
+
+Opponent chat; raw card strings where a bucket label exists; full payout tables (send the 2–3
+relevant facts); anything requiring date/time or counting math; multiway fields the HU engine
+cannot fill.
 
 ---
 
@@ -442,6 +510,10 @@ no math asked. Store as constants in `crates/pkr-meta/src/questions.rs` **and** 
 `questions.json` (M13).
 
 ### 6.1 P1 — `RUNTIME_DECISION_PACK` (one call per real decision; speculative fan-out)
+
+> HU note: every state path below resolves against the §5.2 v2 schema — one villain (the single
+> live opponent), `tournament.*` facts from the feed-side `TournamentContext` (§5.3), and
+> `engine.*` facts derived from `SotaAdvice`/`GameState` provenance rows.
 
 ```json
 {
@@ -773,21 +845,131 @@ Test fixture: `src/testdata/response_fixture.json` with the exact shape of §1.2
 
 ---
 
-### JT1 — State builder (`state.rs`)  🟢
+### JT1 — State builder (`state.rs`) with provenance-accurate inputs  🟢
 
-**Depends on:** JT0. **Files:** `crates/pkr-meta/src/state.rs`.
+**Depends on:** JT0. **Files:** `crates/pkr-meta/src/{state.rs,context.rs,texture.rs}`,
+plus two tiny wrappers (below). Every value in the §5.2 JSON traces to a row of the §5.3 map.
 
-`pub fn build_decision_state(input: &DecisionInput) -> serde_json::Value` emits the §5.2 schema.
-`DecisionInput` is a plain struct fed from the trainer's play mode: street, board bits, pot/chips
-(from `pkr-core::state`), players_left/payout facts, per-villain stats, hero image summary,
-engine top-k. Rules implemented literally:
-- board flags computed in Rust (paired/two-tone/straight-possible from `pkr-core::card` bits);
-- `texture_label` built by a pure fn `texture_text(flags) -> &'static str` (enum → string, no
-  generation);
-- stats as `f64` rounded to 2 decimals; **allowlist**: only the fields §6 questions reference.
+**1) Tournament context (NEW — the only state group with no engine source):**
+```rust
+// crates/pkr-meta/src/context.rs
+#[derive(Debug, Clone)]
+pub struct TournamentContext {
+    pub players_left: u16,
+    pub paid_places: u16,
+    pub avg_stack_bb: f32,
+    pub hero_rank_by_stack: u8,
+    pub bb_level: u16,
+    pub hands_to_next_level: u16,
+    pub payout_top3_share: String,   // "55/25/12 pct" — facts only
+    pub bubble_distance_places: u16,
+    pub pay_jump_next: String,
+    pub bb: f32,                     // current big blind in chips
+}
+```
+Filled by the platform/feed adapter once per hand. The engine never sees it (R1: nothing
+tournament-specific enters `pkr-core`/`pkr-cfr`).
+
+**2) DecisionInput + builder (state.rs):**
+```rust
+use pkr_core::state::{GameState, Street, ActionKind};
+use pkr_contracts::SotaAdvice;
+use serde_json::{json, Value};
+
+pub struct StatsWindow { pub hands_seen: u32, pub vpip: f64, pub pfr: f64,
+    pub threebet: f64, pub fold_to_river_bet: f64, pub wtsd: f64 }        // JT4 fills this
+pub struct EngineFacts { pub advice: Option<SotaAdvice>, pub max_k: usize }
+
+/// CDF -> PMF. SotaAdvice.cdf_probabilities is cumulative over abstract
+/// buckets (0..len); adjacent differences give the pmf (u8-quantized).
+pub fn pmf_from_advice(a: &SotaAdvice) -> Vec<f64> {
+    let n = a.len as usize;
+    let mut prev = 0u16;
+    (0..n).map(|i| {
+        let c = a.cdf_probabilities[i] as u16;
+        let d = c.saturating_sub(prev);
+        prev = c;
+        d as f64
+    }).collect()
+}
+
+pub fn build_decision_state(
+    gs: &GameState,           // hero is seat 0 (set via set_hole_cards/actor conventions)
+    tc: &TournamentContext,
+    stats: &StatsWindow,
+    eng: &EngineFacts,
+    ehs: f32,                 // pkr_abstraction::calculate_ehs(...).0 — play-time only
+    texture: &TextureLabels,  // texture.rs below
+) -> Value {
+    let bb = tc.bb.max(1.0);
+    let to_call = gs.bet_to_call();
+    let eff = (gs.stacks[0] + gs.street_bets[0]).min(gs.stacks[1] + gs.street_bets[1]) / bb;
+    let mut top: Vec<(usize, f64)> = eng.advice.as_ref()
+        .map(|a| pmf_from_advice(a).into_iter().enumerate().collect())
+        .unwrap_or_default();
+    top.sort_by(|x, y| y.1.total_cmp(&x.1));
+    let top = top.into_iter().take(3);
+    let bucket_name = ["fold", "check_call", "half_pot", "pot", "two_pot", "allin"];
+
+    json!({
+        "state_version": "2.0",
+        "format": "nlhe_hu_mtt",
+        "street": format!("{:?}", gs.street).to_lowercase(),
+        "board_flags": texture.flags_json(),                    // texture.rs
+        "hand_summary": { /* hero_hand_rank from TableEvaluator, labels from
+                             handlabel.rs, hero_equity_estimate: ehs,
+                             preflop_bucket_hint: wrapper below */ },
+        "pot": { "pot_bb": gs.pot / bb, "spr": gs.stacks[gs.actor as usize] / gs.pot.max(1.0),
+                 "pot_fraction_to_call": to_call / (gs.pot + to_call).max(1.0),
+                 "facing": describe_facing(gs) },               // history_signature + history
+        "stacks": { "hero_stack_bb": gs.stacks[0] / bb,
+                     "villain_stack_bb": gs.stacks[1] / bb, "eff_stack_bb": eff },
+        "tournament": json_tc(tc),
+        "villain": { "hands_seen": stats.hands_seen, "stats": json_stats(stats),
+                     "line_history": describe_line(gs), "recent_showdowns": "..." },
+        "hero_image": { /* ImageTracker snapshot (JT4) */ },
+        "engine": {
+            "blueprint_top_actions": top.map(|(b, p)| json!({
+                "bucket": bucket_name.get(b).unwrap_or(&"other"), "p": p })).collect::<Vec<_>>(),
+            "candidate_margin": /* pmf[0]-pmf[1] */,
+            "legal_size_ladder_bb": legal_ladder_bb(gs, bb),    // mirrors legal_actions fractions
+            "off_tree_opponent_action": describe_off_tree(gs),  // pkr-core action_bucket helper
+        }
+    })
+}
+```
+
+**3) Texture fns (NEW, pure, unit-tested) — `crates/pkr-meta/src/texture.rs`:**
+```rust
+/// Card decode must match Deck ordering (pkr-core/src/deck.rs):
+/// suits outer [Spade,Heart,Diamond,Club], ranks inner [Two=0..Ace=12].
+pub fn rank(c: u8) -> u8 { c % 13 }
+pub fn suit(c: u8) -> u8 { c / 13 }
+
+pub struct TextureLabels { pub paired: bool, pub two_tone: bool,
+    pub straight_possible: bool, pub flush_draw_possible: bool, pub label: &'static str }
+
+pub fn classify(board: &[u8], board_len: usize) -> TextureLabels { /* count ranks/suits,
+    gap analysis; pure fn, no allocation */ }
+```
+Test: `Deck::new()` order ⇒ card 0 = (Spade, Two), card 13 = (Heart, Two); fixed boards
+("Ah Kh 2s 2c 7d"-style literals built from indices) pin each flag.
+
+**4) Two tiny engine wrappers (the only changes outside `pkr-meta`):**
+- `pkr-abstraction/src/lib.rs`: `pub fn cluster_id(&self, hole: &[u8], board: &[u8]) -> u64`
+  (reuses private `flat_index_*` + `nearest_centroid`; also returns `flop_bucket` id) — fills
+  `hand_summary.preflop_bucket_hint` and `engine.bucket_ids`.
+- `pkr-core/src/state.rs`: `pub fn action_bucket(fraction_of_pot: f32, is_allin: bool) -> u8`
+  — extracts the constant table from `abstract_action_index_static` so `pkr-meta` reads it
+  instead of duplicating it (fills `engine.off_tree_opponent_action`).
+Both are additive; existing tests must stay green.
+
 **Verify:**
 ```bash
-cargo test -p pkr-meta state   # golden-file test: known input -> byte-exact JSON snapshot
+cargo test -p pkr-meta state      # golden JSON: fixed GameState+TournamentContext -> byte-exact snapshot
+cargo test -p pkr-meta texture    # board flags on pinned boards
+cargo test -p pkr-abstraction     # cluster_id wrapper: river id == hand_rank>>6 mix, as in get_infoset_hash
+cargo test -p pkr-core            # action_bucket helper matches abstract_action_index_static on all 6 buckets
 ```
 
 ---

@@ -263,7 +263,7 @@ fn abstract_action_index(kind: &ActionKind, state: &GameState) -> Option<usize> 
             let fraction = amount / pot;
             if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
                 Some(5)
-            } else if fraction < 0.6 {
+            } else if fraction < 1.5 {
                 Some(2)
             } else if fraction < 1.2 {
                 Some(3)
