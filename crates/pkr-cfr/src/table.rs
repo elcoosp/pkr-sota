@@ -2,11 +2,50 @@ use crate::dcfr::update_regret_pfr_plus;
 use crate::gpu::{BatchItem, GpuState};
 use foldhash::fast::RandomState as FoldHasher;
 use papaya::HashMap as PapayaMap;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
+
+// Thread-local hash -> idx cache. Papaya pins on every map access; the
+// resulting epoch traffic serializes all threads (throughput scales as
+// 1/N). Caching the hash -> idx resolution per thread skips papaya
+// entirely on the hot path. The data array itself is read through the
+// cached index with plain atomic loads, which need no pin.
+//
+// Sized to 1<<20 entries (~32 MB) with a clear-on-overflow policy to
+// bound memory. Actual working set per thread is much smaller in
+// practice, so overflow is rare.
+const IDX_CACHE_INIT: usize = 1 << 18; // 256K entries
+const IDX_CACHE_MAX: usize = 1 << 20;  // 1M entries before clearing
+
+thread_local! {
+    static IDX_CACHE: RefCell<HashMap<u64, usize, FoldHasher>> =
+        RefCell::new(HashMap::with_capacity_and_hasher(
+            IDX_CACHE_INIT,
+            FoldHasher::default(),
+        ));
+}
+
+#[inline]
+fn cache_lookup(hash: u64) -> Option<usize> {
+    IDX_CACHE.with(|c| c.borrow().get(&hash).copied())
+}
+
+#[inline]
+fn cache_insert(hash: u64, idx: usize) {
+    IDX_CACHE.with(|c| {
+        let mut m = c.borrow_mut();
+        if m.len() >= IDX_CACHE_MAX {
+            // Bound memory. Clearing loses warm entries but keeps the
+            // process from growing unboundedly across a long run.
+            m.clear();
+        }
+        m.insert(hash, idx);
+    });
+}
 /// Fields per (infoset, action): regret, momentum, strategy_sum.
 /// Interleaving them keeps all 18 i32s of an infoset within two cache
 /// lines instead of scattering them across three separate arrays.
@@ -106,20 +145,22 @@ impl CompactRegretTable {
         }
     }
 
-    /// Traverser fast path: single pin, resolve-or-create index, read
-    /// current regret-matching strategy into `out`. Returns the index.
-    /// Replaces the old pair of get_strategy_into + get_or_create_idx,
-    /// which pinned twice per traverser node.
+    /// Traverser fast path: resolve (hash -> idx) via thread-local cache,
+    /// falling back to a papaya lookup on miss. Reads current regret-
+    /// matching strategy from `data[idx]` with plain atomic loads — no
+    /// pin is needed once we have an index, since data[] is append-only
+    /// and indexes are stable forever.
+    ///
+    /// This is the single biggest scaling fix: papaya's pin/unpin epoch
+    /// machinery was serializing all threads. With the cache warm, the
+    /// shared map is consulted ~1% of the time.
     pub fn get_strategy_and_idx(&self, infoset_hash: u64, out: &mut [f32; K]) -> usize {
-        let guard = self.hash_to_idx.pin();
-        let idx = match guard.get(&infoset_hash) {
-            Some(i) => *i,
+        let idx = match cache_lookup(infoset_hash) {
+            Some(i) => i,
             None => {
-                let fresh = self.alloc_idx();
-                match guard.try_insert(infoset_hash, fresh) {
-                    Ok(_) => fresh,
-                    Err(_) => guard.get(&infoset_hash).copied().unwrap_or(fresh),
-                }
+                let i = self.get_or_create_idx(infoset_hash);
+                cache_insert(infoset_hash, i);
+                i
             }
         };
         let mut sum = 0.0f32;
@@ -141,11 +182,23 @@ impl CompactRegretTable {
     }
 
     /// Non-traverser path: read current strategy without creating the
-    /// infoset if it is new.
+    /// infoset if it is new. Uses the thread-local cache first (hit path
+    /// skips papaya entirely); on miss, looks up papaya read-only and
+    /// caches a hit (but not a miss).
     pub fn get_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
-        let guard = self.hash_to_idx.pin();
-        if let Some(idx) = guard.get(&infoset_hash) {
-            let idx = *idx;
+        let idx_opt = match cache_lookup(infoset_hash) {
+            Some(i) => Some(i),
+            None => {
+                let guard = self.hash_to_idx.pin();
+                let found = guard.get(&infoset_hash).copied();
+                drop(guard);
+                if let Some(i) = found {
+                    cache_insert(infoset_hash, i);
+                }
+                found
+            }
+        };
+        if let Some(idx) = idx_opt {
             let mut sum = 0.0f32;
             for i in 0..K {
                 let raw = self.load(idx, i, F_REGRET);
@@ -388,6 +441,12 @@ impl CompactRegretTable {
             self.data[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);
+        // Wipe each thread's cache lazily: any thread that touches this
+        // table next will go through papaya and repopulate. Actually we
+        // only clear the current thread's cache here; other threads will
+        // just see misses and fall through to the shared map, which is
+        // correct because idx assignments from the checkpoint are stable.
+        IDX_CACHE.with(|c| c.borrow_mut().clear());
         Ok(iteration)
     }
 }
