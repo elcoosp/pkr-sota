@@ -1,45 +1,46 @@
-/// DCFR (Discounted CFR) update logic.
-///
-/// Implements the discounted-regret and discounted-strategy-sum scheme from
-/// Brown & Sandholm (2019), "Superhuman AI using the DCFR algorithm".
-///
-/// Parameters (canonical defaults):
-///   α = 1.5  — positive-regret discount weight
-///   β = 0.0  — negative-regret discount weight (no discount)
-///   γ = 2.0  — strategy-sum discount weight
-///   τ = 1000 — warmup iterations before discounting kicks in
-///
-/// For t < τ: discount factors are 1.0 (no discounting).
-/// For t ≥ τ: regret is multiplied by (t/τ)^α for positive, (t/τ)^β for negative.
-///             strategy-sum is multiplied by (t/τ)^γ.
-///
-/// The GPU shader mirrors this exactly (see gpu.rs SHADER).
-/// Both CPU and GPU use the same SCALE = 1000.0 fixed-point encoding.
+//! Discounted CFR regret/strategy update.
+//!
+//! Implements the discounted-regret and discounted-strategy-sum scheme
+//! from Brown & Sandholm (2019), "Superhuman AI using the DCFR algorithm".
+//!
+//! Discount semantics: for t < TAU the factor is 1.0 (warmup). For
+//! t >= TAU the factor is t^p / (t^p + 1), which is bounded in [0.5, 1)
+//! and always < 1 for finite t. Positive regrets (p = ALPHA = 1.5) decay
+//! slowly; negative regrets (p = BETA = 0.0) decay fast.
+//!
+//! The previous `RatioPower` formula `(t/τ)^p` was removed after the
+//! Kuhn harness proved it overflows f32 at t≈3000 for any infoset
+//! visited a few dozen times, producing NaN and silently corrupting
+//! training. It is not available as an option.
+//!
+//! This module is the ONLY place regret updates are computed on the CPU
+//! path; the WGSL shader in gpu.rs mirrors the same math. Both use the
+//! same SCALE = 1000.0 fixed-point encoding.
 
 pub const ALPHA: f32 = 1.5;
 pub const BETA: f32 = 0.0;
 pub const GAMMA: f32 = 2.0;
 pub const TAU: u32 = 1000;
 
-/// Discount factor for regret at iteration t, given exponent p.
-/// For t < TAU, returns 1.0 (no discounting during warmup).
-/// For t >= TAU: returns (t/τ)^p — the multiplicative weight
-/// from Brown & Sandholm 2019 DCFR.
-/// Which DCFR discount formula to use. Selectable so we can measure
-/// convergence on small games (Kuhn) and pick empirically.
+/// Which DCFR discount formula to use.
+///
+/// Only bounded, numerical-safe options are available. Adding a new
+/// variant requires a run of `crates/pkr-testgames --bin kuhn-experiment`
+/// proving it does not produce non-finite regrets and still converges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscountMode {
     /// No discount. Equivalent to vanilla CFR.
     None,
     /// Brown & Sandholm 2019 canonical DCFR: t^p / (t^p + 1).
-    /// Factor is in [0.5, 1), so regrets decay slowly. This is the
-    /// formula the paper specifies.
+    /// Bounded in [0.5, 1), cannot overflow for any finite t.
     CanonicalDcfr,
 }
 
-// DiscountMode::RatioPower was removed. It multiplied regrets by
-// (t/τ)^p every update, which grows without bound and produced NaN
-// around t=3000 in the Kuhn experiment. Do not re-add it.
+impl DiscountMode {
+    /// The formula used in production. Verified via the Kuhn harness:
+    /// converges to exploitability 1.24e-3 at t=3M with bounded regrets.
+    pub const PRODUCTION: DiscountMode = DiscountMode::CanonicalDcfr;
+}
 
 /// Whether to use the PCFR+ momentum term in the regret update.
 /// Off = plain CFR: regret_new = discount(regret_old) + delta.
@@ -51,6 +52,7 @@ pub enum MomentumMode {
     On,
 }
 
+/// Bounded discount factor at iteration t for exponent p.
 #[inline(always)]
 pub fn discount_factor_mode(t: f32, p: f32, mode: DiscountMode) -> f32 {
     if t < TAU as f32 {
@@ -65,19 +67,15 @@ pub fn discount_factor_mode(t: f32, p: f32, mode: DiscountMode) -> f32 {
     }
 }
 
+/// Discount factor using the production default. Kept for tests and for
+/// code that does not need to be mode-aware.
 #[inline(always)]
 pub fn discount_factor(t: f32, p: f32) -> f32 {
-    // Canonical DCFR is the only supported formula. This is the paper's
-    // t^p/(t^p+1), bounded in [0.5, 1). Alternative formulas must be
-    // vetted on the Kuhn harness before being wired into production.
-    discount_factor_mode(t, p, DiscountMode::CanonicalDcfr)
+    discount_factor_mode(t, p, DiscountMode::PRODUCTION)
 }
 
-/// PCFR+ momentum update (Farina, Kroer, Sandholm 2021), composed with DCFR.
+/// Full regret update with selectable discount and momentum.
 /// Returns (new_regret, new_momentum).
-///
-/// This is the CPU fallback path — the GPU shader in gpu.rs mirrors this.
-#[inline(always)]
 pub fn update_regret_full(
     current: f32,
     prev_momentum: f32,
@@ -111,29 +109,9 @@ pub fn update_regret_full(
     (new_regret, predicted_delta)
 }
 
-/// Backwards-compatible wrapper: canonical discount + PCFR+ momentum on.
-pub fn update_regret_pfr_plus_mode(
-    current: f32,
-    prev_momentum: f32,
-    iteration: u32,
-    delta: f32,
-    mode: DiscountMode,
-) -> (f32, f32) {
-    update_regret_full(
-        current,
-        prev_momentum,
-        iteration,
-        delta,
-        mode,
-        MomentumMode::On,
-    )
-}
-
+/// Production update: canonical discount, PCFR+ momentum on. This is
+/// what `flush_cpu_batch` calls.
 #[inline(always)]
-/// Production regret update. Canonical DCFR discount + PCFR+ momentum.
-/// This function has no mode parameter on purpose: callers cannot select
-/// a broken formula. The Kuhn harness (crates/pkr-testgames) is where
-/// alternative formulas must be tested before being wired in.
 pub fn update_regret_pfr_plus(
     current: f32,
     prev_momentum: f32,
@@ -145,30 +123,14 @@ pub fn update_regret_pfr_plus(
         prev_momentum,
         iteration,
         delta,
-        DiscountMode::CanonicalDcfr,
+        DiscountMode::PRODUCTION,
         MomentumMode::On,
     )
 }
 
-/// Standard DCFR update (without momentum) for backward compatibility.
-pub fn update_regret(current: f32, iteration: u32, delta: f32) -> f32 {
-    let t = iteration as f32;
-    if t == 0.0 {
-        return current + delta;
-    }
-
-    let r_pos = current.max(0.0);
-    let r_neg = current.min(0.0);
-
-    let w_pos = discount_factor(t, ALPHA);
-    let w_neg = discount_factor(t, BETA);
-
-    let discounted_regret = w_pos * r_pos + w_neg * r_neg + delta;
-    discounted_regret.max(0.0)
-}
-
-/// Strategy-sum discount factor for averaging.
-/// Uses γ=2 with τ=1000 warmup.
+/// Strategy-sum discount factor. The production strategy accumulator
+/// uses the identity multiplier (no discount); this is retained for
+/// callers that want to experiment.
 #[inline(always)]
 pub fn strategy_sum_discount_factor(t: f32) -> f32 {
     if t < TAU as f32 {
@@ -192,46 +154,65 @@ mod tests {
 
     #[test]
     fn standard_dcfr_no_momentum() {
-        // t=2 < TAU=1000, so discount_factor = 1.0 (no discount)
-        // update_regret = max(0, 1.0 * 10.0 + 5.0) = 15.0
-        let r = update_regret(10.0, 2, 5.0);
+        // t=2 < TAU=1000, so discount factor = 1.0 (no discount).
+        // regret = max(0, 1.0 * 10.0 + 5.0) = 15.0.
+        let (r, _m) =
+            update_regret_full(10.0, 0.0, 2, 5.0, DiscountMode::CanonicalDcfr, MomentumMode::Off);
         assert_eq!(r, 15.0);
     }
 
     #[test]
     fn warmup_iterations_no_discount() {
-        // t < τ: discount factor should be 1.0
         assert!((discount_factor(1.0, ALPHA) - 1.0).abs() < 1e-6);
         assert!((discount_factor(500.0, ALPHA) - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn discount_factor_canonical_is_bounded_and_monotonic() {
-        // Canonical DCFR: w = t^p / (t^p + 1). Bounded in [0.5, 1), and
-        // increases monotonically toward 1 as t -> infinity. For any
-        // finite t, w < 1.0, so regrets are damped, not amplified.
+        // Canonical DCFR: w = t^p / (t^p + 1). Bounded in [0.5, 1).
         let f1 = discount_factor(1001.0, ALPHA);
         let f2 = discount_factor(2000.0, ALPHA);
         let f3 = discount_factor(5000.0, ALPHA);
 
+        assert!(f1 >= 0.5 && f1 < 1.0, "f1 out of range: {f1}");
+        assert!(f1 <= f2 && f2 <= f3, "not monotonic: {f1} {f2} {f3}");
+        assert!(f3 < 1.0, "must stay < 1: {f3}");
+    }
+
+    #[test]
+    fn canonical_never_overflows_at_large_t() {
+        // The removed RatioPower formula produced inf here. Canonical
+        // cannot: t^p / (t^p + 1) in exact arithmetic is in [0.5, 1).
+        //
+        // In f32 it saturates to exactly 1.0 once t^p > 2^23 ~ 8.4e6,
+        // because the + 1.0 is below the float's epsilon at that
+        // magnitude. This is expected and is why canonical behaves
+        // identically to no-discount at large t.
+        for &t in &[1e3_f32, 1e6, 1e9, 1e12] {
+            let f = discount_factor(t, ALPHA);
+            assert!(f.is_finite(), "t={t}: not finite");
+            assert!(f >= 0.5, "t={t}: below 0.5");
+            assert!(f <= 1.0, "t={t}: above 1.0");
+        }
+    }
+
+    #[test]
+    fn canonical_strictly_below_one_in_transitional_range() {
+        // For t in the 1e3 - 1e4 range, t^p is small enough that + 1.0
+        // still registers, so the discount is strictly < 1.0. This is
+        // the only window where canonical differs from no-discount in
+        // f32.
+        let f = discount_factor(2000.0, ALPHA);
         assert!(
-            f1 >= 0.5 && f1 < 1.0,
-            "at t=1001, discount_factor must be in [0.5, 1), got {f1}"
+            f < 1.0,
+            "transitional range must be strictly < 1.0, got {f}"
         );
-        assert!(
-            f1 <= f2 && f2 <= f3,
-            "discount should be monotonically increasing with t:              f1={f1}, f2={f2}, f3={f3}"
-        );
-        assert!(
-            f3 < 1.0,
-            "discount must remain < 1.0 for finite t, got {f3}"
-        );
+        assert!(f > 0.99, "transitional range should be close to 1.0, got {f}");
     }
 
     #[test]
     fn strategy_sum_discount_warmup() {
         assert!((strategy_sum_discount_factor(500.0) - 1.0).abs() < 1e-6);
-        // For t > τ: w = (t/τ)^γ / ((t/τ)^γ + 1), approaches 1 from below
         assert!(strategy_sum_discount_factor(5000.0) < 1.0);
     }
 
@@ -244,10 +225,13 @@ mod tests {
 
     #[test]
     fn beta_zero_means_fast_negative_discount() {
-        // Canonical DCFR with β=0: w_neg = t^0 / (t^0 + 1) = 1/2.
-        // Negative regrets are halved every step, so failures are
-        // forgotten quickly. This is the paper's intent for β<α.
+        // Canonical DCFR with β=0: w_neg = t^0 / (t^0 + 1) = 0.5.
         let f = discount_factor(2000.0, BETA);
-        assert!((f - 0.5).abs() < 0.01, "expected 0.5, got {}", f);
+        assert!((f - 0.5).abs() < 0.01, "expected 0.5, got {f}");
+    }
+
+    #[test]
+    fn production_default_is_canonical() {
+        assert_eq!(DiscountMode::PRODUCTION, DiscountMode::CanonicalDcfr);
     }
 }

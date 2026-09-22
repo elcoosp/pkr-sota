@@ -1,13 +1,15 @@
 use crate::gpu::BatchItem;
+use crate::metrics::LocalMetrics;
 use crate::table::{CompactRegretTable, StrategyOp};
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, ActionKind, GameState, Street};
-use rand::Rng;
 use rand::RngExt;
+use rand::Rng;
 
 const K: usize = 6;
 const MAX_DEPTH: u32 = 50;
 
+#[allow(clippy::too_many_arguments)]
 pub fn traverse(
     current: &mut GameState,
     table: &CompactRegretTable,
@@ -23,18 +25,14 @@ pub fn traverse(
     depth: u32,
     batch: &mut Vec<BatchItem>,
     strategy_batch: &mut Vec<StrategyOp>,
+    metrics: &mut LocalMetrics,
 ) -> f32 {
+    metrics.record_node(depth);
     if depth > MAX_DEPTH {
         return 0.0;
     }
 
-    // Save deck_idx before any street advancement so we can restore it.
-    // advance_street_in_place modifies *deck_idx, and GameState's undo mechanism
-    // does not track deck_idx.
     let saved_deck_idx = *deck_idx;
-    // Track whether we advanced the street, so we can undo it before returning.
-    // advance_street_in_place pushes an undo record; we must undo it to keep
-    // the undo stack balanced for our caller.
     let advanced = if current.is_street_complete() && !current.is_terminal() {
         let cards_needed = match current.street {
             Street::Preflop => 3,
@@ -44,8 +42,6 @@ pub fn traverse(
         };
         let start = *deck_idx;
         *deck_idx += cards_needed;
-        // After the 4 hole cards, the runout slice must hold at least 5 community cards
-        // (3 flop + 1 turn + 1 river). The trainer shuffles 52 cards and slices deck[4..].
         debug_assert!(
             *deck_idx <= deck.len(),
             "runout deck exhausted: advanced to {} of {}",
@@ -63,7 +59,6 @@ pub fn traverse(
         false
     };
 
-    // Helper to undo the advance and restore deck_idx, for early returns.
     macro_rules! undo_advance_and_return {
         ($ret:expr) => {{
             if advanced {
@@ -98,9 +93,8 @@ pub fn traverse(
     }
 
     // Compact history signature: (actions_this_street, num_raises,
-    // last_was_bet). This collapses the infoset key space by orders of
-    // magnitude vs. hashing the raw 32-byte action sequence, while
-    // preserving the legal action space at every node.
+    // last_was_bet). Collapses the infoset key space vs. hashing the
+    // raw action sequence.
     let sig = current.history_signature();
     let history_bytes = sig.to_le_bytes();
 
@@ -112,7 +106,7 @@ pub fn traverse(
 
     let mut strategy = [0.0f32; K];
     let traverser_idx = if acting_player == traverser {
-        Some(table.get_strategy_and_idx(infoset_hash, &mut strategy))
+        Some(table.get_strategy_and_idx(infoset_hash, &mut strategy, metrics))
     } else {
         table.get_strategy_into(infoset_hash, &mut strategy);
         None
@@ -156,17 +150,14 @@ pub fn traverse(
                 depth + 1,
                 batch,
                 strategy_batch,
+                metrics,
             );
             *deck_idx = child_deck_idx;
-            current.undo_action(); // undo apply_action_in_place
+            current.undo_action();
         }
 
         let v_sigma: f32 = strategy.iter().zip(v.iter()).map(|(p, u)| p * u).sum();
 
-        // Push updates to the local batch instead of updating atomically
-        // The delta is scaled by opponent_reach: in external-sampling MCCFR,
-        // the opponent's reach probability weights the traversal so that
-        // the expected regret converges to the true game value.
         for a in 0..K {
             let delta = (v[a] - v_sigma) * opponent_reach;
             batch.push(BatchItem {
@@ -177,7 +168,6 @@ pub fn traverse(
             });
         }
 
-        // Undo the street advance to keep the undo stack balanced for our caller
         if advanced {
             current.undo_action();
         }
@@ -222,11 +212,11 @@ pub fn traverse(
             depth + 1,
             batch,
             strategy_batch,
+            metrics,
         );
         *deck_idx = child_deck_idx;
-        current.undo_action(); // undo apply_action_in_place
+        current.undo_action();
 
-        // Undo the street advance to keep the undo stack balanced for our caller
         if advanced {
             current.undo_action();
         }
@@ -267,9 +257,6 @@ mod tests {
     use rand::SeedableRng;
     use std::sync::Arc;
 
-    /// Mock evaluator: deterministic hand ranking based on card sum mod 7462.
-    /// In the real evaluator, lower rank = better hand. Here we use a simple
-    /// deterministic mapping so tests are reproducible.
     struct MockEvaluator;
     impl pkr_contracts::Evaluator for MockEvaluator {
         fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
@@ -284,7 +271,6 @@ mod tests {
         }
     }
 
-    /// Mock abstraction: use the KMeansAbstraction with dummy centroids.
     fn make_abstraction() -> Arc<KMeansAbstraction> {
         Arc::new(KMeansAbstraction::new(
             vec![(0.3, 0.09), (0.7, 0.49)],
@@ -292,8 +278,6 @@ mod tests {
         ))
     }
 
-    /// Verify that the traversal does NOT return early at the turn street,
-    /// meaning turn nodes are real decision nodes (not leaves).
     #[test]
     fn traverse_does_not_cutoff_at_turn() {
         let table = Arc::new(CompactRegretTable::with_capacity(100_000));
@@ -303,6 +287,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(99);
         let mut batch = Vec::new();
         let mut strategy_batch = Vec::new();
+        let mut metrics = LocalMetrics::default();
         let deck: Vec<u8> = (0..52).collect();
 
         let mut state = GameState::new(200.0, 1.0, 2.0);
@@ -325,38 +310,28 @@ mod tests {
             0,
             &mut batch,
             &mut strategy_batch,
+            &mut metrics,
         );
 
-        // The result should be a valid payoff (not NaN, not a raw EHS * pot value)
-        assert!(
-            result.is_finite(),
-            "traversal returned non-finite value — check for early cutoff regression"
-        );
-        // With 200bb stacks, payoff should be in [-200, 200]
-        assert!(
-            result.abs() <= 200.0,
-            "payoff {result} exceeds stack bounds — possible early cutoff or wrong payoff convention"
-        );
+        assert!(result.is_finite());
+        assert!(result.abs() <= 200.0);
+        assert!(metrics.nodes > 0);
     }
 
-    /// Verify that after training iterations, turn and river infosets
-    /// are registered in the table (i.e., the tree is NOT truncated at the turn).
     #[test]
     fn turn_and_river_infosets_receive_strategy_sum_after_training() {
         let table = Arc::new(CompactRegretTable::with_capacity(100_000));
         let abstraction = make_abstraction();
         let evaluator: Arc<dyn pkr_contracts::Evaluator> = Arc::new(MockEvaluator);
 
-        // Run enough iterations with random decks to register >50 infosets.
-        // GPU flush is a sync point, so keep this small to keep CI fast.
         for iteration in 1..=60u32 {
             let mut rng = StdRng::seed_from_u64(1000 + iteration as u64);
             let mut batch = Vec::with_capacity(10000);
             let mut strategy_batch = Vec::with_capacity(10000);
+            let mut metrics = LocalMetrics::default();
             let mut deck: Vec<u8> = (0..52).collect();
             deck.shuffle(&mut rng);
 
-            // Hero perspective
             let mut state = GameState::new(200.0, 1.0, 2.0);
             state.set_hole_cards([deck[0], deck[1]], [deck[2], deck[3]]);
             let deck_slice = &deck[4..];
@@ -376,9 +351,9 @@ mod tests {
                 0,
                 &mut batch,
                 &mut strategy_batch,
+                &mut metrics,
             );
 
-            // Villain perspective
             let mut state2 = GameState::new(200.0, 1.0, 2.0);
             state2.set_hole_cards([deck[0], deck[1]], [deck[2], deck[3]]);
             let mut deck_idx2 = 0usize;
@@ -397,6 +372,7 @@ mod tests {
                 0,
                 &mut batch,
                 &mut strategy_batch,
+                &mut metrics,
             );
 
             for op in &strategy_batch {
@@ -405,21 +381,9 @@ mod tests {
             table.flush_gpu_batch(&batch);
         }
 
-        // After 60 iterations with random decks, the table should have
-        // registered infosets at turn and river streets.
-        //
-        // With the old turn-cutoff bug, traversal never reaches turn/river,
-        // so only preflop and flop infosets would be registered.
         let keys = table.get_keys();
-        let key_count = keys.len();
+        assert!(keys.len() > 50, "only {} infosets registered", keys.len());
 
-        assert!(
-            key_count > 50,
-            "only {key_count} infosets registered — tree may still be truncated at turn"
-        );
-
-        // Verify that at least some entries have non-uniform strategy,
-        // which means regret updates were applied via the GPU flush.
         let mut non_uniform_count = 0;
         for key in keys {
             let mut strategy = [0.0f32; K];
@@ -428,9 +392,6 @@ mod tests {
                 non_uniform_count += 1;
             }
         }
-        assert!(
-            non_uniform_count > 0,
-            "no non-uniform strategies found — flush or training did not register"
-        );
+        assert!(non_uniform_count > 0);
     }
 }

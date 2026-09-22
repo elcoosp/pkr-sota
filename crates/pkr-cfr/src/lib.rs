@@ -1,5 +1,6 @@
 pub mod dcfr;
 pub mod gpu;
+pub mod metrics;
 pub mod preflop_validate;
 pub mod riversolve;
 pub mod table;
@@ -7,6 +8,7 @@ pub mod traversal;
 pub mod valuenet;
 
 use crate::gpu::BatchItem;
+use crate::metrics::LocalMetrics;
 use crate::table::{CompactRegretTable, StrategyOp};
 use crate::traversal::traverse;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
@@ -16,20 +18,6 @@ use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-
-/// Per-dispatch timing breakdown. Returned by `run_iterations_parallel`
-/// so callers can log/aggregate without poking at env vars.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RunStats {
-    pub traverse_s: f64,
-    pub merge_s: f64,
-    pub flush_s: f64,
-    pub chunk_min_s: f64,
-    pub chunk_max_s: f64,
-    pub chunk_mean_s: f64,
-    pub items: usize,
-    pub strats: usize,
-}
 
 pub struct Trainer {
     abstraction: Arc<dyn AbstractionBuilder>,
@@ -56,47 +44,39 @@ impl Trainer {
         }
     }
 
-    /// Runs `n` logical CFR iterations per rayon dispatch instead of one.
-    ///
-    /// Each rayon task runs its share of iterations locally (no sync
-    /// between them), accumulating into buffers allocated once for the
-    /// whole call. Merge + flush happens ONCE per dispatch instead of once
-    /// per iteration. This is the fix for the 1->N thread collapse: the old
-    /// code paid a full serial merge+flush every iteration, and that serial
-    /// cost grew *with* thread count since more threads = more items
-    /// produced per iteration. Batching amortizes it by `n`.
-    pub fn run_iterations_parallel(&mut self, n: usize) -> RunStats {
+    /// Runs `n` logical CFR iterations per rayon dispatch. Each rayon task
+    /// runs its share of iterations locally, accumulating into buffers
+    /// allocated once for the whole call. Merge + flush happens ONCE per
+    /// dispatch, amortizing serial work by `n`.
+    #[allow(clippy::type_complexity)]
+    pub fn run_iterations_parallel(&mut self, n: usize) {
+        use crate::metrics::global;
+        use std::sync::OnceLock;
         use std::time::Instant;
+        static PROFILE: OnceLock<bool> = OnceLock::new();
+        let profile = *PROFILE.get_or_init(|| std::env::var("PKR_PHASE_PROFILE").is_ok());
 
-        // Reserve the whole iteration range with ONE atomic op.
         let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
 
         let table = Arc::clone(&self.table);
         let abstraction = Arc::clone(&self.abstraction);
         let evaluator = Arc::clone(&self.evaluator);
 
-        // Dynamic chunking: many small chunks, rayon work-steals them
-        // across threads. Absorbs per-chunk cost variance and the P-core
-        // vs E-core speed gap on M-series.
         const CHUNK_ITERS: usize = 16;
         let n_chunks = (n + CHUNK_ITERS - 1) / CHUNK_ITERS;
 
         let t_wall = Instant::now();
         let t0 = Instant::now();
-        // Each chunk returns (batch, strategy, wall_secs) so imbalance is
-        // visible in RunStats.
-        let chunk_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>, f64)> =
+        let thread_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>, LocalMetrics)> =
             (0..n_chunks)
                 .into_par_iter()
                 .map(|chunk_idx| {
-                    let chunk_t0 = Instant::now();
                     let start = chunk_idx * CHUNK_ITERS;
                     let end = ((chunk_idx + 1) * CHUNK_ITERS).min(n);
                     let pairs = end - start;
-                    let mut batch: Vec<BatchItem> =
-                        Vec::with_capacity(pairs * 20);
-                    let mut strategy_batch: Vec<StrategyOp> =
-                        Vec::with_capacity(pairs * 20);
+                    let mut batch: Vec<BatchItem> = Vec::with_capacity(pairs * 20);
+                    let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 20);
+                    let mut metrics = LocalMetrics::default();
 
                     let mut rng = SmallRng::seed_from_u64(rand::random::<u64>());
                     let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
@@ -118,90 +98,84 @@ impl Trainer {
                         state.set_hole_cards(hero, villain);
                         let mut deck_idx = 0usize;
                         traverse(
-                            &mut state,
-                            &table,
-                            &*abstraction,
-                            &*evaluator,
-                            &mut rng,
-                            global_iter,
-                            0,
-                            1.0,
-                            1.0,
-                            deck_slice,
-                            &mut deck_idx,
-                            0,
-                            &mut batch,
-                            &mut strategy_batch,
+                            &mut state, &table, &*abstraction, &*evaluator, &mut rng,
+                            global_iter, 0, 1.0, 1.0, deck_slice, &mut deck_idx, 0,
+                            &mut batch, &mut strategy_batch, &mut metrics,
                         );
 
                         let mut state2 = GameState::new(200.0, 1.0, 2.0);
                         state2.set_hole_cards(hero, villain);
                         let mut deck_idx2 = 0usize;
                         traverse(
-                            &mut state2,
-                            &table,
-                            &*abstraction,
-                            &*evaluator,
-                            &mut rng,
-                            global_iter,
-                            1,
-                            1.0,
-                            1.0,
-                            deck_slice,
-                            &mut deck_idx2,
-                            0,
-                            &mut batch,
-                            &mut strategy_batch,
+                            &mut state2, &table, &*abstraction, &*evaluator, &mut rng,
+                            global_iter, 1, 1.0, 1.0, deck_slice, &mut deck_idx2, 0,
+                            &mut batch, &mut strategy_batch, &mut metrics,
                         );
                     }
-                    let secs = chunk_t0.elapsed().as_secs_f64();
-                    (batch, strategy_batch, secs)
+
+                    metrics.regret_pushed = batch.len() as u64;
+                    metrics.strategy_pushed = strategy_batch.len() as u64;
+                    (batch, strategy_batch, metrics)
                 })
                 .collect();
         let t_traverse = t0.elapsed();
 
-        // Chunk imbalance stats.
-        let chunk_walls: Vec<f64> = chunk_results.iter().map(|(_, _, s)| *s).collect();
-        let chunk_min = chunk_walls.iter().cloned().fold(f64::INFINITY, f64::min);
-        let chunk_max = chunk_walls.iter().cloned().fold(0.0f64, f64::max);
-        let chunk_mean = if chunk_walls.is_empty() {
-            0.0
-        } else {
-            chunk_walls.iter().sum::<f64>() / chunk_walls.len() as f64
-        };
-
         let t1 = Instant::now();
-        let total_items: usize = chunk_results.iter().map(|(b, _, _)| b.len()).sum();
-        let total_strats: usize = chunk_results.iter().map(|(_, s, _)| s.len()).sum();
+        let total_items: usize = thread_results.iter().map(|(b, _, _)| b.len()).sum();
+        let total_strats: usize = thread_results.iter().map(|(_, s, _)| s.len()).sum();
         let mut merged_batch = Vec::with_capacity(total_items);
         let mut merged_strategy = Vec::with_capacity(total_strats);
-        for (b, s, _) in chunk_results {
+        let mut batch_metrics = LocalMetrics::default();
+        for (b, s, m) in thread_results {
             merged_batch.extend(b);
             merged_strategy.extend(s);
+            batch_metrics.merge_from(&m);
         }
         let t_merge = t1.elapsed();
 
         let t2 = Instant::now();
-        table.apply_strategy_batch(&mut merged_strategy);
-        table.flush_cpu_batch(&mut merged_batch);
+        let strategy_applied = table.apply_strategy_batch(&mut merged_strategy);
+        let (regret_in, regret_out) = table.flush_cpu_batch(&mut merged_batch);
         let t_flush = t2.elapsed();
 
-        let _ = t_wall; // kept in case a caller wants the total
+        global().record_batch(
+            &batch_metrics,
+            n as u64,
+            t_wall.elapsed().as_nanos() as u64,
+            t_traverse.as_nanos() as u64,
+            t_merge.as_nanos() as u64,
+            t_flush.as_nanos() as u64,
+            regret_in,
+            regret_out,
+            strategy_applied,
+        );
 
-        RunStats {
-            traverse_s: t_traverse.as_secs_f64(),
-            merge_s: t_merge.as_secs_f64(),
-            flush_s: t_flush.as_secs_f64(),
-            chunk_min_s: chunk_min,
-            chunk_max_s: chunk_max,
-            chunk_mean_s: chunk_mean,
-            items: total_items,
-            strats: total_strats,
+        if profile {
+            let wall_ms = t_wall.elapsed().as_secs_f64() * 1000.0;
+            let hit_rate = if batch_metrics.cache_hits + batch_metrics.cache_misses == 0 {
+                0.0
+            } else {
+                batch_metrics.cache_hits as f64
+                    / (batch_metrics.cache_hits + batch_metrics.cache_misses) as f64
+            };
+            eprintln!(
+                "[phase] batch_end_iter={} n={} chunks={} wall={:.2}ms traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={} nodes={} depth_max={} cache_hit={:.3}",
+                start_iter + n as u32 - 1,
+                n,
+                n_chunks,
+                wall_ms,
+                t_traverse.as_secs_f64() * 1000.0,
+                t_merge.as_secs_f64() * 1000.0,
+                t_flush.as_secs_f64() * 1000.0,
+                total_items,
+                total_strats,
+                batch_metrics.nodes,
+                batch_metrics.max_depth,
+                hit_rate,
+            );
         }
     }
 
-    /// Single-iteration convenience wrapper. Delegates to the batched
-    /// implementation with n=1.
     pub fn run_iteration_parallel(&mut self) {
         self.run_iterations_parallel(1);
     }

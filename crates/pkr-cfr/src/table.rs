@@ -1,5 +1,6 @@
 use crate::dcfr::update_regret_pfr_plus;
 use crate::gpu::{BatchItem, GpuState};
+use crate::metrics::LocalMetrics;
 use foldhash::fast::RandomState as FoldHasher;
 use papaya::HashMap as PapayaMap;
 use rayon::prelude::*;
@@ -9,23 +10,14 @@ use std::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
-/// Regrets and momentums are interleaved: `rm[idx * K*2 + action*2 + field]`
-/// where field 0 = regret, 1 = momentum. Safe because only the coordinator
-/// writes them (flush_cpu_batch runs single-threaded at the group level).
 const RM_FIELDS: usize = 2;
 const RM_STRIDE: usize = K * RM_FIELDS;
 const RM_REGRET: usize = 0;
 const RM_MOMENTUM: usize = 1;
-
-/// Strategy sums are in their own array. They are written atomically by
-/// every traverser node from every thread, so keeping them separate from
-/// the regret data eliminates false sharing between neighbors.
 const SUM_STRIDE: usize = K;
 
 pub(crate) const SCALE: f32 = 1000.0;
 
-/// A deferred strategy-sum increment. Pushed by traverser nodes into a
-/// thread-local Vec, applied once per dispatch by the coordinator.
 #[derive(Clone, Copy, Debug)]
 pub struct StrategyOp {
     pub index: u32,
@@ -33,7 +25,6 @@ pub struct StrategyOp {
     pub prob: f32,
 }
 
-/// Snapshot of table health. Cheap to compute (O(next_idx)).
 #[derive(Debug, Clone, Default)]
 pub struct TableSnapshot {
     pub infosets: usize,
@@ -44,27 +35,17 @@ pub struct TableSnapshot {
     pub strategy_sum_mass: f64,
 }
 
-/// Distribution of average strategies across all infosets. Everything an
-/// outside observer needs to know whether the abstraction is resolving
-/// and whether the strategies are collapsing to pure or staying mixed.
 #[derive(Debug, Clone)]
 pub struct StrategyAnalysis {
     pub total: usize,
-    /// strategy_sum total == 0 (never visited or uniform fallback).
     pub empty: usize,
-    /// One action has p >= 0.99.
     pub pure: usize,
-    /// At least two actions have p >= 0.10.
     pub mixed: usize,
-    /// Shannon entropy in bits, mean over visited infosets.
     pub mean_entropy: f64,
-    /// Entropy histogram in 8 buckets of 0.25 bits, up to 2.0+.
     pub entropy_histogram: [usize; 8],
-    /// For each action, how many infosets have it as the argmax.
     pub dominant_counts: [usize; K],
 }
 
-/// Full dump of a single infoset for offline analysis.
 #[derive(Debug, Clone)]
 pub struct InfoSetDump {
     pub hash: u64,
@@ -104,20 +85,16 @@ fn warn_nonfinite_regret_once(iteration: u32) {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
         eprintln!(
-            "WARNING: regret became non-finite at iteration {}.              Training is corrupt from this point. This usually means a              discount formula with multiplicative growth (RatioPower).              Current default is CanonicalDcfr, which is bounded."
-        , iteration);
+            "WARNING: regret became non-finite at iteration {}. \
+             Training is corrupt from this point."
+            , iteration
+        );
     });
 }
 
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
-    /// Interleaved regret+momentum: `data[idx*RM_STRIDE + action*2 + field]`.
     data: Vec<AtomicI32>,
-    /// Strategy sums: `strategy_sum[idx*K + action]`. Separate array to
-    /// avoid false sharing with the interleaved regret/momentum data.
-    /// i64 because i32 fixed-point ×1000 saturates after ~2.1M weighted
-    /// visits per slot; hot preflop infosets hit that in a few thousand
-    /// iterations.
     strategy_sum: Vec<AtomicI64>,
     next_idx: AtomicUsize,
     capacity: usize,
@@ -171,10 +148,6 @@ impl CompactRegretTable {
         self.strategy_sum[Self::off_sum(idx, action)].load(Ordering::Relaxed)
     }
 
-    /// Allocate a fresh slot index. Panics on overflow rather than silently
-    /// clumping onto the last slot, which would corrupt training results
-    /// without any visible signal. The trainer checks is_near_capacity()
-    /// at 95% and stops cleanly before this fires.
     #[inline]
     fn alloc_idx(&self) -> usize {
         loop {
@@ -210,11 +183,40 @@ impl CompactRegretTable {
         }
     }
 
-    pub fn get_strategy_and_idx(&self, infoset_hash: u64, out: &mut [f32; K]) -> usize {
+    #[inline]
+    pub(crate) fn get_or_create_idx_measured(
+        &self,
+        hash: u64,
+        metrics: &mut LocalMetrics,
+    ) -> usize {
+        let guard = self.hash_to_idx.pin();
+        if let Some(idx) = guard.get(&hash) {
+            return *idx;
+        }
+        let fresh = self.alloc_idx();
+        match guard.try_insert(hash, fresh) {
+            Ok(_) => {
+                metrics.infosets_created += 1;
+                fresh
+            }
+            Err(_) => guard.get(&hash).copied().unwrap_or(fresh),
+        }
+    }
+
+    pub fn get_strategy_and_idx(
+        &self,
+        infoset_hash: u64,
+        out: &mut [f32; K],
+        metrics: &mut LocalMetrics,
+    ) -> usize {
         let idx = match cache_lookup(infoset_hash) {
-            Some(i) => i,
+            Some(i) => {
+                metrics.cache_hits += 1;
+                i
+            }
             None => {
-                let i = self.get_or_create_idx(infoset_hash);
+                metrics.cache_misses += 1;
+                let i = self.get_or_create_idx_measured(infoset_hash, metrics);
                 cache_insert(infoset_hash, i);
                 i
             }
@@ -301,24 +303,15 @@ impl CompactRegretTable {
         self.strategy_sum[off].fetch_add((prob * SCALE) as i64, Ordering::Relaxed);
     }
 
-    /// Apply a batch of deferred strategy updates.
-    ///
-    /// Sort-dedup version: filter zero-probability ops (traverser pushes
-    /// all K ops including illegal actions), par_sort by (idx, action),
-    /// then parallel-walk contiguous groups. After dedup every (idx,
-    /// action) is unique, so the atomic fetch_add per group never touches
-    /// the same cell twice. Contiguous groups improve cache behaviour
-    /// versus random HashMap lookups.
-    pub fn apply_strategy_batch(&self, ops: &mut Vec<StrategyOp>) {
+    /// Apply a batch of deferred strategy updates. Returns the number of
+    /// distinct (idx, action) pairs that were actually written.
+    pub fn apply_strategy_batch(&self, ops: &mut Vec<StrategyOp>) -> u64 {
         ops.retain(|op| op.prob != 0.0);
         if ops.is_empty() {
-            return;
+            return 0;
         }
         ops.par_sort_unstable_by_key(|op| (op.index, op.action));
 
-        // Serial scan to build the group index vector. This is O(n) over
-        // contiguous memory, cheaper than the equivalent number of hash
-        // inserts.
         let mut groups: Vec<(usize, usize, u32, u8)> = Vec::new();
         let mut i = 0usize;
         while i < ops.len() {
@@ -331,6 +324,7 @@ impl CompactRegretTable {
             i = end;
         }
 
+        let applied = groups.len() as u64;
         let ops_ref: &[StrategyOp] = ops.as_slice();
         let n_threads = rayon::current_num_threads().max(1);
         let chunk_size = (groups.len() / n_threads).max(1);
@@ -344,18 +338,15 @@ impl CompactRegretTable {
                 self.strategy_sum[off].fetch_add((prob * SCALE) as i64, Ordering::Relaxed);
             }
         });
+        applied
     }
 
-    /// Apply a batch of deferred regret updates.
-    ///
-    /// Same sort-dedup shape as apply_strategy_batch. Rayon's
-    /// par_sort_unstable_by_key is faster than building a HashMap, and
-    /// the group scan reads contiguously. `update_regret_pfr_plus` is a
-    /// read-modify-write, but after dedup every key is unique so no two
-    /// parallel groups touch the same cell.
-    pub fn flush_cpu_batch(&self, batch: &mut Vec<BatchItem>) {
+    /// Apply a batch of deferred regret updates. Returns (input_len,
+    /// unique_count) so callers can compute dedup ratio.
+    pub fn flush_cpu_batch(&self, batch: &mut Vec<BatchItem>) -> (u64, u64) {
+        let input_len = batch.len() as u64;
         if batch.is_empty() {
-            return;
+            return (0, 0);
         }
         batch.par_sort_unstable_by_key(|item| (item.index, item.action));
         let iteration = batch[0].iteration;
@@ -372,6 +363,7 @@ impl CompactRegretTable {
             i = end;
         }
 
+        let unique_len = groups.len() as u64;
         let batch_ref: &[BatchItem] = batch.as_slice();
         let n_threads = rayon::current_num_threads().max(1);
         let chunk_size = (groups.len() / n_threads).max(1);
@@ -393,6 +385,7 @@ impl CompactRegretTable {
                 self.store_rm(idx, a, RM_MOMENTUM, (new_m * SCALE) as i32);
             }
         });
+        (input_len, unique_len)
     }
 
     pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
@@ -453,8 +446,6 @@ impl CompactRegretTable {
         })
     }
 
-    /// O(next_idx) scan of regret/strategy tables. Cheap, safe to call
-    /// at every report interval.
     pub fn snapshot(&self) -> TableSnapshot {
         let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
         let mut max_abs = 0.0f32;
@@ -495,8 +486,6 @@ impl CompactRegretTable {
         }
     }
 
-    /// Walk every infoset and accumulate the strategy distribution. O(N*K).
-    /// A few seconds on 5M infosets; run once at end of training.
     pub fn analyze_strategies(&self) -> StrategyAnalysis {
         let guard = self.hash_to_idx.pin();
         let mut analysis = StrategyAnalysis {
@@ -528,7 +517,6 @@ impl CompactRegretTable {
                 s[a] /= sum;
             }
 
-            // Dominant action.
             let mut best_a = 0usize;
             let mut best_p = 0.0f32;
             for a in 0..K {
@@ -539,7 +527,6 @@ impl CompactRegretTable {
             }
             analysis.dominant_counts[best_a] += 1;
 
-            // Pure / mixed classification.
             if best_p >= 0.99 {
                 analysis.pure += 1;
             }
@@ -553,7 +540,6 @@ impl CompactRegretTable {
                 analysis.mixed += 1;
             }
 
-            // Shannon entropy in bits.
             let mut h = 0.0f64;
             for a in 0..K {
                 let p = s[a] as f64;
@@ -572,9 +558,6 @@ impl CompactRegretTable {
         analysis
     }
 
-    /// Pick n infosets spread evenly across the map and dump their full
-    /// state. Used to hand a small but representative sample to an
-    /// external analyzer.
     pub fn sample_infosets(&self, n: usize) -> Vec<InfoSetDump> {
         let guard = self.hash_to_idx.pin();
         let total = guard.len();
@@ -789,15 +772,12 @@ mod tests {
         table.flush_gpu_batch(&batch);
     }
 
-    /// The new sort-dedup CPU flush must produce the same result as a
-    /// straight sum-then-update against the same inputs.
     #[test]
     fn cpu_flush_sort_dedup_equals_sum() {
         let table = CompactRegretTable::with_capacity(4096);
         let i1 = table.get_or_create_idx(0xBEEF_0001);
         let i2 = table.get_or_create_idx(0xBEEF_0002);
 
-        // Randomly ordered, multiple deltas per key.
         let mut batch = vec![
             BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 0.1 },
             BatchItem { index: i2 as u32, action: 2, iteration: 1, delta: 0.2 },
@@ -805,10 +785,10 @@ mod tests {
             BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 0.4 },
             BatchItem { index: i2 as u32, action: 2, iteration: 1, delta: 0.5 },
         ];
-        table.flush_cpu_batch(&mut batch);
+        let (input, unique) = table.flush_cpu_batch(&mut batch);
+        assert_eq!(input, 5);
+        assert_eq!(unique, 2);
 
-        // delta_i1_a0 = 0.8, delta_i2_a2 = 0.7.
-        // On iteration 1 with zero state: gamma = 1/sqrt(2), regret = gamma*delta.
         let gamma = 1.0 / std::f32::consts::SQRT_2;
         let expected_i1 = gamma * 0.8;
         let expected_i2 = gamma * 0.7;
