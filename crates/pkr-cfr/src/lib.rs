@@ -69,6 +69,7 @@ impl Trainer {
         let base = n / num_threads;
         let rem = n % num_threads;
 
+        let t_wall = Instant::now();
         let t0 = Instant::now();
         let thread_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>)> =
             (0..num_threads)
@@ -157,10 +158,12 @@ impl Trainer {
         let t_flush = t2.elapsed();
 
         if profile {
+            let wall_ms = t_wall.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
-                "[phase] batch_end_iter={} n={} traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={}",
+                "[phase] batch_end_iter={} n={} wall={:.2}ms traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={}",
                 start_iter + n as u32 - 1,
                 n,
+                wall_ms,
                 t_traverse.as_secs_f64() * 1000.0,
                 t_merge.as_secs_f64() * 1000.0,
                 t_flush.as_secs_f64() * 1000.0,

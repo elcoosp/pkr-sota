@@ -4,8 +4,9 @@ use foldhash::fast::RandomState as FoldHasher;
 use papaya::HashMap as PapayaMap;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use rayon::prelude::*;
 
 const K: usize = 6;
 /// Regrets and momentums are interleaved: `rm[idx * K*2 + action*2 + field]`
@@ -69,7 +70,10 @@ pub struct CompactRegretTable {
     data: Vec<AtomicI32>,
     /// Strategy sums: `strategy_sum[idx*K + action]`. Separate array to
     /// avoid false sharing with the interleaved regret/momentum data.
-    strategy_sum: Vec<AtomicI32>,
+    /// i64 because i32 with fixed-point ×1000 saturates after only ~2.1M
+    /// weighted visits per slot; a hot preflop infoset can hit that in
+    /// a few thousand iterations.
+    strategy_sum: Vec<AtomicI64>,
     next_idx: AtomicUsize,
     capacity: usize,
     gpu: OnceLock<GpuState>,
@@ -83,8 +87,8 @@ impl CompactRegretTable {
     pub fn with_capacity(capacity: usize) -> Self {
         let mut data: Vec<AtomicI32> = Vec::with_capacity(capacity * RM_STRIDE);
         data.resize_with(capacity * RM_STRIDE, || AtomicI32::new(0));
-        let mut strategy_sum: Vec<AtomicI32> = Vec::with_capacity(capacity * SUM_STRIDE);
-        strategy_sum.resize_with(capacity * SUM_STRIDE, || AtomicI32::new(0));
+        let mut strategy_sum: Vec<AtomicI64> = Vec::with_capacity(capacity * SUM_STRIDE);
+        strategy_sum.resize_with(capacity * SUM_STRIDE, || AtomicI64::new(0));
         let map = PapayaMap::with_hasher(FoldHasher::default());
         map.pin().reserve(4_000_000.min(capacity));
         Self {
@@ -118,7 +122,7 @@ impl CompactRegretTable {
     }
 
     #[inline(always)]
-    fn load_sum(&self, idx: usize, action: usize) -> i32 {
+    fn load_sum(&self, idx: usize, action: usize) -> i64 {
         self.strategy_sum[Self::off_sum(idx, action)].load(Ordering::Relaxed)
     }
 
@@ -245,19 +249,47 @@ impl CompactRegretTable {
     #[inline(always)]
     pub fn add_strategy_sum_at(&self, idx: usize, action_idx: usize, prob: f32) {
         let off = Self::off_sum(idx, action_idx);
-        self.strategy_sum[off].fetch_add((prob * SCALE) as i32, Ordering::Relaxed);
+        self.strategy_sum[off].fetch_add((prob * SCALE) as i64, Ordering::Relaxed);
     }
 
-    /// Apply a batch of deferred strategy updates on the coordinator thread.
-    /// Adjacent StrategyOps for the same idx share a cache line, so this is
-    /// cache-friendly and free of the false sharing that killed parallel
-    /// traversal.
+    /// Apply a batch of deferred strategy updates.
+    ///
+    /// Dedups by (idx, action) — summing probs — filters zeros (illegal
+    /// actions pushed by traverser nodes), then applies in parallel. After
+    /// dedup every (idx, action) is unique, so the atomic fetch_add per
+    /// key never touches the same cell from two threads.
     pub fn apply_strategy_batch(&self, ops: &[StrategyOp]) {
-        for op in ops {
-            self.add_strategy_sum_at(op.index as usize, op.action as usize, op.prob);
+        if ops.is_empty() {
+            return;
         }
+        // Serial dedup with a scratch HashMap. Filtering zeros here saves
+        // both the hashmap insert and the atomic op downstream.
+        let mut dedup: HashMap<(u32, u8), f32, FoldHasher> =
+            HashMap::with_capacity_and_hasher(ops.len().min(65_536), FoldHasher::default());
+        for op in ops {
+            if op.prob == 0.0 {
+                continue;
+            }
+            let e = dedup.entry((op.index, op.action)).or_insert(0.0);
+            *e += op.prob;
+        }
+        let entries: Vec<((u32, u8), f32)> = dedup.into_iter().collect();
+
+        // Parallel apply. Each key is unique, so no cell is touched twice.
+        let chunk = (entries.len() / rayon::current_num_threads().max(1)).max(1);
+        entries.par_chunks(chunk).for_each(|chunk| {
+            for ((idx, action), prob) in chunk {
+                let off = Self::off_sum(*idx as usize, *action as usize);
+                self.strategy_sum[off].fetch_add((*prob * SCALE) as i64, Ordering::Relaxed);
+            }
+        });
     }
 
+    /// Apply a batch of deferred regret updates.
+    ///
+    /// Serial dedup (builds a scratch HashMap keyed by (idx, action)),
+    /// then par_chunks apply. After dedup every key is unique, so no two
+    /// parallel tasks touch the same (idx, action) cell in `data`.
     pub fn flush_cpu_batch(&self, batch: &[BatchItem]) {
         if batch.is_empty() {
             return;
@@ -270,16 +302,20 @@ impl CompactRegretTable {
             *entry += item.delta;
             iteration = item.iteration;
         }
+        let entries: Vec<((u32, u32), f32)> = dedup.into_iter().collect();
 
-        for ((index, action), delta) in dedup {
-            let idx = index as usize;
-            let a = action as usize;
-            let cur = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
-            let mom = self.load_rm(idx, a, RM_MOMENTUM) as f32 / SCALE;
-            let (new_r, new_m) = update_regret_pfr_plus(cur, mom, iteration, delta);
-            self.store_rm(idx, a, RM_REGRET, (new_r * SCALE) as i32);
-            self.store_rm(idx, a, RM_MOMENTUM, (new_m * SCALE) as i32);
-        }
+        let chunk = (entries.len() / rayon::current_num_threads().max(1)).max(1);
+        entries.par_chunks(chunk).for_each(|chunk| {
+            for ((index, action), delta) in chunk {
+                let idx = *index as usize;
+                let a = *action as usize;
+                let cur = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
+                let mom = self.load_rm(idx, a, RM_MOMENTUM) as f32 / SCALE;
+                let (new_r, new_m) = update_regret_pfr_plus(cur, mom, iteration, *delta);
+                self.store_rm(idx, a, RM_REGRET, (new_r * SCALE) as i32);
+                self.store_rm(idx, a, RM_MOMENTUM, (new_m * SCALE) as i32);
+            }
+        });
     }
 
     pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
@@ -363,8 +399,8 @@ impl CompactRegretTable {
         use std::io::Write;
         let mut f = std::fs::File::create(path)?;
         let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
-        f.write_all(b"PKRCKPT2")?;
-        f.write_all(&2u32.to_le_bytes())?;
+        f.write_all(b"PKRCKPT3")?;
+        f.write_all(&3u32.to_le_bytes())?;
         f.write_all(&(K as u32).to_le_bytes())?;
         f.write_all(&iteration.to_le_bytes())?;
         f.write_all(&(n as u64).to_le_bytes())?;
@@ -405,14 +441,14 @@ impl CompactRegretTable {
             Ok(s)
         };
         let magic = read(&mut p, 8)?;
-        if magic != b"PKRCKPT2" {
+        if magic != b"PKRCKPT3" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "bad checkpoint magic (expected v2 format)",
+                "bad checkpoint magic (expected v3 format)",
             ));
         }
         let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        if version != 2 {
+        if version != 3 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported checkpoint version",
@@ -454,7 +490,7 @@ impl CompactRegretTable {
         }
         let sum_entries = n * SUM_STRIDE;
         for i in 0..sum_entries {
-            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+            let v = i64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
             self.strategy_sum[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);

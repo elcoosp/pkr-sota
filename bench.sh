@@ -29,7 +29,7 @@ for T in $THREADS_LIST; do
     PKR_PHASE_PROFILE=1 cargo run --release -p pkr-trainer -- \
         --bench-seconds "$SECONDS_PER_RUN" \
         --threads "$T" \
-        --capacity 50000000 \
+        --capacity 10000000 \
         --centroids "$BENCH_DIR_ABS/centroids.bin" \
         --preflop-table "$BENCH_DIR_ABS/preflop_abstraction.bin" \
         --flop-table "$BENCH_DIR_ABS/flop_abstraction.bin" \

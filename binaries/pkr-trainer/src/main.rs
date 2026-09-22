@@ -124,7 +124,13 @@ fn main() {
     }
 
     let abstraction = Arc::new(abstraction);
+    let t_init = Instant::now();
     let mut trainer = Trainer::with_capacity(abstraction, evaluator, cli.capacity);
+    eprintln!(
+        "init: table + abstraction ready in {:.2}s (capacity={})",
+        t_init.elapsed().as_secs_f64(),
+        cli.capacity
+    );
 
     let start_iter = if let Some(ckpt) = &cli.checkpoint {
         if ckpt.exists() {
@@ -165,7 +171,7 @@ fn main() {
     // the serial merge+flush further, at the cost of slightly staler
     // discount-schedule timing (DCFR tolerates this well). See
     // docs/status.md and the run_iterations_parallel doc comment.
-    const ITERS_PER_SYNC: u32 = 64;
+    const ITERS_PER_SYNC: u32 = 256;
 
     let mut done = start_iter;
     while done < max_iters {
@@ -175,15 +181,6 @@ fn main() {
                 break;
             }
         }
-        if trainer.is_near_capacity() {
-            eprintln!(
-                "WARN: table near capacity ({} infosets), stopping early",
-                trainer.get_table().len()
-            );
-            stopped_early = true;
-            break;
-        }
-
         let batch = ITERS_PER_SYNC.min(max_iters - done);
         trainer.run_iterations_parallel(batch as usize);
         done += batch;
@@ -200,6 +197,17 @@ fn main() {
                 done, max_iters, infosets, rate, eta_s / 3600.0
             );
             last_report_iter = done;
+            // Capacity check moved here from the per-batch path because
+            // is_near_capacity pins papaya. Once per 1000 iterations is
+            // enough to catch a table running out of room.
+            if trainer.is_near_capacity() {
+                eprintln!(
+                    "WARN: table near capacity ({} infosets), stopping early",
+                    infosets
+                );
+                stopped_early = true;
+                break;
+            }
         }
 
         if cli.checkpoint_every > 0
@@ -214,6 +222,14 @@ fn main() {
                     }
                     Err(e) => eprintln!("WARNING: checkpoint failed: {}", e),
                 }
+            }
+        }
+    }
+
+    if !stopped_early {
+        if let Some(ckpt) = &cli.checkpoint {
+            if let Err(e) = trainer.save_checkpoint(ckpt.to_str().unwrap()) {
+                eprintln!("WARNING: final checkpoint failed: {}", e);
             }
         }
     }
