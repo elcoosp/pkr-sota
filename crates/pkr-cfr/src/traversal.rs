@@ -92,15 +92,18 @@ pub fn traverse(
         }
     }
 
-    let hist_len = current.abstract_history.len().min(32);
-    let mut history_bytes = [0u8; 32];
-    history_bytes[..hist_len].copy_from_slice(&current.abstract_history[..hist_len]);
+    // Compact history signature: (actions_this_street, num_raises,
+    // last_was_bet). This collapses the infoset key space by orders of
+    // magnitude vs. hashing the raw 32-byte action sequence, while
+    // preserving the legal action space at every node.
+    let sig = current.history_signature();
+    let history_bytes = sig.to_le_bytes();
 
     let hole = &current.hole[acting_player];
     let board = &current.board;
     let street_code = current.street as u8;
     let infoset_hash =
-        abstraction.get_infoset_hash(hole, board, &history_bytes[..hist_len], street_code);
+        abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
 
     let mut strategy = [0.0f32; K];
     table.get_strategy_into(infoset_hash, &mut strategy);

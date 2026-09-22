@@ -137,6 +137,32 @@ impl GameState {
         actions
     }
 
+    /// Canonical signature of the betting history that actually matters
+    /// to CFR: how many actions this street, how many raises, and whether
+    /// the acting player is the aggressor. This replaces the raw history
+    /// bytes (which are 6^32 possibilities) with a compact ~16-bit key,
+    /// collapsing the infoset space by orders of magnitude without
+    /// changing the legal action space at any node.
+    pub fn history_signature(&self) -> u32 {
+        let mut raises: u8 = 0;
+        for i in 0..self.history_len as usize {
+            if matches!(self.history[i].kind, ActionKind::Bet(_)) {
+                raises = raises.saturating_add(1);
+            }
+        }
+        let last_was_bet = if self.history_len > 0 {
+            matches!(
+                self.history[self.history_len as usize - 1].kind,
+                ActionKind::Bet(_)
+            )
+        } else {
+            false
+        };
+        (self.actions_this_street as u32 & 0xFF)
+            | ((raises as u32 & 0xFF) << 8)
+            | ((last_was_bet as u32) << 16)
+    }
+
     /// Save current state before applying an action.
     fn push_undo(&mut self) {
         if self.undo_len as usize == self.undo_stack.len() {

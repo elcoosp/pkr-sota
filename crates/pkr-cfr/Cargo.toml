@@ -11,7 +11,6 @@ pkr-eval = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
-dashmap = { workspace = true }
 papaya = { workspace = true }
 foldhash = { workspace = true }
 wgpu = { version = "29.0.3", optional = true }

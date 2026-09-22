@@ -1,7 +1,7 @@
 use crate::dcfr::update_regret_pfr_plus;
 use crate::gpu::{BatchItem, GpuState};
-use dashmap::DashMap;
 use foldhash::fast::RandomState as FoldHasher;
+use papaya::HashMap as PapayaMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
@@ -10,17 +10,17 @@ const K: usize = 6;
 pub(crate) const SCALE: f32 = 1000.0;
 
 pub struct CompactRegretTable {
-    hash_to_idx: DashMap<u64, usize, FoldHasher>,
+    /// Lock-free concurrent hashmap. `papaya` avoids the shard-lock convoy
+    /// that made 8 threads slower than 1 on DashMap. Reads are effectively
+    /// free; writes publish via atomics inside papaya's internal structure.
+    hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
     cpu_regrets: Vec<AtomicI32>,
     cpu_momentums: Vec<AtomicI32>,
     strategy_sum: Vec<AtomicI32>,
     next_idx: AtomicUsize,
     capacity: usize,
     /// Lazily constructed. The GPU path is only used by tests; production
-    /// runs flush_cpu_batch and never touch this. Eager construction here
-    /// used to allocate ~2.4 GB of WGPU storage buffers, which fails
-    /// against Limits::downlevel_defaults() at capacity=50M and aborts
-    /// the process (panic = "abort").
+    /// runs flush_cpu_batch and never touch this.
     gpu: OnceLock<GpuState>,
 }
 
@@ -39,7 +39,7 @@ impl CompactRegretTable {
         strategy_sum.resize_with(capacity * K, || AtomicI32::new(0));
 
         Self {
-            hash_to_idx: DashMap::with_hasher(FoldHasher::default()),
+            hash_to_idx: PapayaMap::with_hasher(FoldHasher::default()),
             cpu_regrets,
             cpu_momentums,
             strategy_sum,
@@ -50,34 +50,45 @@ impl CompactRegretTable {
     }
 
     pub(crate) fn get_or_create_idx(&self, hash: u64) -> usize {
-        let entry = self.hash_to_idx.entry(hash);
-        *entry.or_insert_with(|| {
-            // CAS loop so next_idx never advances past capacity.
-            // When the table saturates, new hashes share the last slot.
-            loop {
-                let cur = self.next_idx.load(Ordering::Relaxed);
-                if cur >= self.capacity {
-                    tracing::error!(
-                        "CompactRegretTable capacity {} exceeded; clumping new infosets onto last slot",
-                        self.capacity
-                    );
-                    return self.capacity - 1;
-                }
-                match self.next_idx.compare_exchange_weak(
-                    cur,
-                    cur + 1,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => return cur,
-                    Err(_) => continue,
-                }
+        let guard = self.hash_to_idx.pin();
+        // Fast path: already present.
+        if let Some(idx) = guard.get(&hash) {
+            return *idx;
+        }
+        // Slow path: allocate a fresh index, then CAS it into the map.
+        // If another thread raced us, papaya's update keeps the first writer.
+        let fresh = loop {
+            let cur = self.next_idx.load(Ordering::Relaxed);
+            if cur >= self.capacity {
+                tracing::error!(
+                    "CompactRegretTable capacity {} exceeded; clumping new infosets onto last slot",
+                    self.capacity
+                );
+                return self.capacity - 1;
             }
-        })
+            match self.next_idx.compare_exchange_weak(
+                cur,
+                cur + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break cur,
+                Err(_) => continue,
+            }
+        };
+        // try_insert returns Err if the key already exists. In that case
+        // someone else won the race; re-lookup to get their index. The key
+        // is guaranteed present after the failed try_insert, so this always
+        // succeeds. We've wasted one index slot (harmless at capacity 50M).
+        match guard.try_insert(hash, fresh) {
+            Ok(_) => fresh,
+            Err(_) => guard.get(&hash).copied().unwrap_or(fresh),
+        }
     }
 
     pub fn get_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
-        if let Some(idx) = self.hash_to_idx.get(&infoset_hash) {
+        let guard = self.hash_to_idx.pin();
+        if let Some(idx) = guard.get(&infoset_hash) {
             let base = *idx * K;
             let mut sum = 0.0f32;
             for i in 0..K {
@@ -100,7 +111,8 @@ impl CompactRegretTable {
     }
 
     pub fn get_average_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
-        if let Some(idx) = self.hash_to_idx.get(&infoset_hash) {
+        let guard = self.hash_to_idx.pin();
+        if let Some(idx) = guard.get(&infoset_hash) {
             let base = *idx * K;
             let sum: f32 = (0..K)
                 .map(|i| self.strategy_sum[base + i].load(Ordering::Relaxed) as f32)
@@ -201,7 +213,8 @@ impl CompactRegretTable {
     }
 
     pub fn get_regret(&self, infoset_hash: u64, action_idx: usize) -> f32 {
-        self.hash_to_idx
+        let guard = self.hash_to_idx.pin();
+        guard
             .get(&infoset_hash)
             .map(|idx| {
                 self.cpu_regrets[*idx * K + action_idx].load(Ordering::Relaxed) as f32 / SCALE
@@ -210,11 +223,13 @@ impl CompactRegretTable {
     }
 
     pub fn get_keys(&self) -> Vec<u64> {
-        self.hash_to_idx.iter().map(|e| *e.key()).collect()
+        let guard = self.hash_to_idx.pin();
+        guard.iter().map(|(k, _)| *k).collect()
     }
 
     pub fn get_average_strategy_slice(&self, infoset_hash: u64) -> Option<[f32; K]> {
-        self.hash_to_idx.get(&infoset_hash).map(|idx| {
+        let guard = self.hash_to_idx.pin();
+        guard.get(&infoset_hash).map(|idx| {
             let base = *idx * K;
             let mut out = [0.0f32; K];
             for i in 0..K {
@@ -225,15 +240,18 @@ impl CompactRegretTable {
     }
 
     pub fn hash_contains(&self, infoset_hash: u64) -> bool {
-        self.hash_to_idx.contains_key(&infoset_hash)
+        let guard = self.hash_to_idx.pin();
+        guard.contains_key(&infoset_hash)
     }
 
     pub fn len(&self) -> usize {
-        self.hash_to_idx.len()
+        let guard = self.hash_to_idx.pin();
+        guard.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.hash_to_idx.is_empty()
+        let guard = self.hash_to_idx.pin();
+        guard.is_empty()
     }
 
     pub fn capacity(&self) -> usize {
@@ -253,11 +271,12 @@ impl CompactRegretTable {
         f.write_all(&(K as u32).to_le_bytes())?;
         f.write_all(&iteration.to_le_bytes())?;
         f.write_all(&(n as u64).to_le_bytes())?;
-        let map_len = self.hash_to_idx.len() as u64;
+        let guard = self.hash_to_idx.pin();
+        let map_len = guard.len() as u64;
         f.write_all(&map_len.to_le_bytes())?;
-        for e in self.hash_to_idx.iter() {
-            f.write_all(&e.key().to_le_bytes())?;
-            f.write_all(&(*e.value() as u64).to_le_bytes())?;
+        for (k, v) in guard.iter() {
+            f.write_all(&k.to_le_bytes())?;
+            f.write_all(&(*v as u64).to_le_bytes())?;
         }
         let entries = n * K;
         for i in 0..entries {
@@ -323,7 +342,8 @@ impl CompactRegretTable {
             ));
         }
         let map_len = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
-        self.hash_to_idx.clear();
+        let guard = self.hash_to_idx.pin();
+        guard.clear();
         for _ in 0..map_len {
             let key = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
             let idx = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
@@ -333,7 +353,7 @@ impl CompactRegretTable {
                     "checkpoint index out of range",
                 ));
             }
-            self.hash_to_idx.insert(key, idx);
+            guard.insert(key, idx);
         }
         let entries = n * K;
         for i in 0..entries {
