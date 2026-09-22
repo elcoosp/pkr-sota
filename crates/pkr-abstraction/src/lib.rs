@@ -3,7 +3,7 @@ pub use ehs::calculate_ehs;
 
 use memmap2::Mmap;
 use pkr_contracts::{fnv1a, AbstractionBuilder, Evaluator, FNV_OFFSET};
-use pkr_eval::lookup::{choose, combinadic_rank, combinadic_rank_4};
+use pkr_eval::lookup::{choose, combinadic_rank};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -199,13 +199,6 @@ impl KMeansAbstraction {
         let mut sorted = [board[0], board[1], board[2], board[3], board[4]];
         sorted.sort_unstable_by(|a, b| b.cmp(a));
         combinadic_rank(&sorted) as usize
-    }
-
-    fn flat_index_turn_board(board: &[u8]) -> usize {
-        debug_assert_eq!(board.len(), 4);
-        let mut sorted = [board[0], board[1], board[2], board[3]];
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
-        combinadic_rank_4(&sorted) as usize
     }
 }
 
