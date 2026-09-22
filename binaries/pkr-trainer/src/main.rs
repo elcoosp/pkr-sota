@@ -148,6 +148,7 @@ fn main() {
 
     let start = Instant::now();
     let mut last_ckpt_iter = start_iter;
+    let mut last_report_iter = start_iter;
     let mut stopped_early = false;
     let bench_deadline = if cli.bench_seconds > 0 {
         Some(Duration::from_secs(cli.bench_seconds))
@@ -160,7 +161,14 @@ fn main() {
         cli.iterations
     };
 
-    for i in start_iter..max_iters {
+    // Logical CFR iterations per rayon dispatch. Larger batches amortize
+    // the serial merge+flush further, at the cost of slightly staler
+    // discount-schedule timing (DCFR tolerates this well). See
+    // docs/status.md and the run_iterations_parallel doc comment.
+    const ITERS_PER_SYNC: u32 = 64;
+
+    let mut done = start_iter;
+    while done < max_iters {
         if let Some(d) = bench_deadline {
             if start.elapsed() >= d {
                 stopped_early = true;
@@ -168,48 +176,44 @@ fn main() {
             }
         }
         if trainer.is_near_capacity() {
-            eprintln!("WARN: table near capacity ({} infosets), stopping early", trainer.get_table().len());
+            eprintln!(
+                "WARN: table near capacity ({} infosets), stopping early",
+                trainer.get_table().len()
+            );
             stopped_early = true;
             break;
         }
-        if i % 1000 == 0 {
+
+        let batch = ITERS_PER_SYNC.min(max_iters - done);
+        trainer.run_iterations_parallel(batch as usize);
+        done += batch;
+
+        if done.saturating_sub(last_report_iter) >= 1000 || done == max_iters {
             let elapsed = start.elapsed().as_secs_f64().max(1e-6);
-            let iters_done = (i - start_iter).max(1) as f64;
+            let iters_done = done.saturating_sub(start_iter).max(1) as f64;
             let rate = iters_done / elapsed;
-            let remaining = (cli.iterations - i) as f64;
+            let remaining = (max_iters.saturating_sub(done)) as f64;
             let eta_s = remaining / rate.max(1e-6);
             let infosets = trainer.get_table().len();
             eprintln!(
                 "iter {}/{} | infosets: {} | {:.1} it/s | ETA {:.2}h",
-                i,
-                cli.iterations,
-                infosets,
-                rate,
-                eta_s / 3600.0
+                done, max_iters, infosets, rate, eta_s / 3600.0
             );
+            last_report_iter = done;
         }
+
         if cli.checkpoint_every > 0
-            && i > 0
-            && i != last_ckpt_iter
-            && (i - last_ckpt_iter) >= cli.checkpoint_every
+            && done != last_ckpt_iter
+            && (done - last_ckpt_iter) >= cli.checkpoint_every
         {
             if let Some(ckpt) = &cli.checkpoint {
                 match trainer.save_checkpoint(ckpt.to_str().unwrap()) {
                     Ok(()) => {
-                        eprintln!("Checkpoint written at iteration {}", i);
-                        last_ckpt_iter = i;
+                        eprintln!("Checkpoint written at iteration {}", done);
+                        last_ckpt_iter = done;
                     }
                     Err(e) => eprintln!("WARNING: checkpoint failed: {}", e),
                 }
-            }
-        }
-        trainer.run_iteration_parallel();
-    }
-
-    if !stopped_early {
-        if let Some(ckpt) = &cli.checkpoint {
-            if let Err(e) = trainer.save_checkpoint(ckpt.to_str().unwrap()) {
-                eprintln!("WARNING: final checkpoint failed: {}", e);
             }
         }
     }

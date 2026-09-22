@@ -41,70 +41,100 @@ impl Trainer {
         }
     }
 
-    pub fn run_iteration_parallel(&mut self) {
+    /// Runs `n` logical CFR iterations per rayon dispatch instead of one.
+    ///
+    /// Each rayon task runs its share of iterations locally (no sync
+    /// between them), accumulating into buffers allocated once for the
+    /// whole call. Merge + flush happens ONCE per dispatch instead of once
+    /// per iteration. This is the fix for the 1->N thread collapse: the old
+    /// code paid a full serial merge+flush every iteration, and that serial
+    /// cost grew *with* thread count since more threads = more items
+    /// produced per iteration. Batching amortizes it by `n`.
+    pub fn run_iterations_parallel(&mut self, n: usize) {
         use std::sync::OnceLock;
         use std::time::Instant;
         static PROFILE: OnceLock<bool> = OnceLock::new();
         let profile = *PROFILE.get_or_init(|| std::env::var("PKR_PHASE_PROFILE").is_ok());
 
-        let global_iter = self.iteration.fetch_add(1, Ordering::Relaxed) + 1;
+        let num_threads = rayon::current_num_threads().max(1);
+        // Reserve the whole iteration-number range with ONE atomic op
+        // instead of one fetch_add per traversal pair.
+        let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
+
         let table = Arc::clone(&self.table);
         let abstraction = Arc::clone(&self.abstraction);
         let evaluator = Arc::clone(&self.evaluator);
 
+        // Split n pairs as evenly as possible across threads.
+        let base = n / num_threads;
+        let rem = n % num_threads;
+
         let t0 = Instant::now();
         let thread_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>)> =
-            (0..rayon::current_num_threads())
+            (0..num_threads)
                 .into_par_iter()
-                .map(|_| {
-                    let mut batch = Vec::with_capacity(10000);
-                    let mut strategy_batch = Vec::with_capacity(10000);
+                .map(|t| {
+                    let pairs_for_this_thread: usize = base + if t < rem { 1 } else { 0 };
+                    // Size the buffer for the whole local batch, not one pair,
+                    // so we allocate ONCE per dispatch instead of once per pair.
+                    let mut batch: Vec<BatchItem> =
+                        Vec::with_capacity(pairs_for_this_thread * 20);
+                    let mut strategy_batch: Vec<StrategyOp> =
+                        Vec::with_capacity(pairs_for_this_thread * 20);
                     let mut rng = rand::rng();
-                    let mut deck: Vec<u8> = (0..52).collect();
-                    deck.shuffle(&mut rng);
-                    let hero = [deck[0], deck[1]];
-                    let villain = [deck[2], deck[3]];
 
-                    let mut state = GameState::new(200.0, 1.0, 2.0);
-                    state.set_hole_cards(hero, villain);
-                    let deck_slice = &deck[4..];
-                    let mut deck_idx = 0usize;
-                    traverse(
-                        &mut state,
-                        &table,
-                        &*abstraction,
-                        &*evaluator,
-                        &mut rng,
-                        global_iter,
-                        0,
-                        1.0,
-                        1.0,
-                        deck_slice,
-                        &mut deck_idx,
-                        0,
-                        &mut batch,
-                        &mut strategy_batch,
-                    );
+                    // Offset into the reserved iteration-number range.
+                    let thread_start = start_iter + (t * base + t.min(rem)) as u32;
 
-                    let mut state2 = GameState::new(200.0, 1.0, 2.0);
-                    state2.set_hole_cards(hero, villain);
-                    let mut deck_idx2 = 0usize;
-                    traverse(
-                        &mut state2,
-                        &table,
-                        &*abstraction,
-                        &*evaluator,
-                        &mut rng,
-                        global_iter,
-                        1,
-                        1.0,
-                        1.0,
-                        deck_slice,
-                        &mut deck_idx2,
-                        0,
-                        &mut batch,
-                        &mut strategy_batch,
-                    );
+                    for local_i in 0..pairs_for_this_thread {
+                        let global_iter = thread_start + local_i as u32;
+
+                        let mut deck: Vec<u8> = (0..52).collect();
+                        deck.shuffle(&mut rng);
+                        let hero = [deck[0], deck[1]];
+                        let villain = [deck[2], deck[3]];
+
+                        let mut state = GameState::new(200.0, 1.0, 2.0);
+                        state.set_hole_cards(hero, villain);
+                        let deck_slice = &deck[4..];
+                        let mut deck_idx = 0usize;
+                        traverse(
+                            &mut state,
+                            &table,
+                            &*abstraction,
+                            &*evaluator,
+                            &mut rng,
+                            global_iter,
+                            0,
+                            1.0,
+                            1.0,
+                            deck_slice,
+                            &mut deck_idx,
+                            0,
+                            &mut batch,
+                            &mut strategy_batch,
+                        );
+
+                        let mut state2 = GameState::new(200.0, 1.0, 2.0);
+                        state2.set_hole_cards(hero, villain);
+                        let mut deck_idx2 = 0usize;
+                        traverse(
+                            &mut state2,
+                            &table,
+                            &*abstraction,
+                            &*evaluator,
+                            &mut rng,
+                            global_iter,
+                            1,
+                            1.0,
+                            1.0,
+                            deck_slice,
+                            &mut deck_idx2,
+                            0,
+                            &mut batch,
+                            &mut strategy_batch,
+                        );
+                    }
                     (batch, strategy_batch)
                 })
                 .collect();
@@ -126,10 +156,11 @@ impl Trainer {
         table.flush_cpu_batch(&merged_batch);
         let t_flush = t2.elapsed();
 
-        if profile && global_iter % 5000 == 0 {
+        if profile {
             eprintln!(
-                "[phase] iter={} traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={}",
-                global_iter,
+                "[phase] batch_end_iter={} n={} traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={}",
+                start_iter + n as u32 - 1,
+                n,
                 t_traverse.as_secs_f64() * 1000.0,
                 t_merge.as_secs_f64() * 1000.0,
                 t_flush.as_secs_f64() * 1000.0,
@@ -137,6 +168,12 @@ impl Trainer {
                 total_strats,
             );
         }
+    }
+
+    /// Single-iteration convenience wrapper. Delegates to the batched
+    /// implementation with n=1. Kept so any external caller still works.
+    pub fn run_iteration_parallel(&mut self) {
+        self.run_iterations_parallel(1);
     }
 
     pub fn get_table(&self) -> &CompactRegretTable {
