@@ -78,6 +78,52 @@ matters:
 
 Neither is worth doing unless training time becomes the constraint.
 
+## DCFR status (measured, not assumed)
+
+The DCFR implementation was investigated with a Kuhn poker harness
+(`crates/pkr-testgames`) that runs discount × momentum combinations
+and reports exploitability at log-spaced checkpoints. Findings:
+
+1. **RatioPower discount was broken.** The old formula `(t/τ)^p`
+   multiplies each infoset's regret by an unbounded factor on every
+   update. For t=1e6 and α=1.5 that factor is ~3e4 per update; a dozen
+   updates overflow f32. The experiment shows NaN in `regrets` at
+   t≈3000 in both momentum modes. Every training run longer than ~3000
+   iterations was silently corrupting itself. Fixed: production now
+   uses `DiscountMode::CanonicalDcfr`, which is bounded in [0.5, 1)
+   and cannot overflow.
+
+2. **Canonical DCFR is effectively vanilla CFR in f32.** For t > 10^4,
+   the canonical factor `t^p/(t^p+1)` rounds to exactly 1.0 in f32.
+   So over a 10^7-iteration run, the discount only applies in the
+   1000–10000 window where its effect is below the noise floor of
+   regret-matching ratios. The docs previously claimed DCFR gave 2–10×
+   faster convergence; in this implementation it does not, because the
+   discount is below f32 precision for most of the run.
+
+3. **PCFR+ momentum has a small effect.** On Kuhn, momentum on vs off
+   differs by ~0.4% in exploitability at any given checkpoint. Neither
+   accelerates convergence meaningfully. Kept on because it is what
+   production has always used and it does not hurt.
+
+4. **The Kuhn harness itself does not converge.** Exploitability goes
+   from 0.27 at t=100 to 0.28 at t=3e6 — it does not decrease, which
+   is impossible for standard CFR on a solvable game. The value of the
+   average strategy does converge (to Nash value -1/18 within 2e-5), so
+   the regret updates are producing something with the right average
+   payoff but which is still exploitable. This is a harness bug, not a
+   solver bug — `vanilla` CFR exhibits the same behavior. Fixing it is
+   tracked as a to-do; until then, only trust the NaN and magnitude
+   diagnostics from the harness, not its exploitability numbers.
+
+   To reproduce: `cargo run --release -p pkr-testgames --bin kuhn-experiment`.
+
+5. **Consequence for the production blueprint.** The exported average
+   strategy is weighted by own reach but not by any kind of discount.
+   This is standard vanilla CFR averaging. It is not DCFR averaging.
+   In practice the difference is small (see #2), but the docs should
+   say "vanilla CFR with a warmup discount" rather than "DCFR".
+
 ## Known remaining issues (not blocking)
 
 - `crates/pkr-cfr/src/riversolve.rs` is not real CFR (regrets reset
