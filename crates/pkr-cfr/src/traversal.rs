@@ -47,8 +47,10 @@ pub fn traverse(
         // After the 4 hole cards, the runout slice must hold at least 5 community cards
         // (3 flop + 1 turn + 1 river). The trainer shuffles 52 cards and slices deck[4..].
         debug_assert!(
-            deck.len() >= *deck_idx + 5,
-            "runout deck must hold >= 5 community cards for turn + river"
+            *deck_idx <= deck.len(),
+            "runout deck exhausted: advanced to {} of {}",
+            *deck_idx,
+            deck.len(),
         );
         if *deck_idx > deck.len() {
             *deck_idx = saved_deck_idx;

@@ -225,6 +225,7 @@ impl AbstractionBuilder for KMeansAbstraction {
             .unwrap_or(&self.default_centroids);
 
         let ehs_fallback = || {
+            warn_mc_fallback_once();
             let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
             nearest_centroid(ehs, ehs_sq, centroids)
         };
@@ -297,6 +298,19 @@ impl AbstractionBuilder for KMeansAbstraction {
         fnv1a(&mut h, &[flop_bucket]);
         h
     }
+}
+
+fn warn_mc_fallback_once() {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        eprintln!(
+            "WARNING: abstraction fell back to Monte-Carlo EHS. This is \
+             ~100x slower per infoset than the precomputed table path. \
+             Likely cause: --preflop-table / --flop-table / --flop-buckets \
+             not loaded, or an index fell outside the table's range."
+        );
+    });
 }
 
 fn nearest_centroid(ehs: f32, ehs_sq: f32, centroids: &[(f32, f32)]) -> u64 {

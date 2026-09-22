@@ -11,7 +11,8 @@ use crate::table::{CompactRegretTable, StrategyOp};
 use crate::traversal::traverse;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::GameState;
-use rand::seq::SliceRandom;
+use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -57,47 +58,59 @@ impl Trainer {
         let profile = *PROFILE.get_or_init(|| std::env::var("PKR_PHASE_PROFILE").is_ok());
 
         let num_threads = rayon::current_num_threads().max(1);
-        // Reserve the whole iteration-number range with ONE atomic op
-        // instead of one fetch_add per traversal pair.
+        // Reserve the whole iteration range with ONE atomic op.
         let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
 
         let table = Arc::clone(&self.table);
         let abstraction = Arc::clone(&self.abstraction);
         let evaluator = Arc::clone(&self.evaluator);
 
-        // Split n pairs as evenly as possible across threads.
-        let base = n / num_threads;
-        let rem = n % num_threads;
+        // Dynamic chunking: many small chunks, rayon work-steals them
+        // across threads. Absorbs per-chunk cost variance (cv ~0.55) and
+        // the P-core vs E-core speed gap on M-series.
+        const CHUNK_ITERS: usize = 16;
+        let n_chunks = (n + CHUNK_ITERS - 1) / CHUNK_ITERS;
 
         let t_wall = Instant::now();
         let t0 = Instant::now();
         let thread_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>)> =
-            (0..num_threads)
+            (0..n_chunks)
                 .into_par_iter()
-                .map(|t| {
-                    let pairs_for_this_thread: usize = base + if t < rem { 1 } else { 0 };
-                    // Size the buffer for the whole local batch, not one pair,
-                    // so we allocate ONCE per dispatch instead of once per pair.
+                .map(|chunk_idx| {
+                    let start = chunk_idx * CHUNK_ITERS;
+                    let end = ((chunk_idx + 1) * CHUNK_ITERS).min(n);
+                    let pairs = end - start;
                     let mut batch: Vec<BatchItem> =
-                        Vec::with_capacity(pairs_for_this_thread * 20);
+                        Vec::with_capacity(pairs * 20);
                     let mut strategy_batch: Vec<StrategyOp> =
-                        Vec::with_capacity(pairs_for_this_thread * 20);
-                    let mut rng = rand::rng();
+                        Vec::with_capacity(pairs * 20);
 
-                    // Offset into the reserved iteration-number range.
-                    let thread_start = start_iter + (t * base + t.min(rem)) as u32;
+                    // SmallRng is Xoshiro128++ on 64-bit targets. Seeded
+                    // once per chunk from the OS RNG. Much cheaper per call
+                    // than ChaCha12 (which ThreadRng uses).
+                    let mut rng = SmallRng::seed_from_u64(rand::random::<u64>());
+                    // Stack deck: 52 cards reused across iterations via
+                    // copy. No per-iteration heap allocation.
+                    let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
 
-                    for local_i in 0..pairs_for_this_thread {
-                        let global_iter = thread_start + local_i as u32;
+                    let base_iter = start_iter + start as u32;
+                    for local_i in 0..pairs {
+                        let global_iter = base_iter + local_i as u32;
 
-                        let mut deck: Vec<u8> = (0..52).collect();
-                        deck.shuffle(&mut rng);
+                        // Partial Fisher-Yates: we only need the first 9
+                        // cards (4 hole + 5 board). Shuffling 9 positions
+                        // is ~5x cheaper than shuffling all 52.
+                        let mut deck = initial_deck;
+                        for i in 0..9usize {
+                            let j = i + rng.random_range(0..(52 - i));
+                            deck.swap(i, j);
+                        }
                         let hero = [deck[0], deck[1]];
                         let villain = [deck[2], deck[3]];
+                        let deck_slice = &deck[4..9];
 
                         let mut state = GameState::new(200.0, 1.0, 2.0);
                         state.set_hole_cards(hero, villain);
-                        let deck_slice = &deck[4..];
                         let mut deck_idx = 0usize;
                         traverse(
                             &mut state,
@@ -153,16 +166,17 @@ impl Trainer {
         let t_merge = t1.elapsed();
 
         let t2 = Instant::now();
-        table.apply_strategy_batch(&merged_strategy);
-        table.flush_cpu_batch(&merged_batch);
+        table.apply_strategy_batch(&mut merged_strategy);
+        table.flush_cpu_batch(&mut merged_batch);
         let t_flush = t2.elapsed();
 
         if profile {
             let wall_ms = t_wall.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
-                "[phase] batch_end_iter={} n={} wall={:.2}ms traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={}",
+                "[phase] batch_end_iter={} n={} chunks={} wall={:.2}ms traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={}",
                 start_iter + n as u32 - 1,
                 n,
+                n_chunks,
                 wall_ms,
                 t_traverse.as_secs_f64() * 1000.0,
                 t_merge.as_secs_f64() * 1000.0,
@@ -174,7 +188,7 @@ impl Trainer {
     }
 
     /// Single-iteration convenience wrapper. Delegates to the batched
-    /// implementation with n=1. Kept so any external caller still works.
+    /// implementation with n=1.
     pub fn run_iteration_parallel(&mut self) {
         self.run_iterations_parallel(1);
     }
