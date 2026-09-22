@@ -6,14 +6,23 @@ use papaya::HashMap as PapayaMap;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
+/// Regret + momentum interleaved: [r0 m0 r1 m1 r2 m2 r3 m3 r4 m4 r5 m5]
+/// Written only by the coordinator (flush_cpu_batch), so no false sharing.
 const RM_FIELDS: usize = 2;
 const RM_STRIDE: usize = K * RM_FIELDS;
 const RM_REGRET: usize = 0;
 const RM_MOMENTUM: usize = 1;
+
+/// Strategy sums live in a separate array indexed [s0..s5].
+/// Stored as f64 bits in AtomicU64 — see `add_sum` for why fixed-point was
+/// wrong here: reach_prob decays multiplicatively through the tree, and at
+/// depth ~5 it drops below 1e-3. A fixed-point i64 with SCALE=1000 truncates
+/// those contributions to zero, silently leaving 68% of deep infosets with
+/// uniform strategies in the exported blueprint. f64 has no such floor.
 const SUM_STRIDE: usize = K;
 
 pub(crate) const SCALE: f32 = 1000.0;
@@ -38,12 +47,22 @@ pub struct TableSnapshot {
 #[derive(Debug, Clone)]
 pub struct StrategyAnalysis {
     pub total: usize,
+    /// Strategy sum total == 0.0 (never visited or truncated to zero).
     pub empty: usize,
+    /// One action has p >= 0.99.
     pub pure: usize,
+    /// At least two actions have p >= 0.10.
     pub mixed: usize,
+    /// Shannon entropy in bits, mean over visited infosets.
     pub mean_entropy: f64,
+    /// Entropy histogram in 8 buckets of 0.25 bits, up to 2.0+.
     pub entropy_histogram: [usize; 8],
+    /// For each action, how many infosets have it as the argmax.
     pub dominant_counts: [usize; K],
+    /// Count of (idx, action) cells whose strategy_sum is > 0. Under the
+    /// old fixed-point accumulator this was tiny; with f64 it should be
+    /// close to `visited * K`.
+    pub nonzero_strategy_sum_cells: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -86,16 +105,19 @@ fn warn_nonfinite_regret_once(iteration: u32) {
     WARNED.get_or_init(|| {
         eprintln!(
             "WARNING: regret became non-finite at iteration {}. \
-             Training is corrupt from this point."
-            , iteration
+             Training is corrupt from this point.",
+            iteration
         );
     });
 }
 
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
+    /// Interleaved regret+momentum, i32 fixed-point at scale 1000.
     data: Vec<AtomicI32>,
-    strategy_sum: Vec<AtomicI64>,
+    /// f64 strategy sums stored as u64 bits. Independent array to avoid
+    /// false sharing with the interleaved regret/momentum data.
+    strategy_sum: Vec<AtomicU64>,
     next_idx: AtomicUsize,
     capacity: usize,
     gpu: OnceLock<GpuState>,
@@ -109,8 +131,8 @@ impl CompactRegretTable {
     pub fn with_capacity(capacity: usize) -> Self {
         let mut data: Vec<AtomicI32> = Vec::with_capacity(capacity * RM_STRIDE);
         data.resize_with(capacity * RM_STRIDE, || AtomicI32::new(0));
-        let mut strategy_sum: Vec<AtomicI64> = Vec::with_capacity(capacity * SUM_STRIDE);
-        strategy_sum.resize_with(capacity * SUM_STRIDE, || AtomicI64::new(0));
+        let mut strategy_sum: Vec<AtomicU64> = Vec::with_capacity(capacity * SUM_STRIDE);
+        strategy_sum.resize_with(capacity * SUM_STRIDE, || AtomicU64::new(0));
         let map = PapayaMap::with_hasher(FoldHasher::default());
         map.pin().reserve(4_000_000.min(capacity));
         Self {
@@ -144,8 +166,31 @@ impl CompactRegretTable {
     }
 
     #[inline(always)]
-    fn load_sum(&self, idx: usize, action: usize) -> i64 {
-        self.strategy_sum[Self::off_sum(idx, action)].load(Ordering::Relaxed)
+    fn load_sum(&self, idx: usize, action: usize) -> f64 {
+        f64::from_bits(self.strategy_sum[Self::off_sum(idx, action)].load(Ordering::Relaxed))
+    }
+
+    /// CAS-loop add. In `apply_strategy_batch` each (idx, action) appears
+    /// in exactly one parallel group, so the CAS succeeds first try. The
+    /// loop exists for `add_strategy_sum_at`, which may be called
+    /// concurrently from multiple threads on the same cell.
+    #[inline(always)]
+    fn add_sum(&self, idx: usize, action: usize, delta: f64) {
+        let cell = &self.strategy_sum[Self::off_sum(idx, action)];
+        let mut cur_bits = cell.load(Ordering::Relaxed);
+        loop {
+            let cur = f64::from_bits(cur_bits);
+            let new_bits = (cur + delta).to_bits();
+            match cell.compare_exchange_weak(
+                cur_bits,
+                new_bits,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => cur_bits = actual,
+            }
+        }
     }
 
     #[inline]
@@ -277,14 +322,14 @@ impl CompactRegretTable {
         let guard = self.hash_to_idx.pin();
         if let Some(idx) = guard.get(&infoset_hash) {
             let idx = *idx;
-            let mut sum = 0.0f32;
+            let mut sum = 0.0f64;
             for i in 0..K {
-                sum += self.load_sum(idx, i) as f32;
+                sum += self.load_sum(idx, i);
             }
             if sum > 0.0 {
                 let inv = 1.0 / sum;
                 for i in 0..K {
-                    out[i] = (self.load_sum(idx, i) as f32) * inv;
+                    out[i] = (self.load_sum(idx, i) * inv) as f32;
                 }
                 return;
             }
@@ -299,12 +344,15 @@ impl CompactRegretTable {
 
     #[inline(always)]
     pub fn add_strategy_sum_at(&self, idx: usize, action_idx: usize, prob: f32) {
-        let off = Self::off_sum(idx, action_idx);
-        self.strategy_sum[off].fetch_add((prob * SCALE) as i64, Ordering::Relaxed);
+        self.add_sum(idx, action_idx, prob as f64);
     }
 
     /// Apply a batch of deferred strategy updates. Returns the number of
     /// distinct (idx, action) pairs that were actually written.
+    ///
+    /// Sort-dedup: par_sort by (idx, action), walk contiguous groups,
+    /// parallel-write each group. After dedup every key is unique, so no
+    /// two parallel groups touch the same atomic cell.
     pub fn apply_strategy_batch(&self, ops: &mut Vec<StrategyOp>) -> u64 {
         ops.retain(|op| op.prob != 0.0);
         if ops.is_empty() {
@@ -330,19 +378,18 @@ impl CompactRegretTable {
         let chunk_size = (groups.len() / n_threads).max(1);
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u8) in grp_slice {
-                let mut prob = 0.0f32;
+                let mut prob = 0.0f64;
                 for k in start..end {
-                    prob += ops_ref[k].prob;
+                    prob += ops_ref[k].prob as f64;
                 }
-                let off = Self::off_sum(idx_u32 as usize, act_u8 as usize);
-                self.strategy_sum[off].fetch_add((prob * SCALE) as i64, Ordering::Relaxed);
+                self.add_sum(idx_u32 as usize, act_u8 as usize, prob);
             }
         });
         applied
     }
 
     /// Apply a batch of deferred regret updates. Returns (input_len,
-    /// unique_count) so callers can compute dedup ratio.
+    /// unique_count).
     pub fn flush_cpu_batch(&self, batch: &mut Vec<BatchItem>) -> (u64, u64) {
         let input_len = batch.len() as u64;
         if batch.is_empty() {
@@ -440,7 +487,7 @@ impl CompactRegretTable {
             let idx = *idx;
             let mut out = [0.0f32; K];
             for i in 0..K {
-                out[i] = self.load_sum(idx, i) as f32 / SCALE;
+                out[i] = self.load_sum(idx, i) as f32;
             }
             out
         })
@@ -467,7 +514,7 @@ impl CompactRegretTable {
         }
         let entries_sum = n * SUM_STRIDE;
         for i in 0..entries_sum {
-            strat_mass += self.strategy_sum[i].load(Ordering::Relaxed) as f64;
+            strat_mass += f64::from_bits(self.strategy_sum[i].load(Ordering::Relaxed));
         }
         let guard = self.hash_to_idx.pin();
         let infosets = guard.len();
@@ -496,16 +543,20 @@ impl CompactRegretTable {
             mean_entropy: 0.0,
             entropy_histogram: [0usize; 8],
             dominant_counts: [0usize; K],
+            nonzero_strategy_sum_cells: 0,
         };
         let mut entropy_sum = 0.0f64;
         let mut visited = 0usize;
 
         for (_, &idx) in guard.iter() {
             analysis.total += 1;
-            let mut s = [0.0f32; K];
-            let mut sum = 0.0f32;
+            let mut s = [0.0f64; K];
+            let mut sum = 0.0f64;
             for a in 0..K {
-                s[a] = self.load_sum(idx, a) as f32;
+                s[a] = self.load_sum(idx, a);
+                if s[a] > 0.0 {
+                    analysis.nonzero_strategy_sum_cells += 1;
+                }
                 sum += s[a];
             }
             if sum <= 0.0 {
@@ -518,7 +569,7 @@ impl CompactRegretTable {
             }
 
             let mut best_a = 0usize;
-            let mut best_p = 0.0f32;
+            let mut best_p = 0.0f64;
             for a in 0..K {
                 if s[a] > best_p {
                     best_p = s[a];
@@ -542,7 +593,7 @@ impl CompactRegretTable {
 
             let mut h = 0.0f64;
             for a in 0..K {
-                let p = s[a] as f64;
+                let p = s[a];
                 if p > 0.0 {
                     h -= p * p.log2();
                 }
@@ -574,14 +625,14 @@ impl CompactRegretTable {
                 break;
             }
             let mut strategy = [0.0f32; K];
-            let mut sum = 0.0f32;
+            let mut sum = 0.0f64;
             for a in 0..K {
-                strategy[a] = self.load_sum(idx, a) as f32;
-                sum += strategy[a];
+                sum += self.load_sum(idx, a);
             }
             if sum > 0.0 {
+                let inv = 1.0 / sum;
                 for a in 0..K {
-                    strategy[a] /= sum;
+                    strategy[a] = (self.load_sum(idx, a) * inv) as f32;
                 }
             } else {
                 strategy = [1.0 / K as f32; K];
@@ -623,8 +674,8 @@ impl CompactRegretTable {
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
-        w.write_all(b"PKRCKPT3")?;
-        w.write_all(&3u32.to_le_bytes())?;
+        w.write_all(b"PKRCKPT4")?;
+        w.write_all(&4u32.to_le_bytes())?;
         w.write_all(&(K as u32).to_le_bytes())?;
         w.write_all(&iteration.to_le_bytes())?;
         w.write_all(&(n as u64).to_le_bytes())?;
@@ -665,14 +716,14 @@ impl CompactRegretTable {
             Ok(s)
         };
         let magic = read(&mut p, 8)?;
-        if magic != b"PKRCKPT3" {
+        if magic != b"PKRCKPT4" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "bad checkpoint magic (expected v3 format)",
+                "bad checkpoint magic (expected v4 format)",
             ));
         }
         let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        if version != 3 {
+        if version != 4 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported checkpoint version",
@@ -714,7 +765,7 @@ impl CompactRegretTable {
         }
         let sum_entries = n * SUM_STRIDE;
         for i in 0..sum_entries {
-            let v = i64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
+            let v = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
             self.strategy_sum[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);
@@ -735,39 +786,20 @@ mod tests {
         let i2 = table.get_or_create_idx(0xDEAD_0002);
 
         let mut batch = vec![
-            BatchItem {
-                index: i1 as u32,
-                action: 0,
-                iteration: 1,
-                delta: 1.5,
-            },
-            BatchItem {
-                index: i1 as u32,
-                action: 0,
-                iteration: 1,
-                delta: 0.5,
-            },
-            BatchItem {
-                index: i2 as u32,
-                action: 3,
-                iteration: 1,
-                delta: -0.25,
-            },
+            BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 1.5 },
+            BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 0.5 },
+            BatchItem { index: i2 as u32, action: 3, iteration: 1, delta: -0.25 },
         ];
         table.flush_gpu_batch(&batch);
 
         let expected_regret = 2.0 / std::f32::consts::SQRT_2;
         let actual_regret = table.get_regret(0xDEAD_0001, 0);
-        assert!(
-            (actual_regret - expected_regret).abs() < 0.01,
-            "expected ~{expected_regret}, got {actual_regret}"
-        );
+        assert!((actual_regret - expected_regret).abs() < 0.01);
         assert!(table.get_regret(0xDEAD_0002, 3) <= 0.01);
         assert_eq!(table.get_regret(0xDEAD_0002, 0), 0.0);
 
         table.flush_gpu_batch(&batch);
         assert!((table.get_regret(0xDEAD_0001, 0) - expected_regret).abs() < 0.01);
-
         batch.clear();
         table.flush_gpu_batch(&batch);
     }
@@ -792,15 +824,47 @@ mod tests {
         let gamma = 1.0 / std::f32::consts::SQRT_2;
         let expected_i1 = gamma * 0.8;
         let expected_i2 = gamma * 0.7;
-        assert!(
-            (table.get_regret(0xBEEF_0001, 0) - expected_i1).abs() < 0.01,
-            "i1: expected ~{expected_i1}, got {}",
-            table.get_regret(0xBEEF_0001, 0)
-        );
-        assert!(
-            (table.get_regret(0xBEEF_0002, 2) - expected_i2).abs() < 0.01,
-            "i2: expected ~{expected_i2}, got {}",
-            table.get_regret(0xBEEF_0002, 2)
-        );
+        assert!((table.get_regret(0xBEEF_0001, 0) - expected_i1).abs() < 0.01);
+        assert!((table.get_regret(0xBEEF_0002, 2) - expected_i2).abs() < 0.01);
+    }
+
+    /// Regression for the fixed-point truncation bug: an infoset whose
+    /// reach_prob is tiny (deep in the tree) must still accumulate a
+    /// non-zero strategy_sum. The old i64 fixed-point accumulator rounded
+    /// these contributions to zero, leaving 68% of deep infosets uniform.
+    #[test]
+    fn deep_reach_prob_contributes_to_strategy_sum() {
+        let table = CompactRegretTable::with_capacity(64);
+        let deep_hash = 0xDEAD_BEEF_CAFE_1234;
+        let idx = table.get_or_create_idx(deep_hash);
+
+        // Simulate a depth-12 infoset: reach_prob = 0.3^12 ≈ 5.3e-7.
+        let tiny = (0.3f32).powi(12);
+        assert!(tiny < 1.0e-3, "test setup: tiny must be below fixed-point SCALE");
+
+        let mut ops = vec![];
+        for a in 0..K {
+            ops.push(StrategyOp {
+                index: idx as u32,
+                action: a as u8,
+                prob: tiny * 0.5,
+            });
+        }
+        table.apply_strategy_batch(&mut ops);
+
+        let mut avg = [0.0f32; K];
+        table.get_average_strategy_into(deep_hash, &mut avg);
+        // With f64 accumulation, the tiny contribution is preserved and
+        // the average normalizes to 1/K across the 6 actions.
+        let expected = 1.0 / K as f32;
+        for a in 0..K {
+            assert!(
+                (avg[a] - expected).abs() < 1e-5,
+                "action {}: expected {}, got {}",
+                a,
+                expected,
+                avg[a]
+            );
+        }
     }
 }
