@@ -19,7 +19,7 @@ const K: usize = 6;
 // bound memory. Actual working set per thread is much smaller in
 // practice, so overflow is rare.
 const IDX_CACHE_INIT: usize = 1 << 18; // 256K entries
-const IDX_CACHE_MAX: usize = 1 << 22;  // 4M entries before clearing
+const IDX_CACHE_MAX: usize = 1 << 20;  // 1M entries before clearing
 
 thread_local! {
     static IDX_CACHE: RefCell<HashMap<u64, usize, FoldHasher>> =
@@ -250,6 +250,10 @@ impl CompactRegretTable {
 
     /// Parallel CPU flush: per-chunk dedup, then parallel atomic updates.
     ///
+    /// NOTE: kept for reference. Nested rayon work inside the outer
+    /// iteration was measured to be a net slowdown at all thread counts,
+    /// so the production path uses `flush_cpu_batch` instead.
+    #[allow(dead_code)]
     /// Splits `batch` into `num_threads` contiguous chunks. Each chunk is
     /// deduped independently and the resulting (idx, action) -> delta
     /// entries are applied in parallel. Cross-chunk collisions are

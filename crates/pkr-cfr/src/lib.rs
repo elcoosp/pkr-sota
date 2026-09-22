@@ -42,8 +42,10 @@ impl Trainer {
     }
 
     pub fn run_iteration_parallel(&mut self) {
+        use std::sync::OnceLock;
         use std::time::Instant;
-        let profile = std::env::var("PKR_PHASE_PROFILE").is_ok();
+        static PROFILE: OnceLock<bool> = OnceLock::new();
+        let profile = *PROFILE.get_or_init(|| std::env::var("PKR_PHASE_PROFILE").is_ok());
 
         let global_iter = self.iteration.fetch_add(1, Ordering::Relaxed) + 1;
         let table = Arc::clone(&self.table);
@@ -113,7 +115,7 @@ impl Trainer {
         let t_merge = t1.elapsed();
 
         let t2 = Instant::now();
-        table.flush_cpu_batch_parallel(&merged_batch);
+        table.flush_cpu_batch(&merged_batch);
         let t_flush = t2.elapsed();
 
         if profile && global_iter % 5000 == 0 {

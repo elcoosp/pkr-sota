@@ -38,7 +38,7 @@ for T in $THREADS_LIST; do
         --river-table "$BENCH_DIR_ABS/river_buckets.bin" \
         --rank-table "$BENCH_DIR_ABS/hand_ranks.bin" \
         --output "$BENCH_DIR_ABS/bench_blueprint.bin" 2>&1 \
-        | grep -E "(Running with|BENCH|iter .*infosets)"
+        | grep -E "(Running with|BENCH|iter .*infosets|\[phase\])"
     echo ""
     set -e
 done
