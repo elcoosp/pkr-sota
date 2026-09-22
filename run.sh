@@ -61,6 +61,8 @@ cargo run --release -p pkr-trainer -- \
     --rank-table "$OUT/hand_ranks.bin" \
     --checkpoint "$OUT/train.ckpt" --checkpoint-every "$CHECKPOINT_EVERY" \
     --report-every 10000 \
+    --eval-every ${EVAL_EVERY:-500000} \
+    --eval-deals ${EVAL_DEALS:-20000} \
     --output "$OUT/blueprint.bin" \
     --metrics-csv "$OUT/metrics.csv" --stats-json "$OUT/stats.json"
 
