@@ -174,7 +174,7 @@ mod tests {
         let f2 = discount_factor(2000.0, ALPHA);
         let f3 = discount_factor(5000.0, ALPHA);
 
-        assert!(f1 >= 0.5 && f1 < 1.0, "f1 out of range: {f1}");
+        assert!((0.5..1.0).contains(&f1), "f1 out of range: {f1}");
         assert!(f1 <= f2 && f2 <= f3, "not monotonic: {f1} {f2} {f3}");
         assert!(f3 < 1.0, "must stay < 1: {f3}");
     }

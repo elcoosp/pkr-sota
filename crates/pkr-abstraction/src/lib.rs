@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+
 pub mod ehs;
 pub use ehs::calculate_ehs;
 

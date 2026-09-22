@@ -126,6 +126,12 @@ pub struct CompactRegretTable {
     gpu: OnceLock<GpuState>,
 }
 
+impl Default for CompactRegretTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CompactRegretTable {
     pub fn new() -> Self {
         Self::with_capacity(5_000_000)

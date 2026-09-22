@@ -63,7 +63,8 @@ pub struct GameState {
 
 impl GameState {
     pub fn new(start_stack: f32, sb: f32, bb: f32) -> Self {
-        let state = Self {
+        
+        Self {
             hole: [[0; 2]; 2],
             board: [0u8; 5],
             board_len: 0,
@@ -88,8 +89,7 @@ impl GameState {
                 board_len: 0, folded: [false; 2],
             }; 32],
             undo_len: 0,
-        };
-        state
+        }
     }
 
     pub fn set_hole_cards(&mut self, hero: [u8; 2], villain: [u8; 2]) {

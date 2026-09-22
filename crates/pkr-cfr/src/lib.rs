@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+
 pub mod dcfr;
 pub mod gpu;
 pub mod metrics;
@@ -63,7 +65,7 @@ impl Trainer {
         let evaluator = Arc::clone(&self.evaluator);
 
         const CHUNK_ITERS: usize = 16;
-        let n_chunks = (n + CHUNK_ITERS - 1) / CHUNK_ITERS;
+        let n_chunks = n.div_ceil(CHUNK_ITERS);
 
         let t_wall = Instant::now();
         let t0 = Instant::now();

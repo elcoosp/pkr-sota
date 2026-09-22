@@ -91,7 +91,7 @@ impl RiverResolver {
     /// current actor as action probabilities (indexed by abstract action).
     pub fn solve(&self) -> [f32; K] {
         let mut regrets = vec![0.0f32; K];
-        let mut strategy_sum = vec![0.0f32; K];
+        let mut strategy_sum = [0.0f32; K];
 
         for iteration in 0..MAX_RIVER_ITERATIONS {
             let strat = self.compute_strategy(&regrets);
@@ -274,7 +274,7 @@ mod tests {
         let range = RiverRange { mask: 0xFFFFFFFFFFFF }; // 48 cards available
         let combos = range.enumerate_combos(100);
         assert!(combos.len() <= 100);
-        assert!(combos.len() >= 1);
+        assert!(!combos.is_empty());
         // All combos should have 2 distinct cards
         for combo in &combos {
             assert_ne!(combo[0], combo[1]);

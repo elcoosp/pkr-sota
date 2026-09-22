@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+
 use clap::Parser;
 use pkr_abstraction::{load_centroids, KMeansAbstraction};
 use pkr_cfr::Trainer;
@@ -350,9 +352,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let samples = trainer.get_table().sample_infosets(200);
         let cumulative = pkr_cfr::metrics::global().snapshot();
 
-        let depth_hist: Vec<u64> = cumulative.depth_hist.iter().copied().collect();
-        let entropy_hist: Vec<usize> = analysis.entropy_histogram.iter().copied().collect();
-        let dominant: Vec<usize> = analysis.dominant_counts.iter().copied().collect();
+        let depth_hist: Vec<u64> = cumulative.depth_hist.to_vec();
+        let entropy_hist: Vec<usize> = analysis.entropy_histogram.to_vec();
+        let dominant: Vec<usize> = analysis.dominant_counts.to_vec();
 
         let stats = serde_json::json!({
             "config": {
@@ -410,8 +412,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "uniform_fallback": analysis.uniform_fallback,
             },
             "sample_infosets": samples.iter().map(|d| {
-                let strategy: Vec<f32> = d.strategy.iter().copied().collect();
-                let regrets: Vec<f32> = d.regrets.iter().copied().collect();
+                let strategy: Vec<f32> = d.strategy.to_vec();
+                let regrets: Vec<f32> = d.regrets.to_vec();
                 serde_json::json!({
                     "hash": format!("0x{:016x}", d.hash),
                     "strategy": strategy,

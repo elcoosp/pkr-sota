@@ -1,4 +1,6 @@
 #![allow(clippy::manual_hash_one)]
+#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+
 pub mod fmph;
 pub mod header;
 pub mod translate;
@@ -8,7 +10,6 @@ pub mod writer;
 #[cfg(test)]
 mod header_tests {
     use crate::header::*;
-    use bytemuck;
 
     #[test]
     fn test_file_header_size() { assert_eq!(std::mem::size_of::<FileHeader>(), 32); }

@@ -45,7 +45,7 @@ mod tests {
         assert_sum_to_255((l, u));
         let denom = (0.50 - 0.42) * 0.6 + (0.42 - 0.33) * 0.4;
         let p_lower = 1.0 - (0.09 * 0.4) / denom;
-        let expected_lower_q = (p_lower as f64 * 255.0).round() as u8;
+        let expected_lower_q = (p_lower * 255.0_f64).round() as u8;
         let diff = (l as i16 - expected_lower_q as i16).abs();
         assert!(diff <= 1, "expected lower ~{expected_lower_q}, got {l}");
         assert!(l > 128);
@@ -206,7 +206,7 @@ mod tests {
         let (l, u) = compute_translation(0.2, 0.8, 0.5, 0.4, 0.4);
         assert_sum_to_255((l, u));
         let expected = (0.8 - 0.5) / (0.8 - 0.2);
-        let expected_q = (expected as f64 * 255.0).round() as u8;
+        let expected_q = (expected * 255.0_f64).round() as u8;
         let diff = (l as i16 - expected_q as i16).abs();
         assert!(diff <= 1, "expected close to {expected_q}, got {l}");
     }

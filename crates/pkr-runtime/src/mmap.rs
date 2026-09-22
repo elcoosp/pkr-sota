@@ -136,9 +136,7 @@ mod tests {
         for _ in 0..infoset_count {
             buf.write_all(&[0u8; 8]).unwrap();
         }
-        for _ in 0..cdf_len {
-            buf.push(0u8);
-        }
+        buf.extend(std::iter::repeat_n(0u8, cdf_len));
         buf
     }
 
@@ -156,7 +154,7 @@ mod tests {
     #[test]
     fn test_file_too_small() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), &[0u8; 10]).unwrap();
+        std::fs::write(tmp.path(), [0u8; 10]).unwrap();
         assert!(MmapReader::new(tmp.path()).is_err());
     }
 

@@ -4,6 +4,8 @@
 //!
 //! Run: cargo run --release -p pkr-testgames --bin kuhn-experiment
 
+#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+
 use pkr_cfr::dcfr::{DiscountMode, MomentumMode};
 use pkr_testgames::kuhn::KuhnCfr;
 
@@ -124,7 +126,7 @@ fn main() {
             continue;
         }
         let e = cfr.exploitability();
-        if e.is_finite() && best.map_or(true, |(_, b)| e < b) {
+        if e.is_finite() && best.is_none_or(|(_, b)| e < b) {
             best = Some((name, e));
         }
     }

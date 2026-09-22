@@ -18,8 +18,6 @@ bytemuck = { workspace = true }
 pollster = "0.3"
 
 [features]
+# GPU path is opt-in. Production uses flush_cpu_batch.
 default = []
-gpu = ["wgpu"]
-
-["gpu"]
 gpu = ["wgpu"]

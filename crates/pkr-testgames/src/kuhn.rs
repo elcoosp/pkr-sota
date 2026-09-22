@@ -292,7 +292,7 @@ impl KuhnCfr {
                 // P0 checks branch:
                 let v_if_p0_check = match a1_dp0 {
                     0 => showdown([c0, c1], 1.0),
-                    1 => s0_dp1[0] * -1.0 + s0_dp1[1] * showdown([c0, c1], 2.0),
+                    1 => -s0_dp1[0] + s0_dp1[1] * showdown([c0, c1], 2.0),
                     _ => unreachable!(),
                 };
                 // P0 bets branch:
@@ -365,7 +365,7 @@ impl KuhnCfr {
                 (0, 0) => showdown(cards, 1.0),
                 (0, 1) => {
                     let s = self.average_strategy_at(infoset_index(0, cards[0], 1));
-                    s[0] * -1.0 + s[1] * showdown(cards, 2.0)
+                    -s[0] + s[1] * showdown(cards, 2.0)
                 }
                 (1, 0) => 1.0,
                 (1, 1) => showdown(cards, 2.0),

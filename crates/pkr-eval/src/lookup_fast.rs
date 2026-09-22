@@ -139,18 +139,9 @@ impl Evaluator for TableEvaluator {
 
         // Filter out sentinel values (≥52) AND duplicate cards
         for &c in hole.iter().chain(board) {
-            if c < 52 {
-                let mut is_dup = false;
-                for i in 0..total {
-                    if cards[i] == c {
-                        is_dup = true;
-                        break;
-                    }
-                }
-                if !is_dup {
-                    cards[total] = c;
-                    total += 1;
-                }
+            if c < 52 && !cards[..total].contains(&c) {
+                cards[total] = c;
+                total += 1;
             }
         }
 

@@ -305,7 +305,7 @@ mod tests {
 
         let features = [0.5f32, 0.25, 0.5, 0.25];
         let output = net.forward(&features);
-        assert!(output >= 0.0 && output <= 1.0);
+        assert!((0.0..=1.0).contains(&output));
     }
 
     #[test]

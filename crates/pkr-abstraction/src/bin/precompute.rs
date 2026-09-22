@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+
 use pkr_abstraction::{calculate_ehs, load_centroids, save_centroids, CentroidStore};
 use pkr_contracts::Evaluator;
 use pkr_eval::lookup::choose;
@@ -491,49 +493,6 @@ fn generate_all7_scores(rank_table_path: &str, output: &str) -> Result<(), Box<d
     Ok(())
 }
 
-#[cfg(test)]
-mod generator_tests {
-    use super::*;
-
-    /// The turn table must be exactly choose(52,6) * 15 bytes, indexed by
-    /// the same layout flat_index_turn uses. Any change here breaks
-    /// pkr-abstraction's runtime fall-through and must be a coordinated bump.
-    #[test]
-    fn turn_table_expected_size() {
-        let n = choose(52, 6) as usize;
-        assert_eq!(n, 20_358_520);
-        assert_eq!(n * 15, 305_377_800);
-    }
-
-    /// The river board bucket table must be exactly choose(52,5) bytes.
-    #[test]
-    fn river_table_expected_size() {
-        let n = choose(52, 5) as usize;
-        assert_eq!(n, 2_598_960);
-    }
-
-    /// combinadic_unrank_6 must round-trip the boundary indices that
-    /// flat_index_turn relies on. Indices 0 and C(52,6)-1 are the extremes.
-    #[test]
-    fn combinadic_unrank_6_boundaries() {
-        let first = combinadic_unrank_6(0);
-        let last = combinadic_unrank_6((choose(52, 6) - 1) as u32);
-        // Ascending sort by descending card id: first combo is (5,4,3,2,1,0),
-        // last combo is (51,50,49,48,47,46).
-        assert_eq!(first, [5, 4, 3, 2, 1, 0]);
-        assert_eq!(last, [51, 50, 49, 48, 47, 46]);
-    }
-
-    /// combinadic_unrank_5 for river board enumeration: boundaries only.
-    #[test]
-    fn combinadic_unrank_5_boundaries() {
-        let first = combinadic_unrank_5(0);
-        let last = combinadic_unrank_5((choose(52, 5) - 1) as u32);
-        assert_eq!(first, [4, 3, 2, 1, 0]);
-        assert_eq!(last, [51, 50, 49, 48, 47]);
-    }
-}
-
 fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> {
     let n = data.len();
     if n == 0 || k == 0 {
@@ -639,4 +598,47 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
         }
     }
     centroids
+}
+
+#[cfg(test)]
+mod generator_tests {
+    use super::*;
+
+    /// The turn table must be exactly choose(52,6) * 15 bytes, indexed by
+    /// the same layout flat_index_turn uses. Any change here breaks
+    /// pkr-abstraction's runtime fall-through and must be a coordinated bump.
+    #[test]
+    fn turn_table_expected_size() {
+        let n = choose(52, 6) as usize;
+        assert_eq!(n, 20_358_520);
+        assert_eq!(n * 15, 305_377_800);
+    }
+
+    /// The river board bucket table must be exactly choose(52,5) bytes.
+    #[test]
+    fn river_table_expected_size() {
+        let n = choose(52, 5) as usize;
+        assert_eq!(n, 2_598_960);
+    }
+
+    /// combinadic_unrank_6 must round-trip the boundary indices that
+    /// flat_index_turn relies on. Indices 0 and C(52,6)-1 are the extremes.
+    #[test]
+    fn combinadic_unrank_6_boundaries() {
+        let first = combinadic_unrank_6(0);
+        let last = combinadic_unrank_6((choose(52, 6) - 1) as u32);
+        // Ascending sort by descending card id: first combo is (5,4,3,2,1,0),
+        // last combo is (51,50,49,48,47,46).
+        assert_eq!(first, [5, 4, 3, 2, 1, 0]);
+        assert_eq!(last, [51, 50, 49, 48, 47, 46]);
+    }
+
+    /// combinadic_unrank_5 for river board enumeration: boundaries only.
+    #[test]
+    fn combinadic_unrank_5_boundaries() {
+        let first = combinadic_unrank_5(0);
+        let last = combinadic_unrank_5((choose(52, 5) - 1) as u32);
+        assert_eq!(first, [4, 3, 2, 1, 0]);
+        assert_eq!(last, [51, 50, 49, 48, 47]);
+    }
 }
