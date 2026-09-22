@@ -76,7 +76,10 @@ time cargo run --release -p pkr-trainer -- \
     --rank-table hand_ranks.bin \
     --checkpoint train.ckpt \
     --checkpoint-every $CHECKPOINT_EVERY \
-    --output blueprint.bin
+    --report-every 10000 \
+    --output blueprint.bin \
+    --metrics-csv metrics.csv \
+    --stats-json stats.json
 
 echo "========================================="
 echo "  Training complete. Blueprint: blueprint.bin"
