@@ -17,6 +17,20 @@ use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+/// Per-dispatch timing breakdown. Returned by `run_iterations_parallel`
+/// so callers can log/aggregate without poking at env vars.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunStats {
+    pub traverse_s: f64,
+    pub merge_s: f64,
+    pub flush_s: f64,
+    pub chunk_min_s: f64,
+    pub chunk_max_s: f64,
+    pub chunk_mean_s: f64,
+    pub items: usize,
+    pub strats: usize,
+}
+
 pub struct Trainer {
     abstraction: Arc<dyn AbstractionBuilder>,
     evaluator: Arc<dyn Evaluator>,
@@ -51,11 +65,8 @@ impl Trainer {
     /// code paid a full serial merge+flush every iteration, and that serial
     /// cost grew *with* thread count since more threads = more items
     /// produced per iteration. Batching amortizes it by `n`.
-    pub fn run_iterations_parallel(&mut self, n: usize) {
-        use std::sync::OnceLock;
+    pub fn run_iterations_parallel(&mut self, n: usize) -> RunStats {
         use std::time::Instant;
-        static PROFILE: OnceLock<bool> = OnceLock::new();
-        let profile = *PROFILE.get_or_init(|| std::env::var("PKR_PHASE_PROFILE").is_ok());
 
         // Reserve the whole iteration range with ONE atomic op.
         let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
@@ -65,17 +76,20 @@ impl Trainer {
         let evaluator = Arc::clone(&self.evaluator);
 
         // Dynamic chunking: many small chunks, rayon work-steals them
-        // across threads. Absorbs per-chunk cost variance (cv ~0.55) and
-        // the P-core vs E-core speed gap on M-series.
+        // across threads. Absorbs per-chunk cost variance and the P-core
+        // vs E-core speed gap on M-series.
         const CHUNK_ITERS: usize = 16;
         let n_chunks = (n + CHUNK_ITERS - 1) / CHUNK_ITERS;
 
         let t_wall = Instant::now();
         let t0 = Instant::now();
-        let thread_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>)> =
+        // Each chunk returns (batch, strategy, wall_secs) so imbalance is
+        // visible in RunStats.
+        let chunk_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>, f64)> =
             (0..n_chunks)
                 .into_par_iter()
                 .map(|chunk_idx| {
+                    let chunk_t0 = Instant::now();
                     let start = chunk_idx * CHUNK_ITERS;
                     let end = ((chunk_idx + 1) * CHUNK_ITERS).min(n);
                     let pairs = end - start;
@@ -84,21 +98,13 @@ impl Trainer {
                     let mut strategy_batch: Vec<StrategyOp> =
                         Vec::with_capacity(pairs * 20);
 
-                    // SmallRng is Xoshiro128++ on 64-bit targets. Seeded
-                    // once per chunk from the OS RNG. Much cheaper per call
-                    // than ChaCha12 (which ThreadRng uses).
                     let mut rng = SmallRng::seed_from_u64(rand::random::<u64>());
-                    // Stack deck: 52 cards reused across iterations via
-                    // copy. No per-iteration heap allocation.
                     let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
 
                     let base_iter = start_iter + start as u32;
                     for local_i in 0..pairs {
                         let global_iter = base_iter + local_i as u32;
 
-                        // Partial Fisher-Yates: we only need the first 9
-                        // cards (4 hole + 5 board). Shuffling 9 positions
-                        // is ~5x cheaper than shuffling all 52.
                         let mut deck = initial_deck;
                         for i in 0..9usize {
                             let j = i + rng.random_range(0..(52 - i));
@@ -148,17 +154,28 @@ impl Trainer {
                             &mut strategy_batch,
                         );
                     }
-                    (batch, strategy_batch)
+                    let secs = chunk_t0.elapsed().as_secs_f64();
+                    (batch, strategy_batch, secs)
                 })
                 .collect();
         let t_traverse = t0.elapsed();
 
+        // Chunk imbalance stats.
+        let chunk_walls: Vec<f64> = chunk_results.iter().map(|(_, _, s)| *s).collect();
+        let chunk_min = chunk_walls.iter().cloned().fold(f64::INFINITY, f64::min);
+        let chunk_max = chunk_walls.iter().cloned().fold(0.0f64, f64::max);
+        let chunk_mean = if chunk_walls.is_empty() {
+            0.0
+        } else {
+            chunk_walls.iter().sum::<f64>() / chunk_walls.len() as f64
+        };
+
         let t1 = Instant::now();
-        let total_items: usize = thread_results.iter().map(|(b, _)| b.len()).sum();
-        let total_strats: usize = thread_results.iter().map(|(_, s)| s.len()).sum();
+        let total_items: usize = chunk_results.iter().map(|(b, _, _)| b.len()).sum();
+        let total_strats: usize = chunk_results.iter().map(|(_, s, _)| s.len()).sum();
         let mut merged_batch = Vec::with_capacity(total_items);
         let mut merged_strategy = Vec::with_capacity(total_strats);
-        for (b, s) in thread_results {
+        for (b, s, _) in chunk_results {
             merged_batch.extend(b);
             merged_strategy.extend(s);
         }
@@ -169,20 +186,17 @@ impl Trainer {
         table.flush_cpu_batch(&mut merged_batch);
         let t_flush = t2.elapsed();
 
-        if profile {
-            let wall_ms = t_wall.elapsed().as_secs_f64() * 1000.0;
-            eprintln!(
-                "[phase] batch_end_iter={} n={} chunks={} wall={:.2}ms traverse={:.2}ms merge={:.2}ms flush={:.2}ms items={} strats={}",
-                start_iter + n as u32 - 1,
-                n,
-                n_chunks,
-                wall_ms,
-                t_traverse.as_secs_f64() * 1000.0,
-                t_merge.as_secs_f64() * 1000.0,
-                t_flush.as_secs_f64() * 1000.0,
-                total_items,
-                total_strats,
-            );
+        let _ = t_wall; // kept in case a caller wants the total
+
+        RunStats {
+            traverse_s: t_traverse.as_secs_f64(),
+            merge_s: t_merge.as_secs_f64(),
+            flush_s: t_flush.as_secs_f64(),
+            chunk_min_s: chunk_min,
+            chunk_max_s: chunk_max,
+            chunk_mean_s: chunk_mean,
+            items: total_items,
+            strats: total_strats,
         }
     }
 

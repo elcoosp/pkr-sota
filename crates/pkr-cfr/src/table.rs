@@ -33,6 +33,45 @@ pub struct StrategyOp {
     pub prob: f32,
 }
 
+/// Snapshot of table health. Cheap to compute (O(next_idx)).
+#[derive(Debug, Clone, Default)]
+pub struct TableSnapshot {
+    pub infosets: usize,
+    pub capacity: usize,
+    pub max_abs_regret: f32,
+    pub mean_abs_regret: f32,
+    pub nonfinite_count: usize,
+    pub strategy_sum_mass: f64,
+}
+
+/// Distribution of average strategies across all infosets. Everything an
+/// outside observer needs to know whether the abstraction is resolving
+/// and whether the strategies are collapsing to pure or staying mixed.
+#[derive(Debug, Clone)]
+pub struct StrategyAnalysis {
+    pub total: usize,
+    /// strategy_sum total == 0 (never visited or uniform fallback).
+    pub empty: usize,
+    /// One action has p >= 0.99.
+    pub pure: usize,
+    /// At least two actions have p >= 0.10.
+    pub mixed: usize,
+    /// Shannon entropy in bits, mean over visited infosets.
+    pub mean_entropy: f64,
+    /// Entropy histogram in 8 buckets of 0.25 bits, up to 2.0+.
+    pub entropy_histogram: [usize; 8],
+    /// For each action, how many infosets have it as the argmax.
+    pub dominant_counts: [usize; K],
+}
+
+/// Full dump of a single infoset for offline analysis.
+#[derive(Debug, Clone)]
+pub struct InfoSetDump {
+    pub hash: u64,
+    pub strategy: [f32; K],
+    pub regrets: [f32; K],
+}
+
 const IDX_CACHE_INIT: usize = 1 << 18;
 const IDX_CACHE_MAX: usize = 1 << 20;
 
@@ -412,6 +451,169 @@ impl CompactRegretTable {
             }
             out
         })
+    }
+
+    /// O(next_idx) scan of regret/strategy tables. Cheap, safe to call
+    /// at every report interval.
+    pub fn snapshot(&self) -> TableSnapshot {
+        let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
+        let mut max_abs = 0.0f32;
+        let mut sum_abs = 0.0f64;
+        let mut nonfinite = 0usize;
+        let mut strat_mass = 0.0f64;
+        let entries_rm = n * RM_STRIDE;
+        for i in 0..entries_rm {
+            let v = self.data[i].load(Ordering::Relaxed) as f32 / SCALE;
+            if !v.is_finite() {
+                nonfinite += 1;
+                continue;
+            }
+            let a = v.abs();
+            if a > max_abs {
+                max_abs = a;
+            }
+            sum_abs += a as f64;
+        }
+        let entries_sum = n * SUM_STRIDE;
+        for i in 0..entries_sum {
+            strat_mass += self.strategy_sum[i].load(Ordering::Relaxed) as f64;
+        }
+        let guard = self.hash_to_idx.pin();
+        let infosets = guard.len();
+        drop(guard);
+        TableSnapshot {
+            infosets,
+            capacity: self.capacity,
+            max_abs_regret: max_abs,
+            mean_abs_regret: if entries_rm > 0 {
+                (sum_abs / entries_rm as f64) as f32
+            } else {
+                0.0
+            },
+            nonfinite_count: nonfinite,
+            strategy_sum_mass: strat_mass,
+        }
+    }
+
+    /// Walk every infoset and accumulate the strategy distribution. O(N*K).
+    /// A few seconds on 5M infosets; run once at end of training.
+    pub fn analyze_strategies(&self) -> StrategyAnalysis {
+        let guard = self.hash_to_idx.pin();
+        let mut analysis = StrategyAnalysis {
+            total: 0,
+            empty: 0,
+            pure: 0,
+            mixed: 0,
+            mean_entropy: 0.0,
+            entropy_histogram: [0usize; 8],
+            dominant_counts: [0usize; K],
+        };
+        let mut entropy_sum = 0.0f64;
+        let mut visited = 0usize;
+
+        for (_, &idx) in guard.iter() {
+            analysis.total += 1;
+            let mut s = [0.0f32; K];
+            let mut sum = 0.0f32;
+            for a in 0..K {
+                s[a] = self.load_sum(idx, a) as f32;
+                sum += s[a];
+            }
+            if sum <= 0.0 {
+                analysis.empty += 1;
+                continue;
+            }
+            visited += 1;
+            for a in 0..K {
+                s[a] /= sum;
+            }
+
+            // Dominant action.
+            let mut best_a = 0usize;
+            let mut best_p = 0.0f32;
+            for a in 0..K {
+                if s[a] > best_p {
+                    best_p = s[a];
+                    best_a = a;
+                }
+            }
+            analysis.dominant_counts[best_a] += 1;
+
+            // Pure / mixed classification.
+            if best_p >= 0.99 {
+                analysis.pure += 1;
+            }
+            let mut above_tenth = 0usize;
+            for a in 0..K {
+                if s[a] >= 0.10 {
+                    above_tenth += 1;
+                }
+            }
+            if above_tenth >= 2 {
+                analysis.mixed += 1;
+            }
+
+            // Shannon entropy in bits.
+            let mut h = 0.0f64;
+            for a in 0..K {
+                let p = s[a] as f64;
+                if p > 0.0 {
+                    h -= p * p.log2();
+                }
+            }
+            entropy_sum += h;
+            let bucket = ((h / 0.25) as usize).min(7);
+            analysis.entropy_histogram[bucket] += 1;
+        }
+
+        if visited > 0 {
+            analysis.mean_entropy = entropy_sum / visited as f64;
+        }
+        analysis
+    }
+
+    /// Pick n infosets spread evenly across the map and dump their full
+    /// state. Used to hand a small but representative sample to an
+    /// external analyzer.
+    pub fn sample_infosets(&self, n: usize) -> Vec<InfoSetDump> {
+        let guard = self.hash_to_idx.pin();
+        let total = guard.len();
+        if total == 0 || n == 0 {
+            return Vec::new();
+        }
+        let stride = (total / n).max(1);
+        let mut out = Vec::with_capacity(n);
+        for (i, (hash, &idx)) in guard.iter().enumerate() {
+            if i % stride != 0 {
+                continue;
+            }
+            if out.len() >= n {
+                break;
+            }
+            let mut strategy = [0.0f32; K];
+            let mut sum = 0.0f32;
+            for a in 0..K {
+                strategy[a] = self.load_sum(idx, a) as f32;
+                sum += strategy[a];
+            }
+            if sum > 0.0 {
+                for a in 0..K {
+                    strategy[a] /= sum;
+                }
+            } else {
+                strategy = [1.0 / K as f32; K];
+            }
+            let mut regrets = [0.0f32; K];
+            for a in 0..K {
+                regrets[a] = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
+            }
+            out.push(InfoSetDump {
+                hash: *hash,
+                strategy,
+                regrets,
+            });
+        }
+        out
     }
 
     pub fn hash_contains(&self, infoset_hash: u64) -> bool {

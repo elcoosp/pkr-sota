@@ -35,12 +35,11 @@ pub enum DiscountMode {
     /// Factor is in [0.5, 1), so regrets decay slowly. This is the
     /// formula the paper specifies.
     CanonicalDcfr,
-    /// Current pkr-sota code: (t/τ)^p. Growth-based, not decay-based.
-    /// At t=1e6 with α=1.5 this is ~3e4, so positive regrets are
-    /// amplified every update. Kept as the default until the Kuhn
-    /// experiment says otherwise.
-    RatioPower,
 }
+
+// DiscountMode::RatioPower was removed. It multiplied regrets by
+// (t/τ)^p every update, which grows without bound and produced NaN
+// around t=3000 in the Kuhn experiment. Do not re-add it.
 
 /// Whether to use the PCFR+ momentum term in the regret update.
 /// Off = plain CFR: regret_new = discount(regret_old) + delta.
@@ -63,15 +62,14 @@ pub fn discount_factor_mode(t: f32, p: f32, mode: DiscountMode) -> f32 {
             let tp = t.powf(p);
             tp / (tp + 1.0)
         }
-        DiscountMode::RatioPower => {
-            let ratio = t / TAU as f32;
-            ratio.powf(p)
-        }
     }
 }
 
 #[inline(always)]
 pub fn discount_factor(t: f32, p: f32) -> f32 {
+    // Canonical DCFR is the only supported formula. This is the paper's
+    // t^p/(t^p+1), bounded in [0.5, 1). Alternative formulas must be
+    // vetted on the Kuhn harness before being wired into production.
     discount_factor_mode(t, p, DiscountMode::CanonicalDcfr)
 }
 
@@ -132,23 +130,23 @@ pub fn update_regret_pfr_plus_mode(
 }
 
 #[inline(always)]
+/// Production regret update. Canonical DCFR discount + PCFR+ momentum.
+/// This function has no mode parameter on purpose: callers cannot select
+/// a broken formula. The Kuhn harness (crates/pkr-testgames) is where
+/// alternative formulas must be tested before being wired in.
 pub fn update_regret_pfr_plus(
     current: f32,
     prev_momentum: f32,
     iteration: u32,
     delta: f32,
 ) -> (f32, f32) {
-    // CanonicalDcfr is the default. RatioPower (the previous default)
-    // multiplies regrets by (t/τ)^p every update, which overflows f32
-    // around iteration 3000 for any infoset visited dozens of times.
-    // Demonstrated in crates/pkr-testgames kuhn-experiment: ratio-power
-    // produces NaN by t=3000, canonical does not and converges.
-    update_regret_pfr_plus_mode(
+    update_regret_full(
         current,
         prev_momentum,
         iteration,
         delta,
         DiscountMode::CanonicalDcfr,
+        MomentumMode::On,
     )
 }
 

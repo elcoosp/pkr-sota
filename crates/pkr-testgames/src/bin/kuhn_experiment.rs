@@ -23,8 +23,6 @@ fn main() {
         Config { label: "van-mom",   discount: DiscountMode::None,          momentum: MomentumMode::On  },
         Config { label: "canon",     discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::Off },
         Config { label: "canon-mom", discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::On  },
-        Config { label: "ratio",     discount: DiscountMode::RatioPower,    momentum: MomentumMode::Off },
-        Config { label: "ratio-mom", discount: DiscountMode::RatioPower,    momentum: MomentumMode::On  },
     ];
 
     println!("=== Kuhn poker: discount x momentum ===");
