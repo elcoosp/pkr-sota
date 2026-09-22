@@ -266,16 +266,23 @@ impl AbstractionBuilder for KMeansAbstraction {
                 }
             }
             5 => {
-                // River: hand rank is exact. Use it directly (hole-specific
-                // and O(1)) and mix in a board bucket if one was provided.
+                // River: bucket hand rank into ~128 tiers. Raw hand_rank
+                // has cardinality 7462, which alone produces millions of
+                // river infosets over a full training run and dominates the
+                // map size. >> 6 gives 116 tiers — coarse enough to make
+                // CFR see each river infoset repeatedly, fine enough to
+                // preserve strategic distinctions (a made hand vs a busted
+                // draw vs a middle pair still land in different tiers).
+                // The precomputed board bucket (if any) is mixed in.
                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
+                let hand_bucket = hand_rank >> 6;
                 let board_bucket = if let Some(table) = self.tables.get(&3u8).and_then(|l| l.get()) {
                     let idx = Self::flat_index_river_board(board);
                     if idx < table.len() { table[idx] as u64 } else { 0 }
                 } else {
                     0
                 };
-                (hand_rank << 8) | (board_bucket & 0xff)
+                (hand_bucket << 8) | (board_bucket & 0xff)
             }
             _ => ehs_fallback(),
         };

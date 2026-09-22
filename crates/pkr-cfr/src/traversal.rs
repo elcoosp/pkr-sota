@@ -1,7 +1,7 @@
 use crate::gpu::BatchItem;
 use crate::table::CompactRegretTable;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
-use pkr_core::state::{ActionKind, GameState, Street};
+use pkr_core::state::{Action, ActionKind, GameState, Street};
 use rand::Rng;
 use rand::RngExt;
 
@@ -76,10 +76,12 @@ pub fn traverse(
     }
 
     let acting_player = current.actor;
-    let num_actions = current.legal_actions();
-    if num_actions.is_empty() {
+    let mut action_buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+    let num_actions_n = current.legal_actions_into(&mut action_buf);
+    if num_actions_n == 0 {
         undo_advance_and_return!(0.0);
     }
+    let num_actions: &[Action] = &action_buf[..num_actions_n];
 
     let mut action_counts = [0usize; K];
     let mut action_indices = [[0usize; 10]; K];

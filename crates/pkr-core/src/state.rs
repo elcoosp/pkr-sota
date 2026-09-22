@@ -137,6 +137,61 @@ impl GameState {
         actions
     }
 
+    /// Non-allocating variant of `legal_actions`. Writes into `out` and
+    /// returns the count. Reused by the CFR traversal to avoid one heap
+    /// allocation per node visit — the allocator is the dominant
+    /// multithread bottleneck otherwise. Callers must provide a buffer of
+    /// at least 8 slots; the current action space tops out at 6.
+    pub fn legal_actions_into(&self, out: &mut [Action; 8]) -> usize {
+        if self.folded[self.actor] {
+            return 0;
+        }
+        let mut n = 0usize;
+        let to_call = self.bet_to_call();
+        if to_call == 0.0 {
+            out[n] = Action { player: self.actor, kind: ActionKind::Check };
+            n += 1;
+            let pot = self.pot;
+            for &frac in &[0.5, 1.0, 2.0] {
+                if n >= 8 { break; }
+                let bet = pot * frac;
+                if bet <= self.stacks[self.actor] {
+                    out[n] = Action { player: self.actor, kind: ActionKind::Bet(bet) };
+                    n += 1;
+                }
+            }
+            if n < 8 && self.stacks[self.actor] > 0.0 {
+                out[n] = Action {
+                    player: self.actor,
+                    kind: ActionKind::Bet(self.stacks[self.actor]),
+                };
+                n += 1;
+            }
+        } else {
+            out[n] = Action { player: self.actor, kind: ActionKind::Fold };
+            n += 1;
+            out[n] = Action { player: self.actor, kind: ActionKind::Call };
+            n += 1;
+            let pot = self.pot;
+            for &frac in &[0.5, 1.0, 2.0] {
+                if n >= 8 { break; }
+                let raise = to_call + pot * frac;
+                if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
+                    out[n] = Action { player: self.actor, kind: ActionKind::Bet(raise) };
+                    n += 1;
+                }
+            }
+            if n < 8 && self.stacks[self.actor] > 0.0 {
+                out[n] = Action {
+                    player: self.actor,
+                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
+                };
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Canonical signature of the betting history that actually matters
     /// to CFR: how many actions this street, how many raises, and whether
     /// the acting player is the aggressor. This replaces the raw history
