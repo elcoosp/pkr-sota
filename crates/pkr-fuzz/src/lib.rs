@@ -4,6 +4,23 @@
 //! Covers: min-raise legality, all-in-below-min-raise, uncalled-bet return,
 //! split pots, exact stack arithmetic. (Roadmap §4)
 
+
+#![allow(clippy::assign_op_pattern)]
+#![allow(clippy::map_clone)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::manual_memcpy)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::useless_vec)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::explicit_counter_loop)]
+#![allow(clippy::manual_div_ceil)]
+
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use pkr_eval::NlheEvaluator;
 use rand::seq::IndexedRandom;
@@ -508,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_scripted_bots_basic() {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
+        let state = GameState::new(200.0, 1.0, 2.0);
         assert_eq!(state.bet_to_call(), 1.0);
 
         let station = StationBot;

@@ -86,6 +86,22 @@ fn main() {
     }
 }
 
+/// Atomic checkpoint write: write to `.tmp`, rotate existing to `.prev`,
+/// then rename. A crash mid-write can never corrupt the main checkpoint.
+fn save_checkpoint_rolling(
+    trainer: &pkr_cfr::Trainer,
+    ckpt: &std::path::Path,
+) -> std::io::Result<()> {
+    let tmp = ckpt.with_extension("ckpt.tmp");
+    let prev = ckpt.with_extension("ckpt.prev");
+    trainer.save_checkpoint(tmp.to_str().unwrap())?;
+    if ckpt.exists() {
+        std::fs::rename(ckpt, &prev)?;
+    }
+    std::fs::rename(&tmp, ckpt)?;
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
@@ -317,7 +333,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             && (done - last_ckpt_iter) >= cli.checkpoint_every
         {
             if let Some(ckpt) = &cli.checkpoint {
-                match trainer.save_checkpoint(ckpt.to_str().unwrap()) {
+                match save_checkpoint_rolling(&trainer, ckpt) {
                     Ok(()) => {
                         eprintln!("Checkpoint written at iteration {}", done);
                         last_ckpt_iter = done;
@@ -330,7 +346,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if !stopped_early {
         if let Some(ckpt) = &cli.checkpoint {
-            if let Err(e) = trainer.save_checkpoint(ckpt.to_str().unwrap()) {
+            if let Err(e) = save_checkpoint_rolling(&trainer, ckpt) {
                 eprintln!("WARNING: final checkpoint failed: {}", e);
             }
         }

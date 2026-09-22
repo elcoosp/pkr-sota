@@ -901,6 +901,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkr-exploit"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pkr-abstraction",
+ "pkr-cfr",
+ "pkr-contracts",
+ "pkr-core",
+ "pkr-eval",
+ "pkr-runtime",
+ "rand",
+ "rayon",
+]
+
+[[package]]
 name = "pkr-export"
 version = "0.1.0"
 dependencies = [
@@ -911,6 +926,19 @@ dependencies = [
  "rand",
  "rayon",
  "thiserror",
+]
+
+[[package]]
+name = "pkr-fuzz"
+version = "0.1.0"
+dependencies = [
+ "pkr-abstraction",
+ "pkr-cfr",
+ "pkr-contracts",
+ "pkr-core",
+ "pkr-eval",
+ "rand",
+ "rayon",
 ]
 
 [[package]]

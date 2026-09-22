@@ -9,6 +9,7 @@ pub struct InfoSet {
     pub valid_actions: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct SotaAdvice {
     pub cdf_probabilities: [u8; 16], // max 16 actions
     pub len: u8,
