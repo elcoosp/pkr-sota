@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use foldhash::fast::RandomState as FoldHasher;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 const K: usize = 6;
 pub(crate) const SCALE: f32 = 1000.0;
@@ -15,7 +16,12 @@ pub struct CompactRegretTable {
     strategy_sum: Vec<AtomicI32>,
     next_idx: AtomicUsize,
     capacity: usize,
-    gpu: GpuState,
+    /// Lazily constructed. The GPU path is only used by tests; production
+    /// runs flush_cpu_batch and never touch this. Eager construction here
+    /// used to allocate ~2.4 GB of WGPU storage buffers, which fails
+    /// against Limits::downlevel_defaults() at capacity=50M and aborts
+    /// the process (panic = "abort").
+    gpu: OnceLock<GpuState>,
 }
 
 impl CompactRegretTable {
@@ -32,8 +38,6 @@ impl CompactRegretTable {
         cpu_momentums.resize_with(capacity * K, || AtomicI32::new(0));
         strategy_sum.resize_with(capacity * K, || AtomicI32::new(0));
 
-        let gpu = GpuState::new(capacity);
-
         Self {
             hash_to_idx: DashMap::with_hasher(FoldHasher::default()),
             cpu_regrets,
@@ -41,7 +45,7 @@ impl CompactRegretTable {
             strategy_sum,
             next_idx: AtomicUsize::new(0),
             capacity,
-            gpu,
+            gpu: OnceLock::new(),
         }
     }
 
@@ -157,6 +161,9 @@ impl CompactRegretTable {
 
     /// CPU-GPU hybrid: deduplicate batch, dispatch to GPU in chunks,
     /// then write back ONLY the touched entries.
+    ///
+    /// GpuState is constructed on first use. Production runs should
+    /// prefer `flush_cpu_batch`; this path exists for the GPU parity test.
     pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
         // 1. Deduplicate
         let mut dedup_map: HashMap<(u32, u32), f32> =
@@ -179,9 +186,10 @@ impl CompactRegretTable {
             .collect();
 
         // 2. Chunked dispatch — a merged cross-thread batch can exceed max_batch_size
-        let max = self.gpu.max_batch_size();
+        let gpu = self.gpu.get_or_init(|| GpuState::new(self.capacity));
+        let max = gpu.max_batch_size();
         for chunk in deduped.chunks(max) {
-            let results = self.gpu.flush_batch(chunk);
+            let results = gpu.flush_batch(chunk);
 
             // 3. Touched-only write-back: O(len(chunk)) instead of O(capacity * K)
             for (item, result) in chunk.iter().zip(results.iter()) {

@@ -24,6 +24,8 @@ cargo build --release -p pkr-trainer 2>&1 | tail -1
 
 for T in $THREADS_LIST; do
     echo "--- threads=$T ---"
+    # Allow this config to fail without killing the whole bench.
+    set +e
     cargo run --release -p pkr-trainer -- \
         --bench-seconds "$SECONDS_PER_RUN" \
         --threads "$T" \
@@ -38,6 +40,7 @@ for T in $THREADS_LIST; do
         --output "$BENCH_DIR_ABS/bench_blueprint.bin" 2>&1 \
         | grep -E "(Running with|BENCH|iter .*infosets)"
     echo ""
+    set -e
 done
 
 echo "=== benchmark complete ==="
