@@ -6,7 +6,7 @@ use pkr_export::writer::write_blueprint;
 use rayon::ThreadPoolBuilder;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "pkr-trainer")]
@@ -63,6 +63,11 @@ struct Cli {
     /// production table). Lower for smoke tests.
     #[arg(long, default_value_t = 5_000_000)]
     capacity: usize,
+
+    /// If > 0, ignore --iterations and run until this many seconds elapse.
+    /// Used for throughput calibration.
+    #[arg(long, default_value_t = 0)]
+    bench_seconds: u64,
 }
 
 fn main() {
@@ -141,8 +146,24 @@ fn main() {
     let start = Instant::now();
     let mut last_ckpt_iter = start_iter;
     let mut stopped_early = false;
+    let bench_deadline = if cli.bench_seconds > 0 {
+        Some(Duration::from_secs(cli.bench_seconds))
+    } else {
+        None
+    };
+    let max_iters = if bench_deadline.is_some() {
+        u32::MAX
+    } else {
+        cli.iterations
+    };
 
-    for i in start_iter..cli.iterations {
+    for i in start_iter..max_iters {
+        if let Some(d) = bench_deadline {
+            if start.elapsed() >= d {
+                stopped_early = true;
+                break;
+            }
+        }
         if trainer.is_near_capacity() {
             eprintln!("WARN: table near capacity ({} infosets), stopping early", trainer.get_table().len());
             stopped_early = true;
@@ -190,7 +211,24 @@ fn main() {
         }
     }
 
-    eprintln!("Training done in {:.1}s", start.elapsed().as_secs_f64());
+    let elapsed = start.elapsed().as_secs_f64();
+    let total_iters = trainer.iteration().saturating_sub(start_iter);
+    let rate = total_iters as f64 / elapsed.max(1e-6);
+    eprintln!(
+        "BENCH threads={} capacity={} elapsed={:.2}s iterations={} it/s={:.1} infosets={}",
+        num_threads,
+        cli.capacity,
+        elapsed,
+        total_iters,
+        rate,
+        trainer.get_table().len()
+    );
+
+    if bench_deadline.is_some() {
+        // Skip export in bench mode — we only wanted the throughput number.
+        return;
+    }
+    eprintln!("Training done in {:.1}s", elapsed);
 
     let mut keys = trainer.get_table().get_keys();
     keys.sort_unstable();

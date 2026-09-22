@@ -11,5 +11,8 @@ test:
 smoke:
     ./smoke.sh
 
+bench:
+    ./bench.sh
+
 train:
     ./run.sh
