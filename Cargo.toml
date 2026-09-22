@@ -7,6 +7,7 @@ members = [
     "crates/pkr-abstraction",
     "crates/pkr-export",
     "crates/pkr-runtime",
+    "crates/pkr-testgames",
     "binaries/pkr-trainer",
 ]
 resolver = "2"
@@ -24,6 +25,7 @@ pkr-eval = { path = "crates/pkr-eval" }
 pkr-abstraction = { path = "crates/pkr-abstraction" }
 pkr-export = { path = "crates/pkr-export" }
 pkr-runtime = { path = "crates/pkr-runtime" }
+pkr-testgames = { path = "crates/pkr-testgames" }
 serde = { version = "1", features = ["derive"] }
 bytemuck = { version = "1", features = ["derive"] }
 dashmap = "6"

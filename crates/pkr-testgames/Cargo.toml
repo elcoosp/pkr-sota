@@ -1,0 +1,11 @@
+[package]
+name = "pkr-testgames"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pkr-cfr = { workspace = true }
+
+[[bin]]
+name = "kuhn-experiment"
+path = "src/bin/kuhn_experiment.rs"

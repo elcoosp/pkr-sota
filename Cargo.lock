@@ -920,6 +920,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkr-testgames"
+version = "0.1.0"
+dependencies = [
+ "pkr-cfr",
+]
+
+[[package]]
 name = "pkr-trainer"
 version = "0.1.0"
 dependencies = [

@@ -25,13 +25,44 @@ pub const TAU: u32 = 1000;
 /// For t < TAU, returns 1.0 (no discounting during warmup).
 /// For t >= TAU: returns (t/τ)^p — the multiplicative weight
 /// from Brown & Sandholm 2019 DCFR.
+/// Which DCFR discount formula to use. Selectable so we can measure
+/// convergence on small games (Kuhn) and pick empirically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscountMode {
+    /// No discount. Equivalent to vanilla CFR.
+    None,
+    /// Brown & Sandholm 2019 canonical DCFR: t^p / (t^p + 1).
+    /// Factor is in [0.5, 1), so regrets decay slowly. This is the
+    /// formula the paper specifies.
+    CanonicalDcfr,
+    /// Current pkr-sota code: (t/τ)^p. Growth-based, not decay-based.
+    /// At t=1e6 with α=1.5 this is ~3e4, so positive regrets are
+    /// amplified every update. Kept as the default until the Kuhn
+    /// experiment says otherwise.
+    RatioPower,
+}
+
 #[inline(always)]
-pub fn discount_factor(t: f32, p: f32) -> f32 {
+pub fn discount_factor_mode(t: f32, p: f32, mode: DiscountMode) -> f32 {
     if t < TAU as f32 {
         return 1.0;
     }
-    let ratio = t / TAU as f32;
-    ratio.powf(p)
+    match mode {
+        DiscountMode::None => 1.0,
+        DiscountMode::CanonicalDcfr => {
+            let tp = t.powf(p);
+            tp / (tp + 1.0)
+        }
+        DiscountMode::RatioPower => {
+            let ratio = t / TAU as f32;
+            ratio.powf(p)
+        }
+    }
+}
+
+#[inline(always)]
+pub fn discount_factor(t: f32, p: f32) -> f32 {
+    discount_factor_mode(t, p, DiscountMode::RatioPower)
 }
 
 /// PCFR+ momentum update (Farina, Kroer, Sandholm 2021), composed with DCFR.
@@ -39,11 +70,12 @@ pub fn discount_factor(t: f32, p: f32) -> f32 {
 ///
 /// This is the CPU fallback path — the GPU shader in gpu.rs mirrors this.
 #[inline(always)]
-pub fn update_regret_pfr_plus(
+pub fn update_regret_pfr_plus_mode(
     current: f32,
     prev_momentum: f32,
     iteration: u32,
     delta: f32,
+    mode: DiscountMode,
 ) -> (f32, f32) {
     let t = iteration as f32;
     if t == 0.0 {
@@ -58,8 +90,8 @@ pub fn update_regret_pfr_plus(
     let r_pos = current.max(0.0);
     let r_neg = current.min(0.0);
 
-    let w_pos = discount_factor(t, ALPHA);
-    let w_neg = discount_factor(t, BETA);
+    let w_pos = discount_factor_mode(t, ALPHA, mode);
+    let w_neg = discount_factor_mode(t, BETA, mode);
 
     let discounted_regret = w_pos * r_pos + w_neg * r_neg;
 
@@ -67,6 +99,22 @@ pub fn update_regret_pfr_plus(
     let new_regret = (discounted_regret + predicted_delta).max(0.0);
 
     (new_regret, predicted_delta)
+}
+
+#[inline(always)]
+pub fn update_regret_pfr_plus(
+    current: f32,
+    prev_momentum: f32,
+    iteration: u32,
+    delta: f32,
+) -> (f32, f32) {
+    update_regret_pfr_plus_mode(
+        current,
+        prev_momentum,
+        iteration,
+        delta,
+        DiscountMode::RatioPower,
+    )
 }
 
 /// Standard DCFR update (without momentum) for backward compatibility.
