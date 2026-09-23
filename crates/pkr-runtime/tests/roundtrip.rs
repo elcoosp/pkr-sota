@@ -119,3 +119,28 @@ fn roundtrip_cdf_survives_byte_for_byte() {
     let advice = handle.get_advice_fast(42).unwrap();
     assert_eq!(&advice.cdf_probabilities[..K], &cdfs[0][..]);
 }
+
+
+/// The fallback advice must produce a valid non-degenerate CDF:
+/// monotonic non-decreasing, last byte = 255, len = 6, first byte > 0
+/// and < 200 (so it is neither all-fold nor never-fold).
+#[test]
+fn fallback_advice_is_safe() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: [u64; 0] = [];
+    let cdfs: [[u8; K]; 0] = [];
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+    let fb = handle.fallback_advice();
+    assert_eq!(fb.len, 6);
+    for i in 1..6 {
+        assert!(
+            fb.cdf_probabilities[i] >= fb.cdf_probabilities[i - 1],
+            "CDF must be monotonic"
+        );
+    }
+    assert_eq!(fb.cdf_probabilities[5], 255);
+    assert!(fb.cdf_probabilities[0] > 0, "must have some fold probability");
+    assert!(fb.cdf_probabilities[0] < 200, "must not be all-fold");
+}

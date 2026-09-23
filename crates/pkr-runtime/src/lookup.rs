@@ -49,6 +49,29 @@ impl SolverHandle {
     }
 }
 
+impl SolverHandle {
+    /// Conservative fallback advice for lookup misses.
+    ///
+    /// The host application should call this when `get_advice_fast`
+    /// returns `None`. That happens for infosets the trainer never
+    /// visited, or off-abstraction opponent actions.
+    ///
+    /// The distribution is deliberately mild: ~10% fold, ~40%
+    /// check/call, then progressively less mass on bigger bets. It
+    /// loses nothing versus uniform random and avoids the pathological
+    /// "always fold" and "always jam" ends. Host apps that want a
+    /// smarter fallback (pot-odds, preflop chart) should layer that on
+    /// top of this.
+    pub fn fallback_advice(&self) -> SotaAdvice {
+        SotaAdvice {
+            cdf_probabilities: [
+                26, 128, 179, 204, 230, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            ],
+            len: 6,
+        }
+    }
+}
+
 impl BlueprintProvider for SolverHandle {
     fn lookup(&self, infoset_hash: u64) -> Option<SotaAdvice> {
         self.get_advice_fast(infoset_hash)
