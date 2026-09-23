@@ -53,6 +53,78 @@ fn exploration_epsilon() -> f32 {
     })
 }
 
+/// Sample one action bucket from the ε-mixed distribution over LEGAL
+/// buckets only. `strategy` is the regret-matched distribution,
+/// already renormalized over legal buckets (`action_counts[a] > 0`).
+///
+/// The mixed probability of legal bucket `a` is:
+///   p(a) = eps / n_legal + (1 - eps) * strategy[a]
+/// which sums to `eps + (1-eps)*1 = 1` (mod float ULP).
+///
+/// Returns None iff no bucket is legal (caller must handle).
+///
+/// Design notes (r3 V2):
+///   * Uses `r < cdf`, not `r <= acc`, so `r = 0.0` never picks a
+///     zero-probability bucket.
+///   * Float-underflow fallback is the LAST LEGAL bucket, never a
+///     hardcoded `K-1`.
+///   * Mixing is over legal buckets only; illegal buckets never receive
+///     probability mass.
+#[inline]
+fn sample_bucket_epsilon(
+    strategy: &[f32; K],
+    action_counts: &[usize; K],
+    eps: f32,
+    r: f32,
+) -> Option<usize> {
+    // Renormalize defensively: the mixed distribution is defined over
+    // the *normalized* regret-matched strategy restricted to legal
+    // buckets. The real caller already renormalizes, so this is a no-op
+    // in production — but if a future caller forgets, the sampler still
+    // produces a valid distribution summing to 1 instead of falling
+    // through to `last_legal` and biasing the tail bucket.
+    let mut legal_total = 0.0f32;
+    let mut n_legal = 0usize;
+    for a in 0..K {
+        if action_counts[a] > 0 {
+            legal_total += strategy[a];
+            n_legal += 1;
+        }
+    }
+    if n_legal == 0 {
+        return None;
+    }
+    let n_f = n_legal as f32;
+    let inv_total = if legal_total > 0.0 {
+        1.0 / legal_total
+    } else {
+        0.0
+    };
+    let uniform = 1.0 / n_f;
+
+    let mut cdf = 0.0f32;
+    let mut last_legal: Option<usize> = None;
+    for a in 0..K {
+        if action_counts[a] == 0 {
+            continue;
+        }
+        last_legal = Some(a);
+        let norm = if legal_total > 0.0 {
+            strategy[a] * inv_total
+        } else {
+            uniform
+        };
+        let p = eps / n_f + (1.0 - eps) * norm;
+        cdf += p;
+        if r < cdf {
+            return Some(a);
+        }
+    }
+    // Float ULP: cdf may fall a hair short of 1.0. Returning the last
+    // legal bucket is the correct closure.
+    last_legal
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn traverse(
     current: &mut GameState,
@@ -270,56 +342,24 @@ pub fn traverse(
 
         v_sigma
     } else {
-        // Opponent node: sample one action. Mix in epsilon-uniform
-        // exploration on top of regret-matching so actions with zero
-        // regret-matching probability are still sampled occasionally.
-        // Without this, an action whose regret has been persistently
-        // negative (RM+ gives it 0) is never sampled, and any infoset
-        // reachable only through that action freezes. See exploration_epsilon.
+        // Opponent node: sample one action from the ε-mixed distribution
+        // over legal buckets. See `sample_bucket_epsilon` for the design
+        // rationale and r3 V2 for the edge-case requirements.
         let eps = exploration_epsilon();
-        let mut sampled_abstract = usize::MAX;
         let r = rng.random::<f32>();
-        if r < eps {
-            // Uniform over legal buckets.
-            let mut legal_count = 0usize;
-            for a in 0..K {
-                if action_counts[a] > 0 { legal_count += 1; }
-            }
-            if legal_count > 0 {
-                let pick = rng.random_range(0..legal_count);
-                let mut seen = 0usize;
-                for a in 0..K {
-                    if action_counts[a] > 0 {
-                        if seen == pick { sampled_abstract = a; break; }
-                        seen += 1;
-                    }
-                }
-            }
-        } else {
-            // Regret-matched distribution, with the exploration mass
-            // redistributed proportionally.
-            let r2 = (r - eps) / (1.0 - eps);
-            let mut acc = 0.0;
-            for i in 0..K {
-                if action_counts[i] == 0 { continue; }
-                acc += strategy[i];
-                if r2 <= acc {
-                    sampled_abstract = i;
-                    break;
-                }
-            }
-        }
-        // Fallback: uniform over legal buckets (covers r2 slightly past 1.0
-        // due to float rounding, and empty-strategy cases).
-        if sampled_abstract == usize::MAX || action_counts[sampled_abstract] == 0 {
-            let legal: Vec<usize> = (0..K).filter(|&a| action_counts[a] > 0).collect();
-            if legal.is_empty() {
+        let sampled_abstract = match sample_bucket_epsilon(
+            &strategy,
+            &action_counts,
+            eps,
+            r,
+        ) {
+            Some(a) => a,
+            None => {
                 if advanced { current.undo_action(); }
                 *deck_idx = saved_deck_idx;
                 return 0.0;
             }
-            sampled_abstract = legal[rng.random_range(0..legal.len())];
-        }
+        };
         let count = action_counts[sampled_abstract];
         if count == 0 {
             if advanced {
@@ -523,5 +563,116 @@ mod tests {
             }
         }
         assert!(non_uniform_count > 0);
+    }
+
+    // -----------------------------------------------------------------
+    // V2: ε-uniform opponent sampling — legal buckets, no zero-prob pick.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn sample_epsilon_empty_legal_set_returns_none() {
+        let strategy = [1.0f32; K];
+        let counts = [0usize; K];
+        assert!(sample_bucket_epsilon(&strategy, &counts, 0.05, 0.5).is_none());
+    }
+
+    #[test]
+    fn sample_epsilon_only_returns_legal_buckets() {
+        // Strategy mass lives only on bucket 3, but buckets 3 and 5 are
+        // legal. Every r in [0, 1) must map to 3 or 5.
+        let mut strategy = [0.0f32; K];
+        strategy[3] = 1.0;
+        let mut counts = [0usize; K];
+        counts[3] = 1;
+        counts[5] = 1;
+
+        let mut hit = [0usize; K];
+        let n = 10_000;
+        for i in 0..n {
+            let r = i as f32 / n as f32;
+            let a = sample_bucket_epsilon(&strategy, &counts, 0.05, r)
+                .expect("legal buckets exist");
+            assert!(
+                counts[a] > 0,
+                "sampler returned illegal bucket {a} at r={r}"
+            );
+            hit[a] += 1;
+        }
+        // eps=0.05, 2 legal buckets, strategy concentrated on bucket 3:
+        //   P(3) = 0.05/2 + 0.95*1.0 = 0.975
+        //   P(5) = 0.05/2 + 0.95*0.0 = 0.025
+        let p3 = hit[3] as f32 / n as f32;
+        let p5 = hit[5] as f32 / n as f32;
+        assert!(
+            (p3 - 0.975).abs() < 0.005,
+            "P(bucket 3) = {p3}, expected 0.975"
+        );
+        assert!(
+            (p5 - 0.025).abs() < 0.005,
+            "P(bucket 5) = {p5}, expected 0.025"
+        );
+    }
+
+    #[test]
+    fn sample_epsilon_r_zero_does_not_pick_zero_prob_bucket() {
+        // Strategy mass on bucket 3; buckets 0 and 3 legal.
+        // r = 0.0: must return bucket 0 with probability eps/2 = 0.025,
+        // NOT bucket 3 just because r is the smallest value.
+        let mut strategy = [0.0f32; K];
+        strategy[3] = 1.0;
+        let mut counts = [0usize; K];
+        counts[0] = 1;
+        counts[3] = 1;
+
+        let a0 = sample_bucket_epsilon(&strategy, &counts, 0.05, 0.0).unwrap();
+        assert_eq!(
+            a0, 0,
+            "r=0.0 must pick the first legal bucket (0), got {a0}"
+        );
+    }
+
+    #[test]
+    fn sample_epsilon_matches_expected_distribution_over_many_draws() {
+        // Three legal buckets {1, 2, 4} with UN-normalized strategy mass
+        // [0.5, 0.25, 0.0]. The sampler renormalizes defensively, so the
+        // effective regret-matched distribution on {1,2,4} is
+        // [0.5/0.75, 0.25/0.75, 0.0] = [0.6667, 0.3333, 0.0].
+        //
+        // Expected:
+        //   P(1) = eps/3 + (1-eps) * 0.6667 = 0.6500
+        //   P(2) = eps/3 + (1-eps) * 0.3333 = 0.3333
+        //   P(4) = eps/3 + (1-eps) * 0.0    = 0.0167   (pure exploration)
+        let mut strategy = [0.0f32; K];
+        strategy[1] = 0.5;
+        strategy[2] = 0.25;
+        // strategy[4] stays 0.0
+        let mut counts = [0usize; K];
+        counts[1] = 1;
+        counts[2] = 1;
+        counts[4] = 1;
+
+        let eps = 0.05f32;
+        let n = 20_000;
+        let mut hit = [0usize; K];
+        for i in 0..n {
+            let r = i as f32 / n as f32;
+            let a = sample_bucket_epsilon(&strategy, &counts, eps, r).unwrap();
+            assert!(counts[a] > 0);
+            hit[a] += 1;
+        }
+        let exp1 = eps / 3.0 + (1.0 - eps) * (0.5 / 0.75);
+        let exp2 = eps / 3.0 + (1.0 - eps) * (0.25 / 0.75);
+        let exp4 = eps / 3.0;
+        for (a, exp) in [(1usize, exp1), (2, exp2), (4, exp4)] {
+            let got = hit[a] as f32 / n as f32;
+            assert!(
+                (got - exp).abs() < 0.01,
+                "bucket {a}: got {got}, expected {exp}"
+            );
+        }
+        // Buckets 0, 3, 5 must never appear.
+        assert_eq!(hit[0], 0);
+        assert_eq!(hit[3], 0);
+        assert_eq!(hit[5], 0);
     }
 }
