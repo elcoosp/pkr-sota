@@ -125,7 +125,7 @@ impl GameState {
                 kind: ActionKind::Check,
             });
             let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
+            for &frac in &[0.4, 0.8, 1.6] {
                 let bet = pot * frac;
                 if bet <= self.stacks[self.actor] {
                     actions.push(Action {
@@ -150,7 +150,7 @@ impl GameState {
                 kind: ActionKind::Call,
             });
             let pot = self.pot;
-            for &frac in &[0.5, 1.0, 2.0] {
+            for &frac in &[0.4, 0.8, 1.6] {
                 let raise = to_call + pot * frac;
                 if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
                     actions.push(Action {
@@ -196,7 +196,7 @@ impl GameState {
             n += 1;
             if can_raise {
                 let pot = self.pot;
-                for &frac in &[0.5, 1.0, 2.0] {
+                for &frac in &[0.4, 0.8, 1.6] {
                     if n >= 8 {
                         break;
                     }
@@ -230,7 +230,7 @@ impl GameState {
             n += 1;
             if can_raise {
                 let pot = self.pot;
-                for &frac in &[0.5, 1.0, 2.0] {
+                for &frac in &[0.4, 0.8, 1.6] {
                     if n >= 8 {
                         break;
                     }
@@ -451,7 +451,7 @@ fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
             let fraction = amount / pot;
             if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
                 5 // all-in
-            } else if fraction < 1.5 {
+            } else if fraction < 0.6 {
                 2
             } else if fraction < 1.2 {
                 3

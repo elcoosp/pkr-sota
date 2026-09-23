@@ -63,9 +63,9 @@ pub struct AnchorsSection {
 /// regenerate abstraction tables and re-export.
 pub const ANCHORS: [[f32; 3]; 4] = [
     [0.0, 0.0, 0.0],
-    [0.5, 1.0, 2.0],
-    [0.5, 1.0, 2.0],
-    [0.5, 1.0, 2.0],
+    [0.4, 0.8, 1.6],
+    [0.4, 0.8, 1.6],
+    [0.4, 0.8, 1.6],
 ];
 
 // Compile-time size guards
