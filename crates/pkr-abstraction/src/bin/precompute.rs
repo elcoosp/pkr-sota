@@ -7,12 +7,36 @@ use pkr_eval::lookup_fast::{
     combinadic_unrank_2, combinadic_unrank_3, combinadic_unrank_5, combinadic_unrank_6,
     combinadic_unrank_7, TableEvaluator,
 };
+use pkr_eval::Fast7Evaluator;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use rand::{seq::IndexedRandom, RngExt};
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::Write;
+
+/// Which evaluator backend to use. `table` is the default and matches
+/// historical behaviour. Set `PKR_EVALUATOR=fast7` to opt into the T1.3
+/// rank-count LUT (bit-identical output, ~20-60x faster per eval).
+fn evaluator_kind() -> String {
+    std::env::var("PKR_EVALUATOR").unwrap_or_else(|_| "table".to_string())
+}
+
+/// Construct the configured evaluator backend for a given rank-table path.
+/// Returns a boxed trait object so callers do not need to be generic.
+fn make_evaluator(
+    rank_table_path: &str,
+) -> Result<Box<dyn Evaluator>, Box<dyn std::error::Error>> {
+    match evaluator_kind().as_str() {
+        "fast7" => Ok(Box::new(Fast7Evaluator::new(rank_table_path)?)),
+        "table" => Ok(Box::new(TableEvaluator::new(rank_table_path)?)),
+        other => Err(format!(
+            "unknown PKR_EVALUATOR='{}', expected 'table' or 'fast7'",
+            other
+        )
+        .into()),
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -212,13 +236,13 @@ fn generate_centroids(
     rank_table_path: &str,
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let evaluator = make_evaluator(rank_table_path)?;
     let total = choose(52, 2) as usize;
     let data: Vec<(f32, f32)> = (0..total)
         .into_par_iter()
         .map(|idx| {
             let hole = combinadic_unrank_2(idx as u32);
-            let (ehs, ehs_sq) = calculate_ehs(&hole, &[], &evaluator);
+            let (ehs, ehs_sq) = calculate_ehs(&hole, &[], evaluator.as_ref());
             (ehs, ehs_sq)
         })
         .collect();
@@ -246,7 +270,7 @@ fn generate_abstraction_table(
         "centroid count must be <= 255 for u8 ids"
     );
     let centroids = &store.centroids;
-    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let evaluator = make_evaluator(rank_table_path)?;
     let total_combos = choose(52, 5) as usize;
     let entries = total_combos * 10;
     let mut table: Vec<u8> = vec![0u8; entries];
@@ -278,7 +302,7 @@ fn generate_abstraction_table(
                         b_idx += 1;
                     }
                 }
-                let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+                let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator.as_ref());
                 let mut best_idx = 0;
                 let mut best_dist = f32::MAX;
                 for (idx, c) in centroids.iter().enumerate() {
@@ -316,7 +340,7 @@ fn generate_turn_table(
         "turn table uses u8 bucket ids; keep centroid count <= 255"
     );
     let centroids = &store.centroids;
-    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let evaluator = make_evaluator(rank_table_path)?;
     let total_combos = choose(52, 6) as usize;
     let entries = total_combos * 15;
 
@@ -393,7 +417,7 @@ fn generate_turn_table(
                             b_idx += 1;
                         }
                     }
-                    let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+                    let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator.as_ref());
                     let mut best_idx = 0u8;
                     let mut best_dist = f32::MAX;
                     for (ci, c) in centroids.iter().enumerate() {
@@ -461,12 +485,12 @@ fn generate_preflop_table(
         "centroid count must be <= 255 for u8 ids"
     );
     let centroids = &store.centroids;
-    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let evaluator = make_evaluator(rank_table_path)?;
     let total = choose(52, 2) as usize;
     let mut table: Vec<u8> = vec![0u8; total];
     table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
         let hole = combinadic_unrank_2(idx as u32);
-        let (ehs, ehs_sq) = calculate_ehs(&hole, &[], &evaluator);
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &[], evaluator.as_ref());
         let mut best_idx = 0;
         let mut best_dist = f32::MAX;
         for (idx_c, c) in centroids.iter().enumerate() {
@@ -495,7 +519,7 @@ fn generate_flop_buckets(
     rank_table_path: &str,
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let evaluator = make_evaluator(rank_table_path)?;
     let total_flops = choose(52, 3) as usize;
     let features: Vec<[f32; 10]> = (0..total_flops)
         .into_par_iter()
@@ -513,7 +537,7 @@ fn generate_flop_buckets(
             }
             for _ in 0..500 {
                 let hole = [deck[rng.random_range(0..49)], deck[rng.random_range(0..49)]];
-                let (ehs, _) = calculate_ehs(&hole, &flop, &evaluator);
+                let (ehs, _) = calculate_ehs(&hole, &flop, evaluator.as_ref());
                 let bucket = (ehs * 10.0).clamp(0.0, 9.0) as usize;
                 histogram[bucket] += 1.0;
             }
@@ -563,7 +587,7 @@ fn generate_river_buckets(
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     assert!(k <= 255, "river bucket count must be <= 255 (u8 buckets)");
-    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let evaluator = make_evaluator(rank_table_path)?;
     let total_boards = choose(52, 5) as usize;
     let features: Vec<[f32; 10]> = (0..total_boards)
         .into_par_iter()
@@ -581,7 +605,7 @@ fn generate_river_buckets(
             }
             for _ in 0..200 {
                 let hole = [deck[rng.random_range(0..47)], deck[rng.random_range(0..47)]];
-                let (ehs, _) = calculate_ehs(&hole, &board, &evaluator);
+                let (ehs, _) = calculate_ehs(&hole, &board, evaluator.as_ref());
                 let bucket = (ehs * 10.0).clamp(0.0, 9.0) as usize;
                 histogram[bucket] += 1.0;
             }
@@ -632,7 +656,7 @@ fn generate_all7_scores(
     rank_table_path: &str,
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let evaluator = TableEvaluator::new(rank_table_path)?;
+    let evaluator = make_evaluator(rank_table_path)?;
     let total = choose(52, 7) as usize;
     let scores: Vec<u8> = (0..total)
         .into_par_iter()
@@ -640,7 +664,7 @@ fn generate_all7_scores(
             let cards = combinadic_unrank_7(idx as u32);
             let hole = [cards[0], cards[1]];
             let board = [cards[2], cards[3], cards[4], cards[5], cards[6]];
-            let (ehs, _) = calculate_ehs(&hole, &board, &evaluator);
+            let (ehs, _) = calculate_ehs(&hole, &board, evaluator.as_ref());
             (ehs * 255.0).clamp(0.0, 255.0) as u8
         })
         .collect();

@@ -1,6 +1,7 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 use clap::Parser;
+use pkr_contracts;
 use pkr_abstraction::{load_centroids, KMeansAbstraction};
 use pkr_cfr::Trainer;
 use pkr_eval::TableEvaluator;
@@ -49,6 +50,12 @@ struct Cli {
 
     #[arg(long, default_value = "hand_ranks.bin")]
     rank_table: PathBuf,
+
+    /// Hand evaluator backend. "table" = 21-subset LUT read (default,
+    /// reference implementation). "fast7" = rank-count LUT + flush fast
+    /// path (T1.3, ~20-60x faster per eval, bit-identical output).
+    #[arg(long, default_value = "table")]
+    evaluator: String,
 
     #[arg(long)]
     threads: Option<usize>,
@@ -148,8 +155,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("Running with {} threads", num_threads);
 
-    let evaluator =
-        Arc::new(TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin"));
+    let evaluator: Arc<dyn pkr_contracts::Evaluator> = match cli.evaluator.as_str() {
+        "fast7" => Arc::new(
+            pkr_eval::Fast7Evaluator::new(&cli.rank_table)
+                .expect("Failed to load hand_ranks.bin (Fast7Evaluator)"),
+        ),
+        "table" => Arc::new(
+            TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin"),
+        ),
+        other => {
+            eprintln!(
+                "FATAL: unknown --evaluator '{}'. Expected 'table' or 'fast7'.",
+                other
+            );
+            std::process::exit(2);
+        }
+    };
+    eprintln!("evaluator: {}", cli.evaluator);
 
     let store =
         load_centroids(cli.centroids.to_str().unwrap()).expect("Failed to load default centroids");
