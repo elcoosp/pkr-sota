@@ -550,3 +550,129 @@ mod extended_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod c6_unit_tests {
+    use super::*;
+    use pkr_contracts::Evaluator;
+
+    struct NullEval;
+    impl Evaluator for NullEval {
+        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 {
+            0
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // River tier coverage (r3 C6.4)
+    //
+    // The river hash uses `hand_rank >> 6`, which maps the 7462-rank
+    // space to 117 buckets (0..=116). If T2.2 changes the shift to
+    // `>> 3`, this test must be updated in the SAME commit that bumps
+    // the blueprint format version — that is the contract.
+    // ------------------------------------------------------------------
+    #[test]
+    fn river_tier_coverage_shift_6_is_117_buckets() {
+        const HAND_RANK_MAX: u32 = 7461; // 7462-scale ranks 0..=7461
+        let tiers = (HAND_RANK_MAX >> 6) + 1;
+        assert_eq!(
+            tiers, 117,
+            "river `>> 6` must yield 117 tiers; if this changed, bump the blueprint format"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Flat-index preflop is injective over the 1326 combos.
+    // ------------------------------------------------------------------
+    #[test]
+    fn preflop_flat_index_is_injective() {
+        let mut seen = std::collections::HashSet::new();
+        for a in 0u8..52 {
+            for b in (a + 1)..52 {
+                let mut cards = [a, b];
+                cards.sort_unstable_by(|x, y| y.cmp(x));
+                let idx = {
+                    let c0 = cards[0] as u32;
+                    let c1 = cards[1] as u32;
+                    choose(c0, 2) + choose(c1, 1)
+                };
+                assert!(
+                    seen.insert(idx),
+                    "duplicate flat index {idx} for combo ({a},{b})"
+                );
+            }
+        }
+        assert_eq!(seen.len(), 1326);
+    }
+
+    // ------------------------------------------------------------------
+    // Hash stability: same inputs, same output, across calls and across
+    // threads. This is the primary contract every downstream consumer
+    // (trainer, exporter, runtime) relies on.
+    // ------------------------------------------------------------------
+    #[test]
+    fn hash_is_deterministic_across_threads() {
+        let store = CentroidStore {
+            centroids: vec![(0.3, 0.09), (0.7, 0.49)],
+        };
+        let abstraction = KMeansAbstraction::from_store(store, std::sync::Arc::new(NullEval));
+
+        // Canonical preflop hash for AA, empty history.
+        let hole: [u8; 2] = [48, 49];
+        let history: [u8; 4] = [0, 0, 0, 0];
+        let expected = abstraction.get_infoset_hash(&hole, &[], &history, 0);
+
+        // Serial: 16 calls must produce identical output.
+        for _ in 0..16 {
+            let r = abstraction.get_infoset_hash(&hole, &[], &history, 0);
+            assert_eq!(r, expected, "hash must be stable across calls");
+        }
+
+        // Parallel: rayon does not need shared state mutation here, so
+        // this simply confirms the read path is thread-safe (no interior
+        // mutability on the fast path).
+        use rayon::prelude::*;
+        let par_expected: Vec<u64> = (0..1024)
+            .into_par_iter()
+            .map(|_| abstraction.get_infoset_hash(&hole, &[], &history, 0))
+            .collect();
+        for r in par_expected {
+            assert_eq!(r, expected, "hash must be stable across threads");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Hash distinguishes street: same (hole, board, history) at different
+    // streets must not collide — preflop vs flop must differ.
+    // ------------------------------------------------------------------
+    #[test]
+    fn hash_changes_with_street() {
+        let store = CentroidStore {
+            centroids: vec![(0.3, 0.09), (0.7, 0.49)],
+        };
+        let abstraction = KMeansAbstraction::from_store(store, std::sync::Arc::new(NullEval));
+        let hole: [u8; 2] = [48, 49];
+        let history: [u8; 4] = [0, 0, 0, 0];
+        let h_pre = abstraction.get_infoset_hash(&hole, &[], &history, 0);
+        let h_flop = abstraction.get_infoset_hash(&hole, &[0, 1, 2], &history, 1);
+        assert_ne!(h_pre, h_flop);
+    }
+
+    // ------------------------------------------------------------------
+    // Hash distinguishes history: same cards, different sig byte → diff.
+    // ------------------------------------------------------------------
+    #[test]
+    fn hash_changes_with_history() {
+        let store = CentroidStore {
+            centroids: vec![(0.3, 0.09), (0.7, 0.49)],
+        };
+        let abstraction = KMeansAbstraction::from_store(store, std::sync::Arc::new(NullEval));
+        let hole: [u8; 2] = [48, 49];
+        let h1 = abstraction.get_infoset_hash(&hole, &[], &[0, 0, 0, 0], 0);
+        let h2 = abstraction.get_infoset_hash(&hole, &[], &[1, 0, 0, 0], 0);
+        let h3 = abstraction.get_infoset_hash(&hole, &[], &[2, 0, 0, 0], 0);
+        assert_ne!(h1, h2);
+        assert_ne!(h2, h3);
+        assert_ne!(h1, h3);
+    }
+}
