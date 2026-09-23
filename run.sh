@@ -42,17 +42,30 @@ MANEOF
 
 cargo build --release -p pkr-trainer -p pkr-abstraction
 
-# Cache precompute by exact command hash. REBUILD=1 forces rerun.
+# Cache precompute on the OUTPUT FILE. If the file exists and is
+# non-empty, skip. The final argument is always the output path for every
+# subcommand used here (hand_ranks, centroids, flop, river, preflop,
+# abs5). REBUILD=1 forces regeneration.
 pre() {
-    local hash
-    hash=$(printf '%s\n' "$@" | shasum | cut -d' ' -f1 | head -c 16)
-    local marker="$OUT/.precompute_${hash}"
-    if [ "${REBUILD:-0}" != "1" ] && [ -f "$marker" ]; then
-        echo "  [cached] $1"
+    local last="${@: -1}"
+    if [ "${REBUILD:-0}" != "1" ] && [ -s "$last" ]; then
+        echo "  [cached] $1 -> $(basename "$last")"
         return 0
     fi
     cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- "$@"
-    touch "$marker"
+}
+
+# turn's last arg is the number of samples, not the output path.
+# Handle it explicitly by checking the second-to-last arg.
+pre_turn() {
+    # args: turn centroids rank out samples
+    local out="$4"
+    if [ "${REBUILD:-0}" != "1" ] && [ -s "$out" ]; then
+        echo "  [cached] turn -> $(basename "$out")"
+        return 0
+    fi
+    EHS_SAMPLES="$EHS_SAMPLES_TURN" \
+        cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- "$@"
 }
 
 echo "==> [1/8] hand_ranks"
@@ -74,9 +87,7 @@ echo "==> [6/8] flop table"
 pre abs5 "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/abstraction.bin"
 
 echo "==> [7/8] turn table"
-EHS_SAMPLES="$EHS_SAMPLES_TURN" \
-    cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- \
-    turn "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/turn_abstraction.bin" 10000 || true
+pre_turn turn "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/turn_abstraction.bin" 10000
 
 echo "==> [8/8] TRAIN"
 cargo run --release --quiet -p pkr-trainer -- \
