@@ -971,6 +971,7 @@ dependencies = [
  "pkr-contracts",
  "pkr-core",
  "pkr-eval",
+ "pkr-exploit",
  "pkr-export",
  "pkr-runtime",
  "rand",

@@ -77,6 +77,15 @@ struct Cli {
     /// Iterations between reports (CSV row + progress print).
     #[arg(long, default_value_t = 10000)]
     report_every: u32,
+
+    /// Sampled best-response exploitability check every N iterations
+    /// (0 = off). Reports in milli-big-blinds per game.
+    #[arg(long, default_value_t = 0)]
+    eval_every: u32,
+
+    /// Deals sampled per exploitability check. Accuracy ~ 1/sqrt(deals).
+    #[arg(long, default_value_t = 2000)]
+    eval_deals: u32,
 }
 
 fn main() {
@@ -154,6 +163,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let abstraction = Arc::new(abstraction);
     let t_init = Instant::now();
+    let abstraction_for_eval = Arc::clone(&abstraction);
+    let evaluator_for_eval = Arc::clone(&evaluator);
     let mut trainer = Trainer::with_capacity(abstraction, evaluator, cli.capacity);
     eprintln!(
         "init: table + abstraction ready in {:.2}s (capacity={})",
@@ -281,6 +292,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 nodes_per_iter,
                 delta.avg_depth(),
             );
+
+            // Sampled best-response exploitability check.
+            if cli.eval_every > 0 && done % cli.eval_every == 0 {
+                let br = pkr_exploit::best_response::sampled_exploitability(
+                    trainer.get_table(),
+                    abstraction_for_eval.as_ref(),
+                    evaluator_for_eval.as_ref(),
+                    cli.eval_deals,
+                    done as u64,
+                );
+                eprintln!(
+                    "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
+                    done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
+                );
+            }
 
             if let Some(w) = csv_writer.as_mut() {
                 writeln!(

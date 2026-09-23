@@ -13,6 +13,7 @@ pkr-contracts = { workspace = true }
 pkr-core = { workspace = true }
 pkr-cfr = { workspace = true }
 pkr-export = { workspace = true }
+pkr-exploit = { workspace = true }
 pkr-abstraction = { workspace = true }
 pkr-eval = { workspace = true }
 clap = { workspace = true }
