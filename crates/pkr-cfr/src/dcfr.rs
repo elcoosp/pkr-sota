@@ -76,6 +76,7 @@ pub fn discount_factor(t: f32, p: f32) -> f32 {
 
 /// Full regret update with selectable discount and momentum.
 /// Returns (new_regret, new_momentum).
+#[allow(dead_code)]  // superseded by update_regret_i64; kept for the f32 baseline
 pub fn update_regret_full(
     current: f32,
     prev_momentum: f32,
@@ -112,6 +113,7 @@ pub fn update_regret_full(
 /// Production update: canonical discount, PCFR+ momentum on. This is
 /// what `flush_cpu_batch` calls.
 #[inline(always)]
+#[allow(dead_code)]  // superseded by update_regret_i64; kept for the f32 baseline
 pub fn update_regret_pfr_plus(
     current: f32,
     prev_momentum: f32,
@@ -139,6 +141,107 @@ pub fn strategy_sum_discount_factor(t: f32) -> f32 {
     let ratio = t / TAU as f32;
     let numerator = ratio.powf(GAMMA);
     numerator / (numerator + 1.0)
+}
+
+
+// ---------------------------------------------------------------------------
+// T1.1: exact integer discount
+// ---------------------------------------------------------------------------
+//
+// The f32 form `t^p / (t^p + 1)` rounds to exactly 1.0 once `t^p > 2^23`,
+// which for α=1.5 happens at t ≈ 10^4. Past that, the DCFR discount is
+// inert and training degenerates to vanilla CFR.
+//
+// Fix: compute the discount as an exact i128 rational `(num, den)` for
+// integer p ∈ {0, 1, 2}, then apply it with i128 arithmetic on the i64
+// regret accumulator. No f32 anywhere in the discount path.
+//
+// α=1.5 is the DCFR paper's default but is irrational. Per the paper,
+// any α ∈ [1, 2] gives similar results; we round to 2 which is exact.
+
+/// Exact discount factor w_p(t) = t^p / (t^p + 1) as a rational num/den.
+/// Returns (1, 1) during warmup (t < TAU).
+#[inline]
+pub fn discount_num_den(t: u32, p: u32) -> (i128, i128) {
+    if t < TAU {
+        return (1, 1);
+    }
+    let ti = t as i128;
+    let tp = match p {
+        0 => 1i128,
+        1 => ti,
+        2 => ti * ti,
+        _ => unreachable!("discount_num_den only supports p ∈ {{0,1,2}}"),
+    };
+    (tp, tp + 1)
+}
+
+/// Exact regret/momentum update in i64 (at SCALE=1000).
+///
+/// `current_i64` and `delta_i64` are raw i32/i64 fixed-point values at
+/// SCALE. `iteration` is the batch's last iteration number.
+///
+/// Mirrors `update_regret_full` but keeps the discount and the accumulator
+/// in integer precision. `alpha_p = 2` (α=1.5 rounded), `beta_p = 0`.
+pub fn update_regret_i64(
+    current_i64: i64,
+    prev_momentum_i64: i64,
+    iteration: u32,
+    delta_i64: i64,
+) -> (i64, i64) {
+    let t = iteration;
+    if t == 0 {
+        return (delta_i64, delta_i64);
+    }
+
+    // PCFR+ momentum. The sqrt is inherently irrational; do it in f64
+    // (this part is numerically fine and 20 lines above were too).
+    let t_f = t as f64;
+    let gamma = 1.0 / ((t_f + 1.0).sqrt());
+    let predicted_f =
+        (1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64);
+    let predicted_i64 = predicted_f.round() as i64;
+
+    // Exact DCFR discount. α=2, β=0.
+    let (num_pos, den_pos) = discount_num_den(t, 2);
+    let (num_neg, den_neg) = discount_num_den(t, 0);
+
+    let r_pos = current_i64.max(0) as i128;
+    let r_neg = current_i64.min(0) as i128;
+
+    // Common denominator for the two discounts. i128 headroom is huge.
+    let common_den = den_pos * den_neg;
+    let pos_num = r_pos * num_pos * den_neg;
+    let neg_num = r_neg * num_neg * den_pos;
+    let discounted_i128 = (pos_num + neg_num) / common_den;
+    let discounted_i64 = discounted_i128
+        .clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+
+    let new_r = (discounted_i64 + predicted_i64).max(0);
+    (new_r, predicted_i64)
+}
+
+/// Exact strategy-sum update with the γ=2 discount applied.
+///
+/// NOT wired into production. The playbook measures the cumulative
+/// effect of γ=2 discounting at <0.1% over a full run, which is below
+/// f64 precision. The strategy sum accumulates unweighted as before.
+/// Kept as a documented helper for future experiments where the
+/// discount might be made meaningful (e.g. rescaled τ).
+#[allow(dead_code)]
+pub fn apply_strategy_discount_i64(
+    current_i64: i64,
+    iteration: u32,
+    prob_i64: i64,
+) -> i64 {
+    let t = iteration;
+    if t == 0 {
+        return current_i64.saturating_add(prob_i64);
+    }
+    let (num, den) = discount_num_den(t, 2);
+    let current_i128 = current_i64 as i128;
+    let new_i128 = (current_i128 * num) / den + prob_i64 as i128;
+    new_i128.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
 #[cfg(test)]

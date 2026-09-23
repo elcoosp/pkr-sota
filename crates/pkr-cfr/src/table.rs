@@ -1,4 +1,7 @@
-use crate::dcfr::update_regret_pfr_plus;
+// T1.1: flush_cpu_batch now uses the integer path
+// (crate::dcfr::update_regret_i64). The f32 wrapper is kept for A/B
+// comparison and tests.
+
 use crate::gpu::{BatchItem, GpuState};
 use crate::metrics::LocalMetrics;
 use foldhash::fast::RandomState as FoldHasher;
@@ -102,6 +105,10 @@ fn cache_insert(hash: u64, idx: usize) {
     });
 }
 
+/// Retained for future use if the integer path ever needs to warn about
+/// non-finite intermediates (currently it cannot produce them because
+/// all arithmetic stays in i64/i128).
+#[allow(dead_code)]
 fn warn_nonfinite_regret_once(iteration: u32) {
     use std::sync::OnceLock;
     static WARNED: OnceLock<()> = OnceLock::new();
@@ -474,14 +481,19 @@ impl CompactRegretTable {
                 }
                 let idx = idx_u32 as usize;
                 let a = act_u32 as usize;
-                let cur = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
-                let mom = self.load_rm(idx, a, RM_MOMENTUM) as f32 / SCALE;
-                let (new_r, new_m) = update_regret_pfr_plus(cur, mom, iteration, delta);
-                if !new_r.is_finite() || !new_m.is_finite() {
-                    warn_nonfinite_regret_once(iteration);
-                }
-                self.store_rm(idx, a, RM_REGRET, (new_r * SCALE) as i32);
-                self.store_rm(idx, a, RM_MOMENTUM, (new_m * SCALE) as i32);
+                // T1.1: exact integer discount. cur/mom are raw fixed-point
+                // i32 at SCALE; delta is f32 chips, converted to fixed-point.
+                let cur_i64 = self.load_rm(idx, a, RM_REGRET) as i64;
+                let mom_i64 = self.load_rm(idx, a, RM_MOMENTUM) as i64;
+                let delta_i64 = (delta as f64 * SCALE as f64).round() as i64;
+                let (new_r, new_m) =
+                    crate::dcfr::update_regret_i64(cur_i64, mom_i64, iteration, delta_i64);
+                // Clamp to i32 range for storage; the accumulator is i64
+                // across updates but the on-disk representation stays i32.
+                let r32 = new_r.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                let m32 = new_m.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                self.store_rm(idx, a, RM_REGRET, r32);
+                self.store_rm(idx, a, RM_MOMENTUM, m32);
             }
         });
         (input_len, unique_len)
