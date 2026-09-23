@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
-# run-v12.sh - T0.2-clean training run.
+# run-v12.sh — T0.2-clean training run.
 #
-# Same structure as v11 but:
+# Differences from v11:
 #   - fresh output dir outputs/v12/
 #   - abstraction tables symlinked from outputs/v9/ (unchanged by T0.2)
-#   - fresh checkpoint (never reuses v9 ckpts; those carry pre-T0.2 semantics)
-#   - refuses to start on a dirty tree unless ALLOW_DIRTY=1
+#   - symlinks are ABSOLUTE (fixes the `outputs/outputs/v9/...` bug)
+#   - fresh checkpoint (v9 ckpts carry pre-T0.2 bucket semantics)
+#   - aborts on the first failed chunk instead of hammering 8 times
+#   - refuses to start on a dirty tree
 #
 # Foreground:  ./run-v12.sh
 # Background:  nohup ./run-v12.sh > /tmp/v12_console.log 2>&1 &
-#              tail -f /tmp/v12_console.log
-# Watch eval:  tail -f /tmp/v12_evals.log
+#              echo $! > /tmp/v12.pid
+# Watch:       tail -f /tmp/v12.log
+#              tail -f /tmp/v12_evals.log
 
 set -uo pipefail
 cd "$(dirname "$0")"
 export RUSTFLAGS="-C target-cpu=native"
 
+REPO_ROOT="$(pwd)"
 OUT=outputs/v12
 SRC=outputs/v9
 LOG=/tmp/v12.log
@@ -29,40 +33,31 @@ EVAL_HANDS=500
     echo "=== pkr-sota v12: T0.2-clean training ==="
     echo "  started:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "  output:     $OUT"
-    echo "  source:     $SRC (abstraction, symlinked)"
-    echo "  chunk size: $CHUNK"
+    echo "  source:     $SRC (absolute symlinks)"
+    echo "  chunk:      $CHUNK"
     echo "  total:      $TOTAL"
     echo "  eval:       $EVAL_HANDS hands vs each scripted bot per chunk"
     echo "  code:       $(git rev-parse --short HEAD) on $(git branch --show-current)"
-    echo "  dirty:      $(git status --porcelain | wc -l | tr -d ' ') modified files"
     echo ""
 } | tee "$LOG"
 
-if [ "${ALLOW_DIRTY:-0}" != "1" ] && [ -n "$(git status --porcelain)" ]; then
-    {
-        echo "ABORT: working tree is dirty."
-        echo ""
-        echo "       git status --short:"
-        git status --short
-        echo ""
-        echo "       Commit or stash, then rerun."
-        echo "       Override with:  ALLOW_DIRTY=1 ./run-v12.sh"
-    } | tee -a "$LOG"
+if [ -n "$(git status --porcelain)" ]; then
+    { echo "ABORT: working tree is dirty:"; git status --short; } | tee -a "$LOG"
     exit 1
 fi
 
 mkdir -p "$OUT"
 for f in centroids.bin preflop_abstraction.bin abstraction.bin \
          turn_abstraction.bin river_buckets.bin flop_buckets.bin hand_ranks.bin; do
-    if [ ! -e "$SRC/$f" ]; then
-        echo "ABORT: missing $SRC/$f" | tee -a "$LOG"
+    if [ ! -e "$REPO_ROOT/$SRC/$f" ]; then
+        echo "ABORT: missing $REPO_ROOT/$SRC/$f" | tee -a "$LOG"
         exit 1
     fi
-    ln -sf "../$SRC/$f" "$OUT/$f"
+    ln -sf "$REPO_ROOT/$SRC/$f" "$OUT/$f"
 done
 
 if [ -e "$OUT/train.ckpt" ]; then
-    echo "  removing stale $OUT/train.ckpt (pre-run cleanup)" | tee -a "$LOG"
+    echo "  removing stale $OUT/train.ckpt" | tee -a "$LOG"
     rm -f "$OUT/train.ckpt" "$OUT/train.ckpt.prev"
 fi
 
@@ -110,13 +105,13 @@ for ((target = CHUNK; target <= TOTAL; target += CHUNK)); do
 
     RUN_RC=${PIPESTATUS[0]}
     if [ "$RUN_RC" != "0" ]; then
-        echo "  chunk run failed, rc=$RUN_RC" | tee -a "$LOG"
-        continue
+        echo "  chunk $target FAILED rc=$RUN_RC — aborting run" | tee -a "$LOG"
+        exit "$RUN_RC"
     fi
 
     if [ ! -f "$OUT/blueprint_${target}.bin" ]; then
-        echo "  no blueprint produced for target $target" | tee -a "$LOG"
-        continue
+        echo "  no blueprint for $target — aborting run" | tee -a "$LOG"
+        exit 1
     fi
 
     echo "" | tee -a "$LOG"
