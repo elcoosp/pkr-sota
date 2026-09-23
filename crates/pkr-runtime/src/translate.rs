@@ -102,7 +102,11 @@ pub fn resolve_action(
         return *advice;
     }
 
-    let fraction = if pot > 0.0 { requested_amount / pot } else { 0.0 };
+    let fraction = if pot > 0.0 {
+        requested_amount / pot
+    } else {
+        0.0
+    };
 
     let (lo_frac, hi_frac, p_lo) = if fraction <= sorted[0] {
         (sorted[0], sorted[0], 1.0f32)
@@ -116,8 +120,7 @@ pub fn resolve_action(
         };
         // Equal reach: runtime has no belief state. compute_translation
         // returns (lower_q, upper_q) bytes summing to 255.
-        let (q_lo, _q_hi) =
-            pkr_export::translate::compute_translation(lo, hi, fraction, 0.5, 0.5);
+        let (q_lo, _q_hi) = pkr_export::translate::compute_translation(lo, hi, fraction, 0.5, 0.5);
         (lo, hi, q_lo as f32 / 255.0)
     };
 
@@ -191,9 +194,7 @@ mod tests {
     /// Stored as cumulative bytes [26, 128, 204, 243, 255, 255, ...].
     fn sample_advice() -> SotaAdvice {
         SotaAdvice {
-            cdf_probabilities: [
-                26, 128, 204, 243, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            ],
+            cdf_probabilities: [26, 128, 204, 243, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             len: 6,
         }
     }
