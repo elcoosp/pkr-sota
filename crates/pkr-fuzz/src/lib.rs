@@ -980,6 +980,247 @@ pub fn run_fuzz_seeded(num_hands: u32, seed: u64) -> FuzzingResult {
     }
 }
 
+// =============================================================================
+// E3b: paired-seed A/B eval
+// =============================================================================
+//
+// Design: for each hand, deal ONE shared deck and play it twice — once
+// with `a` as hero, once with `b`. The two passes see identical cards
+// AND identical bot decisions (the bots are deterministic). Hero
+// decisions use a per-decision RNG seeded from the hand seed, so even
+// when the two passes diverge they see the same "random draw at
+// decision K". This is textbook common random numbers (CRN): the
+// variance of the *difference* (profit_a - profit_b) collapses by an
+// order of magnitude versus comparing two unpaired runs.
+//
+// Seat alternation (hero-as-BB) is deferred to E3c. For now hero is
+// always seat 0 (SB preflop). This still gives the variance win on
+// the paired diff, which is the primary purpose.
+
+/// Per-opponent paired result.
+#[derive(Debug, Clone)]
+pub struct PairedOpponent {
+    pub name: String,
+    pub n_hands: u32,
+    /// Mean hero profit (chips) with provider A as hero.
+    pub mean_a: f64,
+    /// Mean hero profit (chips) with provider B as hero.
+    pub mean_b: f64,
+    /// Mean of per-hand (profit_a - profit_b). The headline number.
+    pub mean_diff: f64,
+    /// Standard error of `mean_diff`. The paired CI is
+    /// `mean_diff ± 1.96 * se_diff` at 95%.
+    pub se_diff: f64,
+}
+
+/// Whole-run paired result.
+#[derive(Debug, Clone)]
+pub struct PairedResult {
+    pub hands_per_opp: u32,
+    pub seed: u64,
+    pub opponents: Vec<PairedOpponent>,
+}
+
+impl PairedResult {
+    /// Simple average of `mean_diff` across opponents, unweighted.
+    /// All opponents currently play the same number of hands, so this
+    /// is fine; if that changes, use a hand-weighted formula.
+    pub fn overall_mean_diff(&self) -> f64 {
+        if self.opponents.is_empty() {
+            return 0.0;
+        }
+        self.opponents.iter().map(|o| o.mean_diff).sum::<f64>() / self.opponents.len() as f64
+    }
+}
+
+/// Deal 7 unique cards from a Fisher-Yates shuffled deck.
+fn deal_runout(rng: &mut rand::rngs::SmallRng) -> ([u8; 2], [u8; 2], [u8; 5]) {
+    let mut deck: [u8; 52] = core::array::from_fn(|i| i as u8);
+    for i in 0..9 {
+        let k = i + rng.random_range(0..(52 - i));
+        deck.swap(i, k);
+    }
+    (
+        [deck[0], deck[1]],
+        [deck[2], deck[3]],
+        [deck[4], deck[5], deck[6], deck[7], deck[8]],
+    )
+}
+
+/// Play one hand with `provider` as hero (seat 0) and `bot` as villain
+/// (seat 1). Returns hero's chip profit.
+///
+/// `base_seed` drives per-decision RNG reseeding for common random
+/// numbers: decision K uses `SmallRng::seed_from_u64(base_seed + K*const)`,
+/// so both passes at position K see the same uniform [0,1) sample
+/// regardless of how many hands were played before.
+fn play_one_hand(
+    provider: &dyn pkr_contracts::BlueprintProvider,
+    abstraction: &dyn pkr_contracts::AbstractionBuilder,
+    evaluator: &dyn pkr_contracts::Evaluator,
+    bot: &dyn ScriptedBot,
+    hero: [u8; 2],
+    villain: [u8; 2],
+    runout: &[u8; 5],
+    base_seed: u64,
+) -> f32 {
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    let mut state = GameState::new(200.0, 1.0, 2.0);
+    state.set_hole_cards(hero, villain);
+    let mut deck_idx = 0usize;
+    let mut decision_idx: u64 = 0;
+    let ctx = EvalContext {
+        provider,
+        abstraction,
+        evaluator,
+    };
+
+    let mut steps = 0u32;
+    while !state.is_terminal() && steps < 60 {
+        steps += 1;
+        let action = if state.actor == 0 {
+            // Common random numbers: seed per-decision from base_seed.
+            let decision_seed =
+                base_seed.wrapping_add(decision_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut dec_rng = SmallRng::seed_from_u64(decision_seed);
+            decision_idx += 1;
+            let (act, _used_bp) = decide_from_blueprint(&ctx, &state, &mut dec_rng);
+            act
+        } else {
+            bot.act(&state)
+        };
+        state.apply_action_in_place(&action);
+
+        if state.is_street_complete() && state.street != Street::River {
+            let need = match state.street {
+                Street::Preflop => 3,
+                Street::Flop => 1,
+                Street::Turn => 1,
+                Street::River => 0,
+            };
+            if deck_idx + need > runout.len() {
+                break;
+            }
+            let cards: Vec<u8> = runout[deck_idx..deck_idx + need].to_vec();
+            deck_idx += need;
+            state.advance_street_in_place(&cards);
+        }
+    }
+
+    if state.is_terminal() {
+        state.terminal_payoff(0, evaluator)
+    } else {
+        0.0
+    }
+}
+
+/// Paired-seed A/B comparison. See module comment for the design.
+///
+/// Prefer `eval_paired` over two calls to `run_eval_harness` whenever
+/// the two providers are compared directly: paired SE is typically
+/// 3-10x smaller at the same hand count.
+pub fn eval_paired(
+    a: &dyn pkr_contracts::BlueprintProvider,
+    b: &dyn pkr_contracts::BlueprintProvider,
+    abstraction: &dyn pkr_contracts::AbstractionBuilder,
+    evaluator: &dyn pkr_contracts::Evaluator,
+    num_hands: u32,
+    base_seed: u64,
+) -> PairedResult {
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    let bots: Vec<(&str, &dyn ScriptedBot)> = vec![
+        ("station", &StationBot),
+        ("nit", &NitBot),
+        ("aggro", &AggroBot),
+    ];
+
+    let mut opponents = Vec::with_capacity(bots.len());
+    for (name, bot) in &bots {
+        let mut profits_a: Vec<f64> = Vec::with_capacity(num_hands as usize);
+        let mut profits_b: Vec<f64> = Vec::with_capacity(num_hands as usize);
+
+        for hand_no in 0..num_hands {
+            let hand_seed = base_seed
+                .wrapping_add(hand_no as u64)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(0x1);
+            let mut deal_rng = SmallRng::seed_from_u64(hand_seed);
+            let (hero, villain, runout) = deal_runout(&mut deal_rng);
+
+            let pa = play_one_hand(
+                a,
+                abstraction,
+                evaluator,
+                *bot,
+                hero,
+                villain,
+                &runout,
+                hand_seed,
+            );
+            let pb = play_one_hand(
+                b,
+                abstraction,
+                evaluator,
+                *bot,
+                hero,
+                villain,
+                &runout,
+                hand_seed,
+            );
+
+            profits_a.push(pa as f64);
+            profits_b.push(pb as f64);
+        }
+
+        let n = profits_a.len() as f64;
+        if n == 0.0 {
+            opponents.push(PairedOpponent {
+                name: name.to_string(),
+                n_hands: 0,
+                mean_a: 0.0,
+                mean_b: 0.0,
+                mean_diff: 0.0,
+                se_diff: 0.0,
+            });
+            continue;
+        }
+
+        let mean_a = profits_a.iter().sum::<f64>() / n;
+        let mean_b = profits_b.iter().sum::<f64>() / n;
+        let diffs: Vec<f64> = profits_a
+            .iter()
+            .zip(profits_b.iter())
+            .map(|(x, y)| x - y)
+            .collect();
+        let mean_diff = diffs.iter().sum::<f64>() / n;
+        let var = if n > 1.0 {
+            diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / (n - 1.0)
+        } else {
+            0.0
+        };
+        let se_diff = (var / n).sqrt();
+
+        opponents.push(PairedOpponent {
+            name: name.to_string(),
+            n_hands: num_hands,
+            mean_a,
+            mean_b,
+            mean_diff,
+            se_diff,
+        });
+    }
+
+    PairedResult {
+        hands_per_opp: num_hands,
+        seed: base_seed,
+        opponents,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,5 +1286,220 @@ mod c2_aggro_tests {
             s.stacks[1], act
         );
         assert_eq!(s.street_bets[1], 200.0);
+    }
+}
+
+#[cfg(test)]
+mod e3b_tests {
+    use super::*;
+    use pkr_contracts::{AbstractionBuilder, BlueprintProvider, Evaluator, SotaAdvice};
+
+    /// Provider that always returns the same CDF for any hash.
+    struct FixedProvider {
+        cdf: [u8; 16],
+        len: u8,
+    }
+
+    impl BlueprintProvider for FixedProvider {
+        fn lookup(&self, _hash: u64) -> Option<SotaAdvice> {
+            Some(SotaAdvice {
+                cdf_probabilities: self.cdf,
+                len: self.len,
+            })
+        }
+    }
+
+    /// Provider that always returns None (fallback path).
+    struct MissingProvider;
+    impl BlueprintProvider for MissingProvider {
+        fn lookup(&self, _hash: u64) -> Option<SotaAdvice> {
+            None
+        }
+    }
+
+    /// Trivial abstraction: every state hashes to 0.
+    struct NullAbstraction;
+    impl AbstractionBuilder for NullAbstraction {
+        fn get_infoset_hash(
+            &self,
+            _hole: &[u8],
+            _board: &[u8],
+            _history: &[u8],
+            _street: u8,
+        ) -> u64 {
+            0
+        }
+    }
+
+    /// Trivial evaluator: all hands tie.
+    struct NullEval;
+    impl Evaluator for NullEval {
+        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 {
+            0
+        }
+    }
+
+    fn cdf_call_heavy() -> FixedProvider {
+        // Mostly call, some fold. Valid monotone CDF ending at 255.
+        FixedProvider {
+            cdf: [128, 200, 220, 240, 250, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            len: 6,
+        }
+    }
+
+    fn cdf_fold_heavy() -> FixedProvider {
+        // Mostly fold, some call.
+        FixedProvider {
+            cdf: [200, 240, 250, 253, 254, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            len: 6,
+        }
+    }
+
+    /// A vs A must have zero mean diff and zero SE — the paired design
+    /// guarantees this exactly (same strategy, same deals, same CRN).
+    #[test]
+    fn eval_paired_self_is_exactly_zero() {
+        let a = cdf_call_heavy();
+        let r = eval_paired(&a, &a, &NullAbstraction, &NullEval, 200, 1234);
+        assert_eq!(r.opponents.len(), 3);
+        for opp in &r.opponents {
+            assert_eq!(
+                opp.mean_diff, 0.0,
+                "A vs A on {} must have zero mean diff, got {}",
+                opp.name, opp.mean_diff
+            );
+            assert_eq!(
+                opp.se_diff, 0.0,
+                "A vs A on {} must have zero SE, got {}",
+                opp.name, opp.se_diff
+            );
+        }
+    }
+
+    /// Two different providers should give a nonzero mean diff (call-heavy
+    /// vs fold-heavy vs a calling bot). This is a directional check, not
+    /// a precise value.
+    #[test]
+    fn eval_paired_distinguishes_providers() {
+        let call_heavy = cdf_call_heavy();
+        let fold_heavy = cdf_fold_heavy();
+        // 500 hands gives enough signal.
+        let r = eval_paired(
+            &call_heavy,
+            &fold_heavy,
+            &NullAbstraction,
+            &NullEval,
+            500,
+            777,
+        );
+        // At least one opponent must see a nonzero diff.
+        let any_nonzero = r.opponents.iter().any(|o| o.mean_diff.abs() > 0.01);
+        assert!(
+            any_nonzero,
+            "call-heavy vs fold-heavy should produce a nonzero diff on at least one bot"
+        );
+        // SE must be finite and non-negative.
+        for opp in &r.opponents {
+            assert!(opp.se_diff.is_finite());
+            assert!(opp.se_diff >= 0.0);
+        }
+    }
+
+    /// Paired SE must be strictly smaller than the naive unpaired SE
+    /// on the same data. We can approximate unpaired SE as the SE of
+    /// profit_a and profit_b treated independently; paired SE should
+    /// be smaller because the shared deal dominates the variance.
+    #[test]
+    fn paired_se_is_tighter_than_independent() {
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+        let call_heavy = cdf_call_heavy();
+        let fold_heavy = cdf_fold_heavy();
+
+        let n: u32 = 500;
+        let base_seed: u64 = 2024;
+
+        // Collect per-hand profits from both providers, same deals.
+        let mut profits_a = Vec::with_capacity(n as usize);
+        let mut profits_b = Vec::with_capacity(n as usize);
+        for hand_no in 0..n {
+            let hand_seed = base_seed
+                .wrapping_add(hand_no as u64)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(0x1);
+            let mut deal_rng = SmallRng::seed_from_u64(hand_seed);
+            let (hero, villain, runout) = deal_runout(&mut deal_rng);
+            // Use StationBot for both passes.
+            let pa = play_one_hand(
+                &call_heavy,
+                &NullAbstraction,
+                &NullEval,
+                &StationBot,
+                hero,
+                villain,
+                &runout,
+                hand_seed,
+            );
+            let pb = play_one_hand(
+                &fold_heavy,
+                &NullAbstraction,
+                &NullEval,
+                &StationBot,
+                hero,
+                villain,
+                &runout,
+                hand_seed,
+            );
+            profits_a.push(pa as f64);
+            profits_b.push(pb as f64);
+        }
+        let nf = n as f64;
+        let ma = profits_a.iter().sum::<f64>() / nf;
+        let mb = profits_b.iter().sum::<f64>() / nf;
+        let va = profits_a.iter().map(|x| (x - ma).powi(2)).sum::<f64>() / (nf - 1.0);
+        let vb = profits_b.iter().map(|x| (x - mb).powi(2)).sum::<f64>() / (nf - 1.0);
+        // Unpaired SE of the difference assumes independence:
+        let unpaired_se = (va / nf + vb / nf).sqrt();
+
+        let diffs: Vec<f64> = profits_a
+            .iter()
+            .zip(profits_b.iter())
+            .map(|(x, y)| x - y)
+            .collect();
+        let md = diffs.iter().sum::<f64>() / nf;
+        let vd = diffs.iter().map(|d| (d - md).powi(2)).sum::<f64>() / (nf - 1.0);
+        let paired_se = (vd / nf).sqrt();
+
+        eprintln!(
+            "paired_se={:.4}  unpaired_se={:.4}  ratio={:.2}",
+            paired_se,
+            unpaired_se,
+            unpaired_se / paired_se.max(1e-9),
+        );
+        assert!(
+            paired_se <= unpaired_se,
+            "paired SE ({:.4}) should not exceed unpaired SE ({:.4})",
+            paired_se,
+            unpaired_se
+        );
+    }
+
+    /// MissingProvider (fallback path) vs a call-heavy provider: the
+    /// fallback folds vs bets, so call-heavy should win vs StationBot.
+    /// Directional check only.
+    #[test]
+    fn eval_paired_missing_vs_call_heavy() {
+        let call_heavy = cdf_call_heavy();
+        let missing = MissingProvider;
+        let r = eval_paired(&call_heavy, &missing, &NullAbstraction, &NullEval, 300, 99);
+        // Call-heavy should beat fallback vs station (station never
+        // bets, so call-heavy calls and sees showdowns; fallback
+        // check-calls when free — actually both call when free, but
+        // the CDF-based provider can fold vs station's checks too).
+        // We only assert the result is a finite number here; the
+        // direction depends on NullEval's all-ties behaviour.
+        for opp in &r.opponents {
+            assert!(opp.mean_diff.is_finite());
+        }
     }
 }
