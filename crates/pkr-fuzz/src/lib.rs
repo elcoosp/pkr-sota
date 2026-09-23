@@ -580,6 +580,11 @@ pub fn run_eval_harness(
             state.set_hole_cards([c1, c2], [c3, c4]);
 
             // Pre-deal the runout deterministically from the RNG.
+            // IMPORTANT: the runout indices must advance monotonically,
+            // otherwise the "turn" reuses a flop card and the "river"
+            // reuses a turn card. The board would then contain duplicate
+            // cards, and the evaluator's dedup logic would silently
+            // corrupt hand strengths.
             let mut deck: Vec<u8> = (0..52)
                 .filter(|c| c != &c1 && c != &c2 && c != &c3 && c != &c4)
                 .collect();
@@ -587,6 +592,7 @@ pub fn run_eval_harness(
                 let k = rng.random_range(i..deck.len());
                 deck.swap(i, k);
             }
+            let mut deck_idx: usize = 0;
 
             let mut steps = 0u32;
             while !state.is_terminal() && steps < 60 {
@@ -607,8 +613,11 @@ pub fn run_eval_harness(
                         pkr_core::state::Street::Turn => 1,
                         pkr_core::state::Street::River => 0,
                     };
-                    let start = (state.board_len as usize).saturating_sub(3);
-                    let cards: Vec<u8> = deck[start..start + need].to_vec();
+                    if deck_idx + need > deck.len() {
+                        break;
+                    }
+                    let cards: Vec<u8> = deck[deck_idx..deck_idx + need].to_vec();
+                    deck_idx += need;
                     state.advance_street_in_place(&cards);
                 }
             }
