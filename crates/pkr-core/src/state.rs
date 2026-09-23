@@ -34,6 +34,7 @@ pub struct UndoRecord {
     total_invested: [f32; 2],
     actions_this_street: u8,
     raises_this_street: u8,
+    total_raises: u8,
     history_len: usize, // length of abstract_history before action
     board_len: usize,   // length of board before action
     folded: [bool; 2],
@@ -57,6 +58,13 @@ pub struct GameState {
     pub folded: [bool; 2],
     pub actions_this_street: u8,
     pub raises_this_street: u8,
+    /// Total raises across the whole hand. Maintained incrementally in
+    /// `apply_action_internal` and restored in `undo_action`, so that
+    /// `history_signature()` is O(1) instead of scanning the history
+    /// array on every traverser node visit. Byte-identical semantics
+    /// to the previous loop (counts every `Bet` action regardless of
+    /// whether it moved chips).
+    pub total_raises: u8,
     pub abstract_history: [u8; 32], // abstract action buckets
     pub abstract_history_len: u8,
     pub undo_stack: [UndoRecord; 32],
@@ -84,6 +92,7 @@ impl GameState {
             folded: [false; 2],
             actions_this_street: 0,
             raises_this_street: 0,
+            total_raises: 0,
             abstract_history: [0u8; 32],
             abstract_history_len: 0,
             undo_stack: [UndoRecord {
@@ -95,6 +104,7 @@ impl GameState {
                 total_invested: [0.0; 2],
                 actions_this_street: 0,
                 raises_this_street: 0,
+                total_raises: 0,
                 history_len: 0,
                 board_len: 0,
                 folded: [false; 2],
@@ -289,12 +299,11 @@ impl GameState {
     /// collapsing the infoset space by orders of magnitude without
     /// changing the legal action space at any node.
     pub fn history_signature(&self) -> u32 {
-        let mut raises: u8 = 0;
-        for i in 0..self.history_len as usize {
-            if matches!(self.history[i].kind, ActionKind::Bet(_)) {
-                raises = raises.saturating_add(1);
-            }
-        }
+        // C4a: `total_raises` maintained incrementally in
+        // apply_action_internal; restored in undo_action. This replaces
+        // the previous O(history_len) loop that ran on every traverser
+        // node visit. Byte-identical semantics.
+        let raises: u8 = self.total_raises;
         let last_was_bet = if self.history_len > 0 {
             matches!(
                 self.history[self.history_len as usize - 1].kind,
@@ -324,6 +333,7 @@ impl GameState {
             total_invested: self.total_invested,
             actions_this_street: self.actions_this_street,
             raises_this_street: self.raises_this_street,
+            total_raises: self.total_raises,
             history_len: self.history_len as usize,
             board_len: self.board_len as usize,
             folded: self.folded,
@@ -404,6 +414,7 @@ impl GameState {
                 self.total_invested[actor] += chips;
                 self.street_bets[actor] = current + chips;
                 self.raises_this_street = self.raises_this_street.saturating_add(1);
+                self.total_raises = self.total_raises.saturating_add(1);
             }
         }
 
@@ -454,6 +465,7 @@ impl GameState {
         self.total_invested = rec.total_invested;
         self.actions_this_street = rec.actions_this_street;
         self.raises_this_street = rec.raises_this_street;
+        self.total_raises = rec.total_raises;
         self.history_len = rec.history_len as u8;
         self.board_len = rec.board_len as u8;
         self.folded = rec.folded;
