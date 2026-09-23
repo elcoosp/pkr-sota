@@ -110,6 +110,20 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     eval_now: bool,
 
+    /// Tolerance (in mbb/hand) for the promotion gate: a new checkpoint
+    /// is allowed to be worse than the current best by up to this much
+    /// before it is rejected. Larger = more permissive. Zero means
+    /// strict monotone improvement is required (usually too tight given
+    /// BR sampling noise). Ignored when --eval-every == 0.
+    #[arg(long, default_value_t = 3.0)]
+    promote_gate: f64,
+
+    /// Path to the exploitability CSV. If unset, derived from
+    /// --output's directory as `exploitability.csv`. Only written when
+    /// --eval-every > 0.
+    #[arg(long)]
+    exploitability_csv: Option<PathBuf>,
+
     /// Deals sampled per exploitability check. Accuracy ~ 1/sqrt(deals).
     #[arg(long, default_value_t = 2000)]
     eval_deals: u32,
@@ -328,6 +342,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut prev_depth_overflows: u64 = 0;
     let mut prev_deck_overflows: u64 = 0;
 
+    // E1: exploitability CSV writer + promotion-gate state.
+    let mut expl_writer: Option<std::io::BufWriter<std::fs::File>> = if cli.eval_every > 0 {
+        let path = cli
+            .exploitability_csv
+            .clone()
+            .unwrap_or_else(|| cli.output.with_file_name("exploitability.csv"));
+        let f = std::fs::File::create(&path)?;
+        let mut w = std::io::BufWriter::new(f);
+        writeln!(w, "iter,expl_mbb,br0,br1_p0,deals")?;
+        w.flush()?;
+        eprintln!("exploitability CSV: {}", path.display());
+        Some(w)
+    } else {
+        None
+    };
+    let mut best_expl_mbb: Option<f64> = None;
+    let mut best_iter: Option<u32> = None;
+    // Whether we promoted a checkpoint inside the loop. If false (e.g.
+    // --eval-every 0, or no eval fired), the end-of-run export runs
+    // as before. If true, we skip the end-of-run export to avoid
+    // clobbering the promoted blueprint with a possibly-worse one.
+    let mut promoted = false;
+
     while done < max_iters {
         if let Some(d) = bench_deadline {
             if start.elapsed() >= d {
@@ -449,6 +486,61 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
                     done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
                 );
+
+                // E1: append to the exploitability CSV.
+                if let Some(w) = expl_writer.as_mut() {
+                    writeln!(
+                        w,
+                        "{},{:.4},{:.4},{:.4},{}",
+                        done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled,
+                    )?;
+                    w.flush()?;
+                }
+
+                // E1: promotion gate. Reject a checkpoint whose exploitability
+                // is worse than the running best by more than --promote-gate.
+                let rejected = match best_expl_mbb {
+                    Some(b) => br.exploitability_mbb > b + cli.promote_gate,
+                    None => false,
+                };
+                if rejected {
+                    eprintln!(
+                        "SKIP-PROMOTE iter={} expl_mbb={:.2} worse than best {:.2} + gate {:.2}",
+                        done,
+                        br.exploitability_mbb,
+                        best_expl_mbb.unwrap_or(0.0),
+                        cli.promote_gate,
+                    );
+                } else {
+                    // Export the current table as the promoted blueprint.
+                    let mut keys = trainer.get_table().get_keys();
+                    keys.sort_unstable();
+                    if cli.min_visits > 0.0 {
+                        keys.retain(
+                            |k| match trainer.get_table().get_average_strategy_slice(*k) {
+                                Some(strat) => {
+                                    let mass: f32 = strat.iter().sum();
+                                    mass >= cli.min_visits
+                                }
+                                None => false,
+                            },
+                        );
+                    }
+                    let output_path = cli.output.to_str().expect("invalid output path");
+                    write_blueprint(output_path, trainer.get_table(), &keys);
+                    eprintln!(
+                        "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
+                        done,
+                        br.exploitability_mbb,
+                        best_expl_mbb,
+                        cli.output.display(),
+                        keys.len(),
+                    );
+                    best_expl_mbb = Some(br.exploitability_mbb);
+                    best_iter = Some(done);
+                    promoted = true;
+                }
+
                 last_eval_iter = done;
             }
 
@@ -637,38 +729,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!();
     }
 
-    let mut keys = trainer.get_table().get_keys();
-    keys.sort_unstable();
+    // E1: if we promoted inside the loop, the blueprint on disk is
+    // already the best checkpoint; do not overwrite it here.
+    if !promoted {
+        // Fallback: --eval-every == 0 (no gate) or no eval fired.
+        let mut keys = trainer.get_table().get_keys();
+        keys.sort_unstable();
 
-    // T2.4: filter infosets whose accumulated reach-weighted strategy
-    // mass is below min_visits. These are the ones that would export as
-    // uniform fallback (never reached with meaningful probability) and
-    // contribute nothing but size to the blueprint. The runtime's
-    // host-app fallback handles them at inference time.
-    if cli.min_visits > 0.0 {
-        let before = keys.len();
-        keys.retain(
-            |k| match trainer.get_table().get_average_strategy_slice(*k) {
-                Some(strat) => {
-                    let mass: f32 = strat.iter().sum();
-                    mass >= cli.min_visits
-                }
-                None => false,
-            },
-        );
-        eprintln!(
-            "min-visits filter ({:.1}): {} -> {} infosets",
-            cli.min_visits,
-            before,
-            keys.len()
-        );
+        // T2.4: filter infosets whose accumulated reach-weighted strategy
+        // mass is below min_visits. These are the ones that would export as
+        // uniform fallback (never reached with meaningful probability) and
+        // contribute nothing but size to the blueprint. The runtime's
+        // host-app fallback handles them at inference time.
+        if cli.min_visits > 0.0 {
+            let before = keys.len();
+            keys.retain(
+                |k| match trainer.get_table().get_average_strategy_slice(*k) {
+                    Some(strat) => {
+                        let mass: f32 = strat.iter().sum();
+                        mass >= cli.min_visits
+                    }
+                    None => false,
+                },
+            );
+            eprintln!(
+                "min-visits filter ({:.1}): {} -> {} infosets",
+                cli.min_visits,
+                before,
+                keys.len()
+            );
+        }
+
+        eprintln!("Exporting {} infosets...", keys.len());
+
+        let output_path = cli.output.to_str().expect("invalid output path");
+        write_blueprint(output_path, trainer.get_table(), &keys);
+        eprintln!("Blueprint written to {}", output_path);
     }
-
-    eprintln!("Exporting {} infosets...", keys.len());
-
-    let output_path = cli.output.to_str().expect("invalid output path");
-    write_blueprint(output_path, trainer.get_table(), &keys);
-    eprintln!("Blueprint written to {}", output_path);
 
     Ok(())
 }
