@@ -495,29 +495,29 @@ fn decide_from_blueprint(
     //   4 = bet >=1.5 pot, 5 = all-in
     let mut bucket_has_legal = [false; K_BUCKETS];
     let mut bucket_pick = [0usize; K_BUCKETS]; // index into buf for each bucket
+                                               // E3a: single source of truth for the action→bucket mapping. The
+                                               // previous inline match used pre-C3 thresholds (0.75/1.5) which
+                                               // meant the eval harness resolved the CDF into the wrong action
+                                               // space. All evaluations before this fix are invalid.
+    let actor_stacks = state.stacks[state.actor];
+    let actor_street = state.street_bets[state.actor];
+    let opp_street = state.street_bets[1 - state.actor];
+    let actor_pot = state.pot;
     for (i, act) in buf.iter().take(n_legal).enumerate() {
-        let b = match act.kind {
-            ActionKind::Fold => 0,
-            ActionKind::Check | ActionKind::Call => 1,
-            ActionKind::Bet(amount) => {
-                let pot = state.pot.max(1.0);
-                let frac = amount / pot;
-                if amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
-                    5
-                } else if frac < 0.75 {
-                    2
-                } else if frac < 1.5 {
-                    3
-                } else {
-                    4
-                }
-            }
-        };
-        bucket_has_legal[b] = true;
-        if bucket_pick[b] == 0 && !matches!(buf[i].kind, ActionKind::Check) {
-            // Prefer a non-check representative if this is the first seen
+        let b = pkr_core::abstraction::action_bucket(
+            &act.kind,
+            actor_stacks,
+            actor_street,
+            opp_street,
+            actor_pot,
+        ) as usize;
+        // Prefer a non-check representative if this is the first seen
+        // (mirrors the pre-C3 selection but applied to the corrected
+        // bucket index).
+        if !bucket_has_legal[b] || !matches!(buf[i].kind, ActionKind::Check) {
+            bucket_pick[b] = i;
         }
-        bucket_pick[b] = i;
+        bucket_has_legal[b] = true;
     }
 
     // Zero out illegal buckets, renormalize.
