@@ -748,8 +748,11 @@ mod c2_aggro_tests {
     #[test]
     fn aggro_jam_from_check_leaves_zero_chips() {
         let mut s = GameState::new(200.0, 1.0, 2.0);
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call }); // SB limps
-        // Now BB (actor 1) faces a check-equivalent situation.
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        }); // SB limps
+            // Now BB (actor 1) faces a check-equivalent situation.
         let bot = AggroBot;
         let act = bot.act(&s);
         s.apply_action_in_place(&act);

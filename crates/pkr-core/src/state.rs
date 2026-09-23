@@ -125,9 +125,15 @@ impl GameState {
                 kind: ActionKind::Check,
             });
             let pot = self.pot;
+            // C1.5: `Bet` is the actor's street-bet TOTAL, not the
+            // incremental chips. `pot * frac` was correct postflop
+            // (street_bets[actor] == 0); preflop (SB completing, BB
+            // raising a limp) it forgot the already-posted blind.
+            let base = self.street_bets[self.actor];
             for &frac in &[0.4, 0.8, 1.6] {
-                let bet = pot * frac;
-                if bet <= self.stacks[self.actor] {
+                let bet = base + pot * frac;
+                let chips_needed = bet - base;
+                if chips_needed <= self.stacks[self.actor] {
                     actions.push(Action {
                         player: self.actor,
                         kind: ActionKind::Bet(bet),
@@ -143,9 +149,7 @@ impl GameState {
                 // all-in total is stacks + street_bets.
                 actions.push(Action {
                     player: self.actor,
-                    kind: ActionKind::Bet(
-                        self.stacks[self.actor] + self.street_bets[self.actor],
-                    ),
+                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
                 });
             }
         } else {
@@ -158,9 +162,14 @@ impl GameState {
                 kind: ActionKind::Call,
             });
             let pot = self.pot;
+            // C1.5: raise TOTAL is opponent's committed street bet
+            // + a pot-fraction on top. Old form `to_call + pot * frac`
+            // under-counted by street_bets[actor] preflop.
+            let opp_bet = self.street_bets[1 - self.actor];
             for &frac in &[0.4, 0.8, 1.6] {
-                let raise = to_call + pot * frac;
-                if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
+                let raise = opp_bet + pot * frac;
+                let chips_needed = raise - self.street_bets[self.actor];
+                if chips_needed <= self.stacks[self.actor] {
                     actions.push(Action {
                         player: self.actor,
                         kind: ActionKind::Bet(raise),
@@ -204,12 +213,14 @@ impl GameState {
             n += 1;
             if can_raise {
                 let pot = self.pot;
+                let base = self.street_bets[self.actor];
                 for &frac in &[0.4, 0.8, 1.6] {
                     if n >= 8 {
                         break;
                     }
-                    let bet = pot * frac;
-                    if bet <= self.stacks[self.actor] {
+                    let bet = base + pot * frac; // C1.5
+                    let chips_needed = bet - base;
+                    if chips_needed <= self.stacks[self.actor] {
                         out[n] = Action {
                             player: self.actor,
                             kind: ActionKind::Bet(bet),
@@ -242,12 +253,14 @@ impl GameState {
             n += 1;
             if can_raise {
                 let pot = self.pot;
+                let opp_bet = self.street_bets[1 - self.actor];
                 for &frac in &[0.4, 0.8, 1.6] {
                     if n >= 8 {
                         break;
                     }
-                    let raise = to_call + pot * frac;
-                    if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
+                    let raise = opp_bet + pot * frac; // C1.5
+                    let chips_needed = raise - self.street_bets[self.actor];
+                    if chips_needed <= self.stacks[self.actor] {
                         out[n] = Action {
                             player: self.actor,
                             kind: ActionKind::Bet(raise),
@@ -374,9 +387,7 @@ impl GameState {
                 // Diagnostic: set PKR_STRICT_BETS=1 to make this an
                 // assertion during development.
                 #[cfg(debug_assertions)]
-                if total < current
-                    && std::env::var("PKR_STRICT_BETS").as_deref() == Ok("1")
-                {
+                if total < current && std::env::var("PKR_STRICT_BETS").as_deref() == Ok("1") {
                     panic!(
                         "Bet({total}) below current street bet {current} \
                          (PKR_STRICT_BETS=1)"
@@ -629,7 +640,10 @@ mod c2_tests {
 
         s.apply_action_in_place(all_in);
         assert_eq!(s.stacks[1], 0.0, "all-in leaves zero behind");
-        assert_eq!(s.street_bets[1], 200.0, "street-bet total equals start_stack");
+        assert_eq!(
+            s.street_bets[1], 200.0,
+            "street-bet total equals start_stack"
+        );
     }
 
     /// C2: postflop with no bet facing, all-in total is just stacks
@@ -638,14 +652,23 @@ mod c2_tests {
     fn postflop_check_jam_unchanged_when_street_bets_zero() {
         let mut s = GameState::new(200.0, 1.0, 2.0);
         // SB limp, BB check -> flop
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         s.advance_street_in_place(&[0, 1, 2]);
 
         assert_eq!(s.street_bets[1], 0.0, "post-flop street_bets reset to 0");
         let stack = s.stacks[1];
 
-        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = s.legal_actions_into(&mut buf);
         let all_in = buf[..n]
             .iter()
@@ -660,8 +683,14 @@ mod c2_tests {
     #[test]
     fn bb_check_jam_buckets_as_all_in() {
         let mut s = GameState::new(200.0, 1.0, 2.0);
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = s.legal_actions_into(&mut buf);
         let all_in = buf[..n]
             .iter()
@@ -671,5 +700,194 @@ mod c2_tests {
         // (abstract_action_index_static is private but callable from this module.)
         let bucket = super::abstract_action_index_static(&all_in.kind, &s);
         assert_eq!(bucket, 5, "all-in total must bucket as 5, not 4");
+    }
+}
+
+#[cfg(test)]
+mod c1_5_tests {
+    use super::*;
+
+    // Sizings currently used by `legal_actions*` after T0.2.
+    const SIZINGS: [f32; 3] = [0.4, 0.8, 1.6];
+
+    fn bets(buf: &[Action], n: usize) -> Vec<f32> {
+        buf[..n]
+            .iter()
+            .filter_map(|a| {
+                if let ActionKind::Bet(x) = a.kind {
+                    Some(x)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn find_bet(buf: &[Action], n: usize, want: f32) -> bool {
+        bets(buf, n).iter().any(|&b| (b - want).abs() < 1e-3)
+    }
+
+    /// C1.5 regression: BB raising over an SB limp uses
+    /// `street_bets[SB] + pot * frac` as the raise TOTAL, not the old
+    /// `to_call + pot * frac`. Postflop these coincide.
+    #[test]
+    fn bb_raise_over_limp_includes_sb_street_bet() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        }); // SB limp
+            // BB: street_bets == 2, opp_bet == 2, pot == 4
+        assert_eq!(s.actor, 1);
+        assert_eq!(s.street_bets[1], 2.0);
+        assert_eq!(s.street_bets[0], 2.0);
+        assert_eq!(s.pot, 4.0);
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+
+        // Expected raise totals: opp_bet(2) + pot(4) * frac.
+        for frac in SIZINGS {
+            let want = 2.0 + 4.0 * frac;
+            assert!(
+                find_bet(&buf, n, want),
+                "missing raise total {} for frac {}; bets={:?}",
+                want,
+                frac,
+                bets(&buf, n)
+            );
+        }
+
+        // Old buggy form: to_call(0) + pot(4) * frac would give 1.6/3.2/6.4.
+        // None of those should appear (they collide with nothing else here).
+        for frac in SIZINGS {
+            let buggy = 0.0 + 4.0 * frac;
+            assert!(
+                !find_bet(&buf, n, buggy),
+                "old buggy raise total {} still present; bets={:?}",
+                buggy,
+                bets(&buf, n)
+            );
+        }
+    }
+
+    /// C1.5: SB re-raises over BB's open. Expected totals:
+    ///   opp_bet + pot * frac
+    ///   = BB_street_bet + (SB_street + BB_street) * frac
+    #[test]
+    fn sb_raise_over_bb_open_includes_both_street_bets() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // SB limps (street_bets[0] = 2)
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        // BB raises to 6 (legal: BB street_bets was 2, +4 more = 6)
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(6.0),
+        });
+
+        // actor = SB. street_bets[0] == 2, street_bets[1] == 6, pot == 8.
+        assert_eq!(s.actor, 0);
+        assert_eq!(s.street_bets[0], 2.0);
+        assert_eq!(s.street_bets[1], 6.0);
+        assert_eq!(s.pot, 8.0);
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+
+        for frac in SIZINGS {
+            let want = 6.0 + 8.0 * frac; // opp_bet + pot * frac
+            assert!(
+                find_bet(&buf, n, want),
+                "missing re-raise total {} for frac {}; bets={:?}",
+                want,
+                frac,
+                bets(&buf, n)
+            );
+        }
+    }
+
+    /// C1.5: postflop, street_bets[actor] == 0, so check-branch totals
+    /// are identical to pre-C1.5 behaviour. Regression guard.
+    #[test]
+    fn postflop_check_sizings_unchanged() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        s.advance_street_in_place(&[0, 1, 2]);
+
+        assert_eq!(s.street_bets[1], 0.0);
+        assert_eq!(s.pot, 4.0);
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+
+        for frac in SIZINGS {
+            let want = 0.0 + 4.0 * frac;
+            assert!(
+                find_bet(&buf, n, want),
+                "postflop check sizings changed: want {}, bets={:?}",
+                want,
+                bets(&buf, n)
+            );
+        }
+    }
+
+    /// C1.5 + C1: applying every offered Bet leaves street_bets == the
+    /// requested total and stacks reduce by exactly (total - prior).
+    #[test]
+    fn applying_offered_bets_matches_total_semantics() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        // Fresh state for each offered non-all-in bet
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        for a in buf[..n].iter() {
+            if let ActionKind::Bet(total) = a.kind {
+                if total >= 200.0 - 1e-3 {
+                    continue;
+                } // skip all-in
+                let mut s2 = s.clone();
+                let prior = s2.street_bets[1];
+                let stack_before = s2.stacks[1];
+                s2.apply_action_in_place(a);
+                assert!(
+                    (s2.street_bets[1] - total).abs() < 1e-3,
+                    "street_bets[1]={} != requested total {}",
+                    s2.street_bets[1],
+                    total
+                );
+                let expected_stack = stack_before - (total - prior);
+                assert!(
+                    (s2.stacks[1] - expected_stack).abs() < 1e-2,
+                    "stack math mismatch: {} vs {}",
+                    s2.stacks[1],
+                    expected_stack
+                );
+            }
+        }
     }
 }
