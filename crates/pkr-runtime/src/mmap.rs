@@ -56,6 +56,7 @@ impl MmapReader {
                 actual: file_header.magic,
             });
         }
+        // Accept v2 (no anchors) and v3 (anchors section present).
         if file_header.version < FORMAT_VERSION_V2 {
             return Err(MmapError::UnsupportedVersion(file_header.version));
         }
@@ -66,8 +67,11 @@ impl MmapReader {
             ));
         }
 
-        // After FileHeader, we have two u32: key_count and cdf_bytes_len
-        let after_header = std::mem::size_of::<FileHeader>();
+        // After FileHeader, v3 files have a 48-byte AnchorsSection, then
+        // two u32 (key_count, cdf_bytes_len). v2 files have no anchors.
+        let after_file_header = std::mem::size_of::<FileHeader>();
+        let anchors_size = if file_header.version >= 3 { 48 } else { 0 };
+        let after_header = after_file_header + anchors_size;
         if mmap.len() < after_header + 8 {
             return Err(MmapError::FileTooSmall);
         }
@@ -98,6 +102,21 @@ impl MmapReader {
     #[inline]
     pub fn file_header(&self) -> &FileHeader {
         &self.file_header
+    }
+
+    /// T2.1: per-street bet-size anchors. v3+ files store them after the
+    /// header; v2 files return the compile-time default.
+    #[inline]
+    pub fn anchors(&self) -> [[f32; 3]; 4] {
+        if self.file_header.version >= 3 {
+            let base = std::mem::size_of::<FileHeader>();
+            let raw = &self.mmap[base..base + 48];
+            let s: &pkr_export::header::AnchorsSection =
+                bytemuck::from_bytes(raw);
+            s.anchors
+        } else {
+            pkr_export::header::ANCHORS
+        }
     }
 
     #[inline]

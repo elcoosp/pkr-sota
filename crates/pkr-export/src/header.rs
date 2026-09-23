@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
+/// File header written at offset 0 of every blueprint.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct FileHeader {
@@ -14,8 +15,16 @@ pub struct FileHeader {
 
 /// Hash algorithm identifiers stored in FileHeader.hash_algo.
 pub const HASH_ALGO_FNV1A64_INFOSET: u8 = pkr_contracts::HASH_ALGO_FNV1A64_INFOSET;
-pub const FORMAT_VERSION_V2: u32 = 2; // version that introduced hash_algo field
 
+/// v2: introduced hash_algo field to reject legacy DefaultHasher blueprints.
+pub const FORMAT_VERSION_V2: u32 = 2;
+
+/// v3: introduced a 48-byte AnchorsSection immediately after FileHeader.
+/// Layout: [FileHeader:32][AnchorsSection:48][key_count:u32][cdf_size:u32][keys][cdf]
+pub const FORMAT_VERSION_V3: u32 = 3;
+
+/// Minimal perfect hash header. Currently unused by the writer, kept for
+/// the future O(1) lookup path.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct FmphHeader {
@@ -27,6 +36,8 @@ pub struct FmphHeader {
     pub _padding: [u8; 4],
 }
 
+/// Translation table header. Currently unused by the writer, kept for the
+/// future precomputed-translation path.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct TranslationTableHeader {
@@ -35,7 +46,30 @@ pub struct TranslationTableHeader {
     pub _padding: [u8; 4],
 }
 
+/// Per-street bet-size anchors written after FileHeader in v3 blueprints.
+/// Values are pot fractions (e.g. 0.5 for half-pot). The runtime uses
+/// these to bracket an off-tree opponent bet between the two anchors the
+/// trainer was trained with (pseudo-harmonic, Ganzfried & Sandholm 2013).
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct AnchorsSection {
+    /// [preflop, flop, turn, river] × [small, medium, large] in pot fractions.
+    /// Preflop row is all zeros (no partial bet sizes preflop in this abstraction).
+    pub anchors: [[f32; 3]; 4],
+}
+
+/// The concrete anchors used by the trainer. Mirror of
+/// `crates/pkr-core/src/state.rs`'s bet-size loop. When those change,
+/// regenerate abstraction tables and re-export.
+pub const ANCHORS: [[f32; 3]; 4] = [
+    [0.0, 0.0, 0.0],
+    [0.5, 1.0, 2.0],
+    [0.5, 1.0, 2.0],
+    [0.5, 1.0, 2.0],
+];
+
 // Compile-time size guards
 const _: () = assert!(std::mem::size_of::<FileHeader>() == 32);
 const _: () = assert!(std::mem::size_of::<FmphHeader>() == 40);
 const _: () = assert!(std::mem::size_of::<TranslationTableHeader>() == 16);
+const _: () = assert!(std::mem::size_of::<AnchorsSection>() == 48);
