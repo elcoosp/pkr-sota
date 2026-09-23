@@ -9,6 +9,19 @@ use rand::Rng;
 const K: usize = 6;
 const MAX_DEPTH: u32 = 50;
 
+/// FBRS (Brown & Sandholm, NeurIPS 2015) pruning.
+///   - Warmup: don't prune before PRUNE_WARMUP iterations, so regrets have
+///     time to accumulate signal.
+///   - Threshold: prune when the action's regret is below -PRUNE_THRESHOLD
+///     (fixed-point ×1000) AND regret matching gave it zero probability.
+///   - 5% non-prune: keeps a small exploration tail so a truly recovering
+///     action can re-enter measurement. The formal FBRS criterion is
+///     r < -t * π_-i(I) * Δ; the absolute threshold is the conservative
+///     common approximation.
+const PRUNE_WARMUP: u32 = 1_000_000;
+const PRUNE_THRESHOLD: i32 = -400_000; // -400 chips at SCALE=1000
+const PRUNE_SKIP_PROB: f32 = 0.95;
+
 #[allow(clippy::too_many_arguments)]
 pub fn traverse(
     current: &mut GameState,
@@ -154,6 +167,18 @@ pub fn traverse(
         for a in 0..K {
             let count = action_counts[a];
             if count == 0 {
+                v[a] = f32::NAN;
+                continue;
+            }
+            // FBRS pruning: skip a hopeless action (regret very negative,
+            // probability already zero) most of the time. Sentinal value
+            // is NaN, same as illegal buckets, so v_sigma and the push
+            // loop already skip it.
+            if global_iteration > PRUNE_WARMUP
+                && strategy[a] == 0.0
+                && table.regret_scaled(idx, a) < PRUNE_THRESHOLD
+                && rng.random::<f32>() < PRUNE_SKIP_PROB
+            {
                 v[a] = f32::NAN;
                 continue;
             }

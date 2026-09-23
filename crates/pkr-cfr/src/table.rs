@@ -520,6 +520,14 @@ impl CompactRegretTable {
         }
     }
 
+    /// Raw i32 regret for an action at a known idx. Used by FBRS pruning
+    /// (Brown & Sandholm, NeurIPS 2015) to decide when to skip exploring
+    /// a hopeless action. Cheap inline read.
+    #[inline(always)]
+    pub fn regret_scaled(&self, idx: usize, action: usize) -> i32 {
+        self.load_rm(idx, action, RM_REGRET)
+    }
+
     pub fn get_regret(&self, infoset_hash: u64, action_idx: usize) -> f32 {
         let guard = self.hash_to_idx.pin();
         guard
