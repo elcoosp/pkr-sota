@@ -133,6 +133,10 @@ struct Cli {
     /// and removes uniform-fallback infosets from the shipped file.
     #[arg(long, default_value_t = 0.0)]
     min_visits: f32,
+
+    /// Seed for the worker RNGs. Same seed + same inputs = identical training run.
+    #[arg(long, default_value_t = 0x5EED_1F70u64)]
+    seed: u64,
 }
 
 fn main() {
@@ -271,6 +275,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let abstraction_for_eval = Arc::clone(&abstraction);
     let evaluator_for_eval = Arc::clone(&evaluator);
     let mut trainer = Trainer::with_capacity(abstraction, evaluator, cli.capacity);
+    trainer.set_run_seed(cli.seed);
     eprintln!(
         "init: table + abstraction ready in {:.2}s (capacity={})",
         t_init.elapsed().as_secs_f64(),
@@ -286,8 +291,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     it
                 }
                 Err(e) => {
-                    eprintln!("WARNING: failed to load checkpoint: {} — starting fresh", e);
-                    0
+                    let prev = ckpt.with_extension("ckpt.prev");
+                    if prev.exists() {
+                        eprintln!("WARNING: primary checkpoint failed ({}), trying .prev", e);
+                        match trainer.load_checkpoint(prev.to_str().unwrap(), &fingerprint) {
+                            Ok(()) => {
+                                let it = trainer.iteration();
+                                eprintln!("Resumed from .prev checkpoint at iteration {}", it);
+                                it
+                            }
+                            Err(e2) => {
+                                eprintln!("WARNING: .prev also failed: {} — starting fresh", e2);
+                                0
+                            }
+                        }
+                    } else {
+                        eprintln!("WARNING: failed to load checkpoint: {} — starting fresh", e);
+                        0
+                    }
                 }
             }
         } else {
@@ -328,8 +349,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             start_iter as u64,
         );
         eprintln!(
-            "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
-            start_iter, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
+            "EVAL iter={} expl_mbb={:.2}±{:.2} br0={:.4} br1={:.4} deals={}",
+            start_iter,
+            br.exploitability_mbb,
+            br.expl_std_err_mbb,
+            br.br0,
+            br.br1,
+            br.deals_sampled
         );
     }
 
@@ -366,7 +392,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| cli.output.with_file_name("exploitability.csv"));
         let f = std::fs::File::create(&path)?;
         let mut w = std::io::BufWriter::new(f);
-        writeln!(w, "iter,expl_mbb,br0,br1_p0,deals")?;
+        writeln!(w, "iter,expl_mbb,expl_stderr_mbb,br0,br1,deals")?;
         w.flush()?;
         eprintln!("exploitability CSV: {}", path.display());
         Some(w)
@@ -498,16 +524,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     done as u64,
                 );
                 eprintln!(
-                    "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
-                    done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
+                    "EVAL iter={} expl_mbb={:.2}±{:.2} br0={:.4} br1={:.4} deals={}",
+                    done,
+                    br.exploitability_mbb,
+                    br.expl_std_err_mbb,
+                    br.br0,
+                    br.br1,
+                    br.deals_sampled
                 );
 
                 // E1: append to the exploitability CSV.
                 if let Some(w) = expl_writer.as_mut() {
                     writeln!(
                         w,
-                        "{},{:.4},{:.4},{:.4},{}",
-                        done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled,
+                        "{},{:.4},{:.4},{:.4},{:.4},{}",
+                        done,
+                        br.exploitability_mbb,
+                        br.expl_std_err_mbb,
+                        br.br0,
+                        br.br1,
+                        br.deals_sampled,
                     )?;
                     w.flush()?;
                 }

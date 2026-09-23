@@ -26,6 +26,7 @@ pub struct Trainer {
     evaluator: Arc<dyn Evaluator>,
     table: Arc<CompactRegretTable>,
     iteration: AtomicU32,
+    run_seed: u64,
 }
 
 impl Trainer {
@@ -43,7 +44,12 @@ impl Trainer {
             evaluator,
             table: Arc::new(CompactRegretTable::with_capacity(capacity)),
             iteration: AtomicU32::new(0),
+            run_seed: 0x5EED_1F70,
         }
+    }
+
+    pub fn set_run_seed(&mut self, seed: u64) {
+        self.run_seed = seed;
     }
 
     /// Runs `n` logical CFR iterations per rayon dispatch. Each rayon task
@@ -63,6 +69,7 @@ impl Trainer {
         let table = Arc::clone(&self.table);
         let abstraction = Arc::clone(&self.abstraction);
         let evaluator = Arc::clone(&self.evaluator);
+        let run_seed = self.run_seed;
 
         const CHUNK_ITERS: usize = 16;
         let n_chunks = n.div_ceil(CHUNK_ITERS);
@@ -79,10 +86,14 @@ impl Trainer {
                 let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 20);
                 let mut metrics = LocalMetrics::default();
 
-                let mut rng = SmallRng::seed_from_u64(rand::random::<u64>());
+                let base_iter = start_iter + start as u32;
+                let mut rng = SmallRng::seed_from_u64(
+                    run_seed
+                        ^ (base_iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        ^ ((chunk_idx as u64) << 32),
+                );
                 let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
 
-                let base_iter = start_iter + start as u32;
                 for local_i in 0..pairs {
                     let global_iter = base_iter + local_i as u32;
 
