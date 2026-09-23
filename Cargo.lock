@@ -890,6 +890,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "pkr-contracts",
+ "rand",
 ]
 
 [[package]]
@@ -927,6 +928,7 @@ dependencies = [
  "pkr-core",
  "rand",
  "rayon",
+ "tempfile",
  "thiserror",
 ]
 

@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 bytemuck = { workspace = true }
 pkr-contracts = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

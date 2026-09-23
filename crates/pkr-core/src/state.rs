@@ -1422,3 +1422,262 @@ mod c5b_tests {
         assert!(!s.opp_can_respond(), "SB all-in, BB (actor 1) cannot raise");
     }
 }
+
+#[cfg(test)]
+mod invariants_tests {
+    use super::*;
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+
+    /// Snapshot the logical game state (excludes undo stack, history
+    /// content, cache fields that legitimately differ across undo).
+    fn logical_snapshot(
+        s: &GameState,
+    ) -> (
+        f32,
+        [f32; 2],
+        [f32; 2],
+        [f32; 2],
+        usize,
+        u8,
+        u8,
+        Street,
+        [bool; 2],
+        u8,
+    ) {
+        (
+            s.pot,
+            s.stacks,
+            s.total_invested,
+            s.street_bets,
+            s.actor,
+            s.actions_this_street,
+            s.raises_this_street,
+            s.street,
+            s.folded,
+            s.board_len,
+        )
+    }
+
+    fn deal_runout(rng: &mut SmallRng) -> [u8; 5] {
+        let mut deck: [u8; 52] = core::array::from_fn(|i| i as u8);
+        for i in 0..9 {
+            let k = i + rng.random_range(0..(52 - i));
+            deck.swap(i, k);
+        }
+        [deck[4], deck[5], deck[6], deck[7], deck[8]]
+    }
+
+    /// R-1: applying a single action and undoing it must restore the
+    /// logical game state exactly. This is the property the traverser's
+    /// backtracking relies on for every node visit.
+    #[test]
+    fn apply_undo_roundtrip_preserves_state() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        assert!(n > 0);
+
+        for a in buf.iter().take(n) {
+            let before = logical_snapshot(&s);
+            let undo_len_before = s.undo_len;
+            s.apply_action_in_place(a);
+            s.undo_action();
+            let after = logical_snapshot(&s);
+            assert_eq!(before, after, "apply+undo diverged for action {:?}", a.kind);
+            assert_eq!(s.undo_len, undo_len_before, "undo_len must round-trip");
+        }
+    }
+
+    /// R-2: chips must be conserved. `total_invested[0] + total_invested[1]`
+    /// must always equal `pot`. This is stricter than stacks+pot == const
+    /// (which can drift in f32) because it holds by construction.
+    #[test]
+    fn chips_are_conserved_under_random_play() {
+        let mut rng = SmallRng::seed_from_u64(0xC0FFEE);
+        for hand in 0..500 {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            let runout = deal_runout(&mut rng);
+            let mut runout_idx = 0usize;
+            let mut steps = 0u32;
+            while !s.is_terminal() && steps < 60 {
+                steps += 1;
+                let mut buf: [Action; 8] = [Action {
+                    player: 0,
+                    kind: ActionKind::Fold,
+                }; 8];
+                let n = s.legal_actions_into(&mut buf);
+                if n == 0 {
+                    break;
+                }
+                let a = buf[rng.random_range(0..n)];
+                s.apply_action_in_place(&a);
+
+                // Invariant: total_invested sums to pot.
+                let sum_inv = s.total_invested[0] + s.total_invested[1];
+                assert!(
+                    (sum_inv - s.pot).abs() < 1e-3,
+                    "hand {}: total_invested sums to {} but pot is {}",
+                    hand,
+                    sum_inv,
+                    s.pot
+                );
+
+                // Invariant: stacks + total_invested == start_stack (200).
+                for p in 0..2 {
+                    let total = s.stacks[p] + s.total_invested[p];
+                    assert!(
+                        (total - 200.0).abs() < 1e-3,
+                        "hand {} player {}: stacks {} + invested {} != 200",
+                        hand,
+                        p,
+                        s.stacks[p],
+                        s.total_invested[p]
+                    );
+                }
+
+                if s.is_street_complete() && s.street != Street::River {
+                    let need = match s.street {
+                        Street::Preflop => 3,
+                        Street::Flop => 1,
+                        Street::Turn => 1,
+                        Street::River => 0,
+                    };
+                    if runout_idx + need > runout.len() {
+                        break;
+                    }
+                    let cards = &runout[runout_idx..runout_idx + need];
+                    s.advance_street_in_place(cards);
+                    runout_idx += need;
+                }
+            }
+        }
+    }
+
+    /// R-3: every action offered by `legal_actions_into` must apply
+    /// without panicking. This is the "offer-and-apply" contract the
+    /// traverser relies on.
+    #[test]
+    fn every_offered_action_applies_cleanly() {
+        let mut rng = SmallRng::seed_from_u64(0xBADF00D);
+        for _hand in 0..200 {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            let runout = deal_runout(&mut rng);
+            let mut runout_idx = 0usize;
+            let mut steps = 0u32;
+            while !s.is_terminal() && steps < 40 {
+                steps += 1;
+                let mut buf: [Action; 8] = [Action {
+                    player: 0,
+                    kind: ActionKind::Fold,
+                }; 8];
+                let n = s.legal_actions_into(&mut buf);
+                for a in buf.iter().take(n) {
+                    let mut s2 = s.clone();
+                    s2.apply_action_in_place(a);
+                    s2.undo_action();
+                }
+                if n == 0 {
+                    break;
+                }
+                let a = buf[rng.random_range(0..n)];
+                s.apply_action_in_place(&a);
+                if s.is_street_complete() && s.street != Street::River {
+                    let need = match s.street {
+                        Street::Preflop => 3,
+                        Street::Flop => 1,
+                        Street::Turn => 1,
+                        Street::River => 0,
+                    };
+                    if runout_idx + need > runout.len() {
+                        break;
+                    }
+                    let cards = &runout[runout_idx..runout_idx + need];
+                    s.advance_street_in_place(cards);
+                    runout_idx += need;
+                }
+            }
+        }
+    }
+
+    /// R-4: every offered Bet must be strictly greater than the actor's
+    /// current street bet (a legal raise must move chips into the pot,
+    /// never reduce street_bets or be a no-op).
+    #[test]
+    fn no_offered_bet_reduces_street_bets() {
+        let mut rng = SmallRng::seed_from_u64(0x13579BDF);
+        for _hand in 0..200 {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            let runout = deal_runout(&mut rng);
+            let mut runout_idx = 0usize;
+            let mut steps = 0u32;
+            while !s.is_terminal() && steps < 40 {
+                steps += 1;
+                let actor_street = s.street_bets[s.actor];
+                let mut buf: [Action; 8] = [Action {
+                    player: 0,
+                    kind: ActionKind::Fold,
+                }; 8];
+                let n = s.legal_actions_into(&mut buf);
+                for a in buf.iter().take(n) {
+                    if let ActionKind::Bet(amt) = a.kind {
+                        assert!(
+                            amt > actor_street + 1e-4,
+                            "offered Bet({}) not above actor street_bets {}",
+                            amt,
+                            actor_street
+                        );
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+                let a = buf[rng.random_range(0..n)];
+                s.apply_action_in_place(&a);
+                if s.is_street_complete() && s.street != Street::River {
+                    let need = match s.street {
+                        Street::Preflop => 3,
+                        Street::Flop => 1,
+                        Street::Turn => 1,
+                        Street::River => 0,
+                    };
+                    if runout_idx + need > runout.len() {
+                        break;
+                    }
+                    let cards = &runout[runout_idx..runout_idx + need];
+                    s.advance_street_in_place(cards);
+                    runout_idx += need;
+                }
+            }
+        }
+    }
+
+    /// R-5: no Bet/Raise offered when the opponent cannot respond
+    /// (post-C5b contract).
+    #[test]
+    fn no_offered_bet_when_opponent_all_in() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // SB shoves.
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(200.0),
+        });
+        assert_eq!(s.stacks[0], 0.0, "SB should be all-in");
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        for a in buf.iter().take(n) {
+            assert!(
+                !matches!(a.kind, ActionKind::Bet(_)),
+                "Bet offered when opponent is all-in: {:?}",
+                a.kind
+            );
+        }
+    }
+}

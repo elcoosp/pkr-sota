@@ -89,3 +89,60 @@ mod tests {
         assert_eq!(std::mem::size_of::<FileHeader>(), 32);
     }
 }
+
+#[cfg(test)]
+mod v4_layout_tests {
+    use super::*;
+    use pkr_cfr::table::CompactRegretTable;
+
+    /// The v4 blueprint file size is a deterministic function of the
+    /// key count:
+    ///
+    ///   [FileHeader:32][Anchors:48][Fingerprint:40][kc:4][cs:4][keys:8N][cdf:6N]
+    ///   = 128 + 14N
+    ///
+    /// This pins the on-disk layout. If any section size changes, this
+    /// test fails and the format version must be bumped.
+    #[test]
+    fn v4_size_accounting_is_exact() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let table = CompactRegretTable::with_capacity(64);
+        // Touch a few keys so get_average_strategy_into returns real CDFs.
+        for k in [1u64, 42, 999] {
+            table.add_strategy_sum(k, 0, 0.5);
+            table.add_strategy_sum(k, 1, 0.5);
+        }
+        let keys: Vec<u64> = vec![1, 42, 999];
+        let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
+
+        write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
+
+        let expected = 32 + 48 + 40 + 4 + 4 + 8 * keys.len() + 6 * keys.len();
+        let actual = std::fs::metadata(tmp.path()).unwrap().len() as usize;
+        assert_eq!(
+            actual,
+            expected,
+            "v4 blueprint size mismatch: got {}, expected {} (N={})",
+            actual,
+            expected,
+            keys.len()
+        );
+    }
+
+    /// Section offsets are stable: reading back the fingerprint must
+    /// yield the one written.
+    #[test]
+    fn v4_fingerprint_roundtrips() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let table = CompactRegretTable::with_capacity(16);
+        let keys: Vec<u64> = vec![100];
+        let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(7);
+        write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
+
+        let bytes = std::fs::read(tmp.path()).unwrap();
+        // Fingerprint at offset 32 + 48 = 80, length 40.
+        let fp_bytes = &bytes[80..120];
+        let stored: &pkr_core::abstraction::AbstractionFingerprint = bytemuck::from_bytes(fp_bytes);
+        assert_eq!(*stored, fp);
+    }
+}

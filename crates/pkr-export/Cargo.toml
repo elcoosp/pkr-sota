@@ -12,3 +12,6 @@ bytemuck = { workspace = true }
 foldhash = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

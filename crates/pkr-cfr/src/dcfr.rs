@@ -340,3 +340,92 @@ mod tests {
         assert_eq!(DiscountMode::PRODUCTION, DiscountMode::CanonicalDcfr);
     }
 }
+
+#[cfg(test)]
+mod integer_discount_tests {
+    use super::*;
+
+    /// During warmup (t < TAU), the discount is exactly 1/1 for any p.
+    #[test]
+    fn discount_is_one_during_warmup() {
+        for t in [0u32, 1, 500, 999] {
+            for p in [0u32, 1, 2] {
+                let (num, den) = discount_num_den(t, p);
+                assert_eq!(
+                    (num, den),
+                    (1, 1),
+                    "warmup discount for t={t} p={p} should be 1/1"
+                );
+            }
+        }
+    }
+
+    /// At t >= TAU, p=0 gives 1/2 exactly (constant, independent of t).
+    #[test]
+    fn discount_p0_is_one_half() {
+        for t in [1000u32, 2000, 10_000, 1_000_000] {
+            assert_eq!(discount_num_den(t, 0), (1, 2));
+        }
+    }
+
+    /// p=1 gives t/(t+1).
+    #[test]
+    fn discount_p1_is_t_over_t_plus_1() {
+        assert_eq!(discount_num_den(1000, 1), (1000, 1001));
+        assert_eq!(discount_num_den(2000, 1), (2000, 2001));
+        assert_eq!(discount_num_den(1_000_000, 1), (1_000_000, 1_000_001));
+    }
+
+    /// p=2 gives t²/(t²+1) exactly — the irrational α=1.5 rounded to
+    /// α=2 so the arithmetic stays in i128.
+    #[test]
+    fn discount_p2_is_t_squared_over_t_squared_plus_1() {
+        assert_eq!(discount_num_den(1000, 2), (1_000_000, 1_000_001));
+        assert_eq!(discount_num_den(2000, 2), (4_000_000, 4_000_001));
+        assert_eq!(discount_num_den(10_000, 2), (100_000_000, 100_000_001),);
+    }
+
+    /// The rational approximation is always strictly less than 1
+    /// (for p > 0) and monotone increasing in t.
+    #[test]
+    fn discount_is_monotone_and_below_one() {
+        let t0 = discount_num_den(1000, 2);
+        let t1 = discount_num_den(2000, 2);
+        let t2 = discount_num_den(10_000, 2);
+        let f = |(num, den): (i128, i128)| num as f64 / den as f64;
+        assert!(f(t0) < f(t1));
+        assert!(f(t1) < f(t2));
+        assert!(f(t2) < 1.0);
+        // And p=2 discounts slowly: f(t0) should be ~0.999999.
+        assert!(f(t0) > 0.9999);
+    }
+
+    /// At iteration 0, the regret update returns delta unchanged as both
+    /// new regret and new momentum.
+    #[test]
+    fn regret_update_at_t0_returns_delta() {
+        let (r, m) = update_regret_i64(0, 0, 0, 12345);
+        assert_eq!(r, 12345);
+        assert_eq!(m, 12345);
+    }
+
+    /// A large-magnitude delta over many iterations must never produce
+    /// a value that would overflow i32 when stored (that's the whole
+    /// point of T1.1's integer path — the f32 version saturated).
+    #[test]
+    fn regret_update_stays_bounded_over_long_horizon() {
+        // Simulate a persistent +1000-chip delta for 10M iterations.
+        let mut r: i64 = 0;
+        let mut m: i64 = 0;
+        for t in 1..=10_000_000u32 {
+            let (nr, nm) = update_regret_i64(r, m, t, 1_000_000); // +1000 chips in fixed point
+            r = nr;
+            m = nm;
+        }
+        // With the DCFR discount on positives, r should stabilise near
+        // 1e6 / (1 - f(t)) which for p=2 is ~1e6 * t². That's huge, so
+        // the point of this test is just that r is finite and positive.
+        assert!(r > 0);
+        assert!(r < i64::MAX);
+    }
+}

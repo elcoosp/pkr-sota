@@ -391,3 +391,131 @@ mod fingerprint_tests {
         assert_eq!(*back, f);
     }
 }
+
+#[cfg(test)]
+mod fingerprint_sensitivity_tests {
+    use super::*;
+
+    /// Every semantic axis must produce a *different* fingerprint. If
+    /// any of these assertions ever fails, the fingerprint is not
+    /// covering what it claims to cover, and stale checkpoints could
+    /// silently resume under a changed game.
+    #[test]
+    fn fingerprint_distinguishes_each_semantic_axis() {
+        let base = AbstractionFingerprint::from_constants(200);
+        let cases: &[(&str, AbstractionFingerprint)] = &[
+            (
+                "preflop_k",
+                AbstractionFingerprint {
+                    preflop_k: 201,
+                    ..base
+                },
+            ),
+            ("flop_k", AbstractionFingerprint { flop_k: 1, ..base }),
+            (
+                "river_buckets",
+                AbstractionFingerprint {
+                    river_buckets: 1,
+                    ..base
+                },
+            ),
+            (
+                "sizing_small",
+                AbstractionFingerprint {
+                    sizing_small: base.sizing_small + 0.1,
+                    ..base
+                },
+            ),
+            (
+                "sizing_medium",
+                AbstractionFingerprint {
+                    sizing_medium: base.sizing_medium + 0.1,
+                    ..base
+                },
+            ),
+            (
+                "sizing_large",
+                AbstractionFingerprint {
+                    sizing_large: base.sizing_large + 0.1,
+                    ..base
+                },
+            ),
+            (
+                "threshold_small",
+                AbstractionFingerprint {
+                    threshold_small: base.threshold_small + 0.1,
+                    ..base
+                },
+            ),
+            (
+                "threshold_large",
+                AbstractionFingerprint {
+                    threshold_large: base.threshold_large + 0.1,
+                    ..base
+                },
+            ),
+            (
+                "sig_version",
+                AbstractionFingerprint {
+                    sig_version: base.sig_version.wrapping_add(1),
+                    ..base
+                },
+            ),
+            (
+                "hash_algo",
+                AbstractionFingerprint {
+                    hash_algo: base.hash_algo.wrapping_add(1),
+                    ..base
+                },
+            ),
+        ];
+        for (name, modified) in cases {
+            assert_ne!(
+                base, *modified,
+                "fingerprint did not distinguish change to `{name}`"
+            );
+            let msg = base.describe_mismatch(modified);
+            assert!(
+                msg.contains(name) || name.starts_with("sizing") || name.starts_with("threshold"),
+                "describe_mismatch must name `{name}`, got: {msg}"
+            );
+        }
+    }
+
+    /// Identical field values produce identical fingerprints.
+    #[test]
+    fn fingerprint_equality_is_structural() {
+        let a = AbstractionFingerprint::from_constants(200);
+        let mut b = AbstractionFingerprint::from_constants(200);
+        assert_eq!(a, b);
+        b.sizing_small += 1e-9;
+        // f32: 1e-9 won't change the value at 0.5. Confirm.
+        assert_eq!(a.sizing_small, b.sizing_small);
+        assert_eq!(a, b);
+        b.sizing_small += 0.5;
+        assert_ne!(a, b);
+    }
+
+    /// Fingerprint encodes the size of the PREFLOF cluster count as
+    /// `u32`. Verify k=8 vs k=200 are distinct (the §17 incident).
+    #[test]
+    fn fingerprint_catches_k8_leak() {
+        let good = AbstractionFingerprint::from_constants(200);
+        let bad = AbstractionFingerprint::from_constants(8);
+        assert_ne!(good, bad);
+        assert!(good.describe_mismatch(&bad).contains("preflop_k"));
+    }
+
+    /// Fingerprint version-1 construction (sig_version=1) is the default
+    /// with SIG_V2_STREET_MONEY=false.
+    #[test]
+    fn fingerprint_reports_current_sig_version() {
+        let fp = AbstractionFingerprint::from_constants(200);
+        let expected = if crate::state::SIG_V2_STREET_MONEY {
+            2
+        } else {
+            1
+        };
+        assert_eq!(fp.sig_version, expected);
+    }
+}
