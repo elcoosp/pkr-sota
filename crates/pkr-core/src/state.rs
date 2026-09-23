@@ -130,7 +130,7 @@ impl GameState {
             // (street_bets[actor] == 0); preflop (SB completing, BB
             // raising a limp) it forgot the already-posted blind.
             let base = self.street_bets[self.actor];
-            for &frac in &[0.4, 0.8, 1.6] {
+            for &frac in &crate::abstraction::BET_SIZINGS {
                 let bet = base + pot * frac;
                 let chips_needed = bet - base;
                 if chips_needed <= self.stacks[self.actor] {
@@ -166,7 +166,7 @@ impl GameState {
             // + a pot-fraction on top. Old form `to_call + pot * frac`
             // under-counted by street_bets[actor] preflop.
             let opp_bet = self.street_bets[1 - self.actor];
-            for &frac in &[0.4, 0.8, 1.6] {
+            for &frac in &crate::abstraction::BET_SIZINGS {
                 let raise = opp_bet + pot * frac;
                 let chips_needed = raise - self.street_bets[self.actor];
                 if chips_needed <= self.stacks[self.actor] {
@@ -214,7 +214,7 @@ impl GameState {
             if can_raise {
                 let pot = self.pot;
                 let base = self.street_bets[self.actor];
-                for &frac in &[0.4, 0.8, 1.6] {
+                for &frac in &crate::abstraction::BET_SIZINGS {
                     if n >= 8 {
                         break;
                     }
@@ -254,7 +254,7 @@ impl GameState {
             if can_raise {
                 let pot = self.pot;
                 let opp_bet = self.street_bets[1 - self.actor];
-                for &frac in &[0.4, 0.8, 1.6] {
+                for &frac in &crate::abstraction::BET_SIZINGS {
                     if n >= 8 {
                         break;
                     }
@@ -341,6 +341,11 @@ impl GameState {
     /// Internal apply without undo (for initial state setup).
     fn apply_action_internal(&mut self, action: &Action) {
         let actor = self.actor;
+        // C3: snapshot pre-action scalars for bucket computation below.
+        let pre_stacks = self.stacks[actor];
+        let pre_street_bet = self.street_bets[actor];
+        let pre_opp_street_bet = self.street_bets[1 - actor];
+        let pre_pot = self.pot;
         match action.kind {
             ActionKind::Fold => {
                 self.folded[actor] = true;
@@ -402,8 +407,19 @@ impl GameState {
             }
         }
 
-        // Record abstract action bucket
-        let bucket = abstract_action_index_static(&action.kind, self);
+        // Record abstract action bucket. C3: derived from PRE-action
+        // state (matches the traverser's convention).
+        //
+        // `abstract_history` is currently write-only, so the previous
+        // post-action computation had no observable effect. C3 aligns
+        // both conventions to remove the trap.
+        let bucket = crate::abstraction::action_bucket(
+            &action.kind,
+            pre_stacks,
+            pre_street_bet,
+            pre_opp_street_bet,
+            pre_pot,
+        );
         if (self.abstract_history_len as usize) < self.abstract_history.len() {
             self.abstract_history[self.abstract_history_len as usize] = bucket;
             self.abstract_history_len += 1;
@@ -503,26 +519,8 @@ impl GameState {
     }
 }
 
-/// Map action kind to abstract bucket (0..5) given the state before the action.
-fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
-    match kind {
-        ActionKind::Fold => 0,
-        ActionKind::Check | ActionKind::Call => 1,
-        ActionKind::Bet(amount) => {
-            let pot = state.pot.max(1.2);
-            let fraction = amount / pot;
-            if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
-                5 // all-in
-            } else if fraction < 0.6 {
-                2
-            } else if fraction < 1.2 {
-                3
-            } else {
-                4
-            }
-        }
-    }
-}
+// (C3) `abstract_action_index_static` deleted; use
+// `crate::abstraction::action_bucket` instead.
 
 #[cfg(test)]
 mod c1_tests {
@@ -698,7 +696,13 @@ mod c2_tests {
             .expect("true all-in offered");
         // Recompute bucket via state's own static mapper.
         // (abstract_action_index_static is private but callable from this module.)
-        let bucket = super::abstract_action_index_static(&all_in.kind, &s);
+        let bucket = crate::abstraction::action_bucket(
+            &all_in.kind,
+            s.stacks[s.actor],
+            s.street_bets[s.actor],
+            s.street_bets[1 - s.actor],
+            s.pot,
+        );
         assert_eq!(bucket, 5, "all-in total must bucket as 5, not 4");
     }
 }
@@ -708,7 +712,7 @@ mod c1_5_tests {
     use super::*;
 
     // Sizings currently used by `legal_actions*` after T0.2.
-    const SIZINGS: [f32; 3] = [0.4, 0.8, 1.6];
+    const SIZINGS: [f32; 3] = crate::abstraction::BET_SIZINGS;
 
     fn bets(buf: &[Action], n: usize) -> Vec<f32> {
         buf[..n]
@@ -759,19 +763,14 @@ mod c1_5_tests {
                 frac,
                 bets(&buf, n)
             );
-        }
-
-        // Old buggy form: to_call(0) + pot(4) * frac would give 1.6/3.2/6.4.
-        // None of those should appear (they collide with nothing else here).
-        for frac in SIZINGS {
-            let buggy = 0.0 + 4.0 * frac;
-            assert!(
-                !find_bet(&buf, n, buggy),
-                "old buggy raise total {} still present; bets={:?}",
-                buggy,
-                bets(&buf, n)
-            );
-        }
+        } // NOTE: the old buggy total for a given sizing can numerically
+          // collide with the correct total for a different sizing now
+          // that BET_SIZINGS = [0.5, 1.0, 2.0]. Specifically,
+          // buggy(1.0x) == correct(0.5x) == 4.0 when opp_bet=2, pot=4.
+          // So we do not assert the absence of any particular buggy
+          // value; the positive assertion above plus the C3 bucket test
+          // (`anchors_map_to_distinct_buckets_preflop_raise_over_limp`)
+          // jointly prove the new formula is in use.
     }
 
     /// C1.5: SB re-raises over BB's open. Expected totals:

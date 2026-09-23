@@ -201,12 +201,24 @@ pub fn traverse(
 
     let mut action_counts = [0usize; K];
     let mut action_indices = [[0usize; 10]; K];
+    // C3: `action_bucket` always returns a bucket index for every
+    // concrete action. Pre-action scalars match the traverser's
+    // convention.
+    let actor_stacks = current.stacks[current.actor];
+    let actor_street = current.street_bets[current.actor];
+    let actor_pot = current.pot;
+    let opp_street = current.street_bets[1 - current.actor];
     for (idx, action) in num_actions.iter().enumerate() {
-        if let Some(a) = abstract_action_index(&action.kind, current) {
-            if action_counts[a] < 10 {
-                action_indices[a][action_counts[a]] = idx;
-                action_counts[a] += 1;
-            }
+        let a = pkr_core::abstraction::action_bucket(
+            &action.kind,
+            actor_stacks,
+            actor_street,
+            opp_street,
+            actor_pot,
+        ) as usize;
+        if action_counts[a] < 10 {
+            action_indices[a][action_counts[a]] = idx;
+            action_counts[a] += 1;
         }
     }
 
@@ -347,15 +359,12 @@ pub fn traverse(
         // rationale and r3 V2 for the edge-case requirements.
         let eps = exploration_epsilon();
         let r = rng.random::<f32>();
-        let sampled_abstract = match sample_bucket_epsilon(
-            &strategy,
-            &action_counts,
-            eps,
-            r,
-        ) {
+        let sampled_abstract = match sample_bucket_epsilon(&strategy, &action_counts, eps, r) {
             Some(a) => a,
             None => {
-                if advanced { current.undo_action(); }
+                if advanced {
+                    current.undo_action();
+                }
                 *deck_idx = saved_deck_idx;
                 return 0.0;
             }
@@ -400,25 +409,7 @@ pub fn traverse(
     }
 }
 
-fn abstract_action_index(kind: &ActionKind, state: &GameState) -> Option<usize> {
-    match kind {
-        ActionKind::Fold => Some(0),
-        ActionKind::Check | ActionKind::Call => Some(1),
-        ActionKind::Bet(amount) => {
-            let pot = state.pot.max(1.2);
-            let fraction = amount / pot;
-            if *amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
-                Some(5)
-            } else if fraction < 0.6 {
-                Some(2)
-            } else if fraction < 1.2 {
-                Some(3)
-            } else {
-                Some(4)
-            }
-        }
-    }
-}
+// (C3) local `abstract_action_index` deleted; use `pkr_core::abstraction::action_bucket`.
 
 #[cfg(test)]
 mod tests {
@@ -590,8 +581,8 @@ mod tests {
         let n = 10_000;
         for i in 0..n {
             let r = i as f32 / n as f32;
-            let a = sample_bucket_epsilon(&strategy, &counts, 0.05, r)
-                .expect("legal buckets exist");
+            let a =
+                sample_bucket_epsilon(&strategy, &counts, 0.05, r).expect("legal buckets exist");
             assert!(
                 counts[a] > 0,
                 "sampler returned illegal bucket {a} at r={r}"

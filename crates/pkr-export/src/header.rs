@@ -63,9 +63,9 @@ pub struct AnchorsSection {
 /// regenerate abstraction tables and re-export.
 pub const ANCHORS: [[f32; 3]; 4] = [
     [0.0, 0.0, 0.0],
-    [0.4, 0.8, 1.6],
-    [0.4, 0.8, 1.6],
-    [0.4, 0.8, 1.6],
+    pkr_core::abstraction::BET_SIZINGS,
+    pkr_core::abstraction::BET_SIZINGS,
+    pkr_core::abstraction::BET_SIZINGS,
 ];
 
 // Compile-time size guards
@@ -73,3 +73,20 @@ const _: () = assert!(std::mem::size_of::<FileHeader>() == 32);
 const _: () = assert!(std::mem::size_of::<FmphHeader>() == 40);
 const _: () = assert!(std::mem::size_of::<TranslationTableHeader>() == 16);
 const _: () = assert!(std::mem::size_of::<AnchorsSection>() == 48);
+
+#[cfg(test)]
+mod c3_anchor_tests {
+    use super::*;
+
+    #[test]
+    fn anchors_match_bet_sizings() {
+        for street in 1..=3 {
+            assert_eq!(
+                ANCHORS[street],
+                pkr_core::abstraction::BET_SIZINGS,
+                "ANCHORS[{street}] drifted from BET_SIZINGS"
+            );
+        }
+        assert_eq!(ANCHORS[0], [0.0, 0.0, 0.0]);
+    }
+}
