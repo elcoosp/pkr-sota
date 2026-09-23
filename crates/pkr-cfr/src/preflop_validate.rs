@@ -314,7 +314,6 @@ mod tests {
         );
     }
 
-
     /// Dummy lookup: opens with 80% of hands, 3-bets 15%, defends 60%
     fn dummy_lookup(r1: Rank, r2: Rank, suited: bool) -> f32 {
         // AA always opens

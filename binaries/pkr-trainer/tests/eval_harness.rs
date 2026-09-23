@@ -35,7 +35,11 @@ fn eval_harness_runs_against_real_blueprint() {
         .to_path_buf();
     let abs = |p: String| -> std::path::PathBuf {
         let pb = std::path::PathBuf::from(&p);
-        if pb.is_absolute() { pb } else { workspace_root.join(pb) }
+        if pb.is_absolute() {
+            pb
+        } else {
+            workspace_root.join(pb)
+        }
     };
 
     let bp = match std::env::var("PKR_BLUEPRINT") {
@@ -45,15 +49,14 @@ fn eval_harness_runs_against_real_blueprint() {
             return;
         }
     };
-    let centroids_path = abs(std::env::var("PKR_CENTROIDS")
-        .expect("PKR_CENTROIDS must be set alongside PKR_BLUEPRINT"));
-    let rank_table_path = abs(std::env::var("PKR_RANK_TABLE")
-        .expect("PKR_RANK_TABLE must be set"));
+    let centroids_path =
+        abs(std::env::var("PKR_CENTROIDS")
+            .expect("PKR_CENTROIDS must be set alongside PKR_BLUEPRINT"));
+    let rank_table_path = abs(std::env::var("PKR_RANK_TABLE").expect("PKR_RANK_TABLE must be set"));
 
     // Build evaluator (needed by abstraction EHS fallback + harness).
-    let evaluator = Arc::new(
-        TableEvaluator::new(&rank_table_path).expect("failed to load rank table"),
-    );
+    let evaluator =
+        Arc::new(TableEvaluator::new(&rank_table_path).expect("failed to load rank table"));
 
     // Build abstraction with whatever tables are available.
     let store = load_centroids(centroids_path.to_str().unwrap()).expect("failed to load centroids");
@@ -89,14 +92,14 @@ fn eval_harness_runs_against_real_blueprint() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(200u32);
 
-    eprintln!("=== eval harness: {} hands vs each scripted bot ===", num_hands);
+    eprintln!(
+        "=== eval harness: {} hands vs each scripted bot ===",
+        num_hands
+    );
     let result = run_eval_harness(&ctx, num_hands, 0xDEAD_BEEF_CAFE_1234u64);
 
     for opp in &result.opponents {
-        eprintln!(
-            "  vs {:<12}  bb/100 = {:+8.2}",
-            opp.name, opp.bb_per_100
-        );
+        eprintln!("  vs {:<12}  bb/100 = {:+8.2}", opp.name, opp.bb_per_100);
     }
     eprintln!("  mean bb/100 = {:+.2}", result.bot_bb_per_100);
     eprintln!(

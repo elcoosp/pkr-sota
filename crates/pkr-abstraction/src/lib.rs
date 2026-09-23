@@ -356,7 +356,7 @@ mod tests {
         // (requires a format_version bump + full retrain + re-export).
         //
         // Computed with FNV-1a 64-bit, little-endian cluster_id, length-prefixed
-// history. Regenerated for T2.2 (river >> 3, no flop_bucket in hash), 2026-09-23.
+        // history. Regenerated for T2.2 (river >> 3, no flop_bucket in hash), 2026-09-23.
         let builder =
             KMeansAbstraction::new(vec![(0.3, 0.09), (0.7, 0.49)], Arc::new(MockEvaluator));
         assert_eq!(

@@ -164,39 +164,65 @@ impl Evaluator for TableEvaluator {
         if total == 5 {
             best = self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]);
         } else if total == 6 {
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
         } else if total == 7 {
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[1], cards[4], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[2], cards[4], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[0], cards[3], cards[4], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
-            best = best.min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[1], cards[2], cards[4], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[1], cards[3], cards[4], cards[5], cards[6]]));
-            best = best.min(self.load_rank_sorted(&[cards[2], cards[3], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[3], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[3], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[2], cards[3], cards[4], cards[5], cards[6]]));
         }
         best
     }
 }
-
 
 #[cfg(test)]
 mod t13_tests {

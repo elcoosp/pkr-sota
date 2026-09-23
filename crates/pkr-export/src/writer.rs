@@ -1,4 +1,6 @@
-use crate::header::{AnchorsSection, FileHeader, ANCHORS, FORMAT_VERSION_V3, HASH_ALGO_FNV1A64_INFOSET};
+use crate::header::{
+    AnchorsSection, FileHeader, ANCHORS, FORMAT_VERSION_V3, HASH_ALGO_FNV1A64_INFOSET,
+};
 use pkr_cfr::table::CompactRegretTable;
 use std::fs::File;
 use std::io::Write;
@@ -55,7 +57,8 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable, keys: &[u64]) {
     file.write_all(bytemuck::bytes_of(&anchors)).unwrap();
     // 3. key_count:u32, cdf_size:u32
     file.write_all(&(num_keys as u32).to_le_bytes()).unwrap();
-    file.write_all(&((K * num_keys) as u32).to_le_bytes()).unwrap();
+    file.write_all(&((K * num_keys) as u32).to_le_bytes())
+        .unwrap();
     // 4. keys
     file.write_all(&key_bytes).unwrap();
     // 5. cdfs

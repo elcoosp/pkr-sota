@@ -407,12 +407,21 @@ fn decide_from_blueprint(
     use pkr_core::state::{Action, ActionKind};
 
     // Legal concrete actions for the current actor.
-    let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+    let mut buf: [Action; 8] = [Action {
+        player: 0,
+        kind: ActionKind::Fold,
+    }; 8];
     let n_legal = state.legal_actions_into(&mut buf);
 
     // Defensive fallback if somehow nothing is legal (should not happen).
     if n_legal == 0 {
-        return (Action { player: state.actor, kind: ActionKind::Fold }, false);
+        return (
+            Action {
+                player: state.actor,
+                kind: ActionKind::Fold,
+            },
+            false,
+        );
     }
 
     // Compute the infoset hash. NOTE: older blueprints (v8 and earlier)
@@ -543,11 +552,7 @@ fn decide_from_blueprint(
     (buf[0], true)
 }
 
-pub fn run_eval_harness(
-    ctx: &EvalContext,
-    num_hands: u32,
-    rng_seed: u64,
-) -> EvalResult {
+pub fn run_eval_harness(ctx: &EvalContext, num_hands: u32, rng_seed: u64) -> EvalResult {
     use pkr_core::state::GameState;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
@@ -564,8 +569,11 @@ pub fn run_eval_harness(
         fallback_hits: 0,
     };
 
-    let opponents: Vec<(&str, &dyn ScriptedBot)> =
-        vec![("station", &StationBot), ("nit", &NitBot), ("aggro", &AggroBot)];
+    let opponents: Vec<(&str, &dyn ScriptedBot)> = vec![
+        ("station", &StationBot),
+        ("nit", &NitBot),
+        ("aggro", &AggroBot),
+    ];
 
     let mut rng = SmallRng::seed_from_u64(rng_seed);
 
@@ -606,7 +614,11 @@ pub fn run_eval_harness(
                 let action = if state.actor == 0 {
                     let (act, used_bp) = decide_from_blueprint(ctx, &state, &mut rng);
                     decisions += 1;
-                    if used_bp { blueprint_hits += 1; } else { fallback_hits += 1; }
+                    if used_bp {
+                        blueprint_hits += 1;
+                    } else {
+                        fallback_hits += 1;
+                    }
                     act
                 } else {
                     bot.act(&state)
@@ -652,11 +664,7 @@ pub fn run_eval_harness(
         });
     }
 
-    results.bot_bb_per_100 = results
-        .opponents
-        .iter()
-        .map(|o| o.bb_per_100)
-        .sum::<f64>()
+    results.bot_bb_per_100 = results.opponents.iter().map(|o| o.bb_per_100).sum::<f64>()
         / results.opponents.len().max(1) as f64;
     results.decisions = decisions;
     results.blueprint_hits = blueprint_hits;

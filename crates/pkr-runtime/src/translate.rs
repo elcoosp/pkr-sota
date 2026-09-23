@@ -20,11 +20,7 @@ use crate::mmap::MmapReader;
 /// Returns `(lower_anchor, upper_anchor, p_lower, p_upper)` where the two
 /// probabilities sum to 1.0. If `fraction` is outside the anchor range,
 /// both anchors collapse to the nearest one with weight 1.0.
-pub fn bracket_bet(
-    reader: &MmapReader,
-    street: u8,
-    fraction: f32,
-) -> (f32, f32, f32, f32) {
+pub fn bracket_bet(reader: &MmapReader, street: u8, fraction: f32) -> (f32, f32, f32, f32) {
     let street_idx = (street as usize).min(3);
     let row = reader.anchors()[street_idx];
 
@@ -44,7 +40,11 @@ pub fn bracket_bet(
         return (a[2], a[2], 1.0, 0.0);
     }
 
-    let (lower, upper) = if fraction <= a[1] { (a[0], a[1]) } else { (a[1], a[2]) };
+    let (lower, upper) = if fraction <= a[1] {
+        (a[0], a[1])
+    } else {
+        (a[1], a[2])
+    };
 
     // Equal-reach pseudo-harmonic: linear interpolation of mass.
     let p_lower = ((upper - fraction) / (upper - lower)).clamp(0.0, 1.0);

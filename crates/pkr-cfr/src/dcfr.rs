@@ -76,7 +76,7 @@ pub fn discount_factor(t: f32, p: f32) -> f32 {
 
 /// Full regret update with selectable discount and momentum.
 /// Returns (new_regret, new_momentum).
-#[allow(dead_code)]  // superseded by update_regret_i64; kept for the f32 baseline
+#[allow(dead_code)] // superseded by update_regret_i64; kept for the f32 baseline
 pub fn update_regret_full(
     current: f32,
     prev_momentum: f32,
@@ -113,7 +113,7 @@ pub fn update_regret_full(
 /// Production update: canonical discount, PCFR+ momentum on. This is
 /// what `flush_cpu_batch` calls.
 #[inline(always)]
-#[allow(dead_code)]  // superseded by update_regret_i64; kept for the f32 baseline
+#[allow(dead_code)] // superseded by update_regret_i64; kept for the f32 baseline
 pub fn update_regret_pfr_plus(
     current: f32,
     prev_momentum: f32,
@@ -142,7 +142,6 @@ pub fn strategy_sum_discount_factor(t: f32) -> f32 {
     let numerator = ratio.powf(GAMMA);
     numerator / (numerator + 1.0)
 }
-
 
 // ---------------------------------------------------------------------------
 // T1.1: exact integer discount
@@ -198,8 +197,7 @@ pub fn update_regret_i64(
     // (this part is numerically fine and 20 lines above were too).
     let t_f = t as f64;
     let gamma = 1.0 / ((t_f + 1.0).sqrt());
-    let predicted_f =
-        (1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64);
+    let predicted_f = (1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64);
     let predicted_i64 = predicted_f.round() as i64;
 
     // Exact DCFR discount. α=2, β=0.
@@ -214,8 +212,7 @@ pub fn update_regret_i64(
     let pos_num = r_pos * num_pos * den_neg;
     let neg_num = r_neg * num_neg * den_pos;
     let discounted_i128 = (pos_num + neg_num) / common_den;
-    let discounted_i64 = discounted_i128
-        .clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    let discounted_i64 = discounted_i128.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
 
     let new_r = (discounted_i64 + predicted_i64).max(0);
     (new_r, predicted_i64)
@@ -229,11 +226,7 @@ pub fn update_regret_i64(
 /// Kept as a documented helper for future experiments where the
 /// discount might be made meaningful (e.g. rescaled τ).
 #[allow(dead_code)]
-pub fn apply_strategy_discount_i64(
-    current_i64: i64,
-    iteration: u32,
-    prob_i64: i64,
-) -> i64 {
+pub fn apply_strategy_discount_i64(current_i64: i64, iteration: u32, prob_i64: i64) -> i64 {
     let t = iteration;
     if t == 0 {
         return current_i64.saturating_add(prob_i64);

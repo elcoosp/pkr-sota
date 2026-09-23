@@ -111,8 +111,7 @@ impl MmapReader {
         if self.file_header.version >= 3 {
             let base = std::mem::size_of::<FileHeader>();
             let raw = &self.mmap[base..base + 48];
-            let s: &pkr_export::header::AnchorsSection =
-                bytemuck::from_bytes(raw);
+            let s: &pkr_export::header::AnchorsSection = bytemuck::from_bytes(raw);
             s.anchors
         } else {
             pkr_export::header::ANCHORS

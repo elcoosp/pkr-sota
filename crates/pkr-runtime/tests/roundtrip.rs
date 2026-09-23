@@ -120,7 +120,6 @@ fn roundtrip_cdf_survives_byte_for_byte() {
     assert_eq!(&advice.cdf_probabilities[..K], &cdfs[0][..]);
 }
 
-
 /// The fallback advice must produce a valid non-degenerate CDF:
 /// monotonic non-decreasing, last byte = 255, len = 6, first byte > 0
 /// and < 200 (so it is neither all-fold nor never-fold).
@@ -141,6 +140,9 @@ fn fallback_advice_is_safe() {
         );
     }
     assert_eq!(fb.cdf_probabilities[5], 255);
-    assert!(fb.cdf_probabilities[0] > 0, "must have some fold probability");
+    assert!(
+        fb.cdf_probabilities[0] > 0,
+        "must have some fold probability"
+    );
     assert!(fb.cdf_probabilities[0] < 200, "must not be all-fold");
 }
