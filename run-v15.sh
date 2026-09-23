@@ -35,7 +35,7 @@ fi
 mkdir -p "$OUT"
 for f in centroids.bin preflop_abstraction.bin abstraction.bin \
          turn_abstraction.bin river_buckets.bin flop_buckets.bin hand_ranks.bin; do
-    ln -sf "$REPO_ROOT/$SRC/$f" "$OUT/$f"
+    cp -f "$SRC/$f" "$OUT/$f"   # copy, never symlink (r3 V1)
 done
 
 rm -f "$OUT/train.ckpt" "$OUT/train.ckpt.prev"

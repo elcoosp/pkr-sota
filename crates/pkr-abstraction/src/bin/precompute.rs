@@ -24,9 +24,7 @@ fn evaluator_kind() -> String {
 
 /// Construct the configured evaluator backend for a given rank-table path.
 /// Returns a boxed trait object so callers do not need to be generic.
-fn make_evaluator(
-    rank_table_path: &str,
-) -> Result<Box<dyn Evaluator>, Box<dyn std::error::Error>> {
+fn make_evaluator(rank_table_path: &str) -> Result<Box<dyn Evaluator>, Box<dyn std::error::Error>> {
     match evaluator_kind().as_str() {
         "fast7" => Ok(Box::new(Fast7Evaluator::new(rank_table_path)?)),
         "table" => Ok(Box::new(TableEvaluator::new(rank_table_path)?)),
@@ -435,13 +433,12 @@ fn generate_turn_table(
 
         done = end;
 
-        let mut f = File::create(&tmp_path)
-            .map_err(|e| format!("create {}: {}", tmp_path, e))?;
+        let mut f = File::create(&tmp_path).map_err(|e| format!("create {}: {}", tmp_path, e))?;
         f.write_all(&table)
             .map_err(|e| format!("write {}: {}", tmp_path, e))?;
         f.sync_all().ok();
-        let mut pf = File::create(&prog_path)
-            .map_err(|e| format!("create {}: {}", prog_path, e))?;
+        let mut pf =
+            File::create(&prog_path).map_err(|e| format!("create {}: {}", prog_path, e))?;
         pf.write_all(&(done as u64).to_le_bytes())
             .map_err(|e| format!("write {}: {}", prog_path, e))?;
         pf.sync_all().ok();

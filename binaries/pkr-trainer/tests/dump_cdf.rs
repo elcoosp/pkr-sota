@@ -35,34 +35,41 @@ fn dump_cdf() {
     let bp = resolve(std::env::var("PKR_BLUEPRINT").expect("PKR_BLUEPRINT"));
     let abs_dir = resolve(std::env::var("PKR_ABS_DIR").expect("PKR_ABS_DIR"));
 
-    let evaluator = Arc::new(
-        TableEvaluator::new(format!("{}/hand_ranks.bin", abs_dir)).expect("hand_ranks"),
-    );
+    let evaluator =
+        Arc::new(TableEvaluator::new(format!("{}/hand_ranks.bin", abs_dir)).expect("hand_ranks"));
     let store = load_centroids(&format!("{}/centroids.bin", abs_dir)).expect("centroids");
     let abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
-    abstraction.init_table(0, &format!("{}/preflop_abstraction.bin", abs_dir)).ok();
-    abstraction.init_table(1, &format!("{}/abstraction.bin", abs_dir)).ok();
-    abstraction.init_table(2, &format!("{}/turn_abstraction.bin", abs_dir)).ok();
-    abstraction.init_table(3, &format!("{}/river_buckets.bin", abs_dir)).ok();
+    abstraction
+        .init_table(0, &format!("{}/preflop_abstraction.bin", abs_dir))
+        .ok();
+    abstraction
+        .init_table(1, &format!("{}/abstraction.bin", abs_dir))
+        .ok();
+    abstraction
+        .init_table(2, &format!("{}/turn_abstraction.bin", abs_dir))
+        .ok();
+    abstraction
+        .init_table(3, &format!("{}/river_buckets.bin", abs_dir))
+        .ok();
 
     let reader = MmapReader::new(&bp).expect("open blueprint");
     let handle = SolverHandle::new(reader);
 
     // Card: rank = c >> 2, suit = c & 3. A♠=48, K♠=44, Q♠=40, ... 2♠=0.
     let cases: &[(&str, [u8; 2])] = &[
-        ("AA",  [48, 49]),
-        ("KK",  [44, 45]),
-        ("QQ",  [40, 41]),
-        ("JJ",  [36, 37]),
-        ("TT",  [32, 33]),
-        ("99",  [28, 29]),
-        ("88",  [24, 25]),
-        ("77",  [20, 21]),
-        ("66",  [16, 17]),
-        ("55",  [12, 13]),
-        ("44",  [8, 9]),
-        ("33",  [4, 5]),
-        ("22",  [0, 1]),
+        ("AA", [48, 49]),
+        ("KK", [44, 45]),
+        ("QQ", [40, 41]),
+        ("JJ", [36, 37]),
+        ("TT", [32, 33]),
+        ("99", [28, 29]),
+        ("88", [24, 25]),
+        ("77", [20, 21]),
+        ("66", [16, 17]),
+        ("55", [12, 13]),
+        ("44", [8, 9]),
+        ("33", [4, 5]),
+        ("22", [0, 1]),
         ("AKs", [48, 44]),
         ("AQo", [48, 42]),
         ("KQo", [44, 40]),
@@ -75,8 +82,14 @@ fn dump_cdf() {
     //   limp → jam:  actions=2, raises=1, last_bet=1  →  0x00010102
     //   raise → jam: actions=2, raises=2, last_bet=1  →  0x00010202
     let scenarios: &[(&str, u32)] = &[
-        ("preflop limp→jam (facing 200bb jam)", 2 | (1 << 8) | (1 << 16)),
-        ("preflop raise→jam (facing 3bet jam)", 2 | (2 << 8) | (1 << 16)),
+        (
+            "preflop limp→jam (facing 200bb jam)",
+            2 | (1 << 8) | (1 << 16),
+        ),
+        (
+            "preflop raise→jam (facing 3bet jam)",
+            2 | (2 << 8) | (1 << 16),
+        ),
     ];
 
     println!("### blueprint: {}", bp);
@@ -84,8 +97,10 @@ fn dump_cdf() {
         println!("");
         println!("### {}   sig=0x{:08x}", name, sig);
         let hist = sig.to_le_bytes();
-        println!("  {:<5} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}   argmax",
-                 "hand", "fold", "call", "0.4x", "0.8x", "1.6x", "jam");
+        println!(
+            "  {:<5} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}   argmax",
+            "hand", "fold", "call", "0.4x", "0.8x", "1.6x", "jam"
+        );
         for (hname, hole) in cases {
             let hash = abstraction.get_infoset_hash(hole, &[], &hist, 0);
             match handle.get_advice_fast(hash) {
@@ -103,10 +118,7 @@ fn dump_cdf() {
                         .enumerate()
                         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                         .unwrap();
-                    let cells: Vec<String> = probs
-                        .iter()
-                        .map(|p| format!("{:>7.3}", p))
-                        .collect();
+                    let cells: Vec<String> = probs.iter().map(|p| format!("{:>7.3}", p)).collect();
                     println!("  {:<5} {}   {}", hname, cells.join(" "), am);
                 }
                 None => println!("  {:<5} MISS", hname),
