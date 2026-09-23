@@ -434,11 +434,13 @@ fn decide_from_blueprint(
     // fix + retrain, this should change to &state.board[..board_len].
     let hole = &state.hole[state.actor];
     let board: &[u8] = &state.board[..state.board_len as usize];
-    let history_bytes: [u8; 4] = state.history_signature().to_le_bytes();
+    let mut sig_buf = [0u8; 8];
+    let sig_len = state.infoset_signature_into(&mut sig_buf);
+    let history_bytes: &[u8] = &sig_buf[..sig_len];
     let street = state.street as u8;
     let hash = ctx
         .abstraction
-        .get_infoset_hash(hole, board, &history_bytes, street);
+        .get_infoset_hash(hole, board, history_bytes, street);
 
     // Look up the advice. Missing => pot-odds fallback.
     let advice = match ctx.provider.lookup(hash) {

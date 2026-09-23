@@ -225,8 +225,9 @@ pub fn traverse(
     // Compact history signature: (actions_this_street, num_raises,
     // last_was_bet). Collapses the infoset key space vs. hashing the
     // raw action sequence.
-    let sig = current.history_signature();
-    let history_bytes = sig.to_le_bytes();
+    let mut sig_buf = [0u8; 8];
+    let sig_len = current.infoset_signature_into(&mut sig_buf);
+    let history_bytes: &[u8] = &sig_buf[..sig_len];
 
     let hole = &current.hole[acting_player];
     // Hash on the valid community-card slice, not the padded [u8; 5] array.

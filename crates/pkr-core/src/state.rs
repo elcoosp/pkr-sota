@@ -16,6 +16,16 @@ pub const SIG_V2_STREET_MONEY: bool = false;
 /// Version tag stored in bits 60..64 of `history_signature_v2()`.
 pub const SIG_V2_VERSION: u64 = 2;
 
+/// When `SIG_V2_STREET_MONEY` is on, controls whether the
+/// `last_bet_fraction_bucket` bits (24..28) participate in the hash.
+///
+/// `false` (SPR-only) = capacity growth ≤ 6×; recommended first
+/// deployable config per r3 P6, because it stays well under the
+/// 16 GB memory budget without needing the 72 B/infoset variant.
+/// `true` = full v2 with ≤ 36× growth; flip once P5 lands and the
+/// measured infoset count from an SPR-only run is known.
+pub const SIG_V2_INCLUDE_LBF: bool = false;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Street {
     Preflop,
@@ -617,9 +627,32 @@ impl GameState {
     /// Not yet wired into the traverser. See `SIG_V2_STREET_MONEY`.
     pub fn history_signature_v2(&self) -> u64 {
         let v1 = self.history_signature() as u64;
-        let lbf = self.last_bet_fraction_bucket() as u64;
+        let lbf = if SIG_V2_INCLUDE_LBF {
+            self.last_bet_fraction_bucket() as u64
+        } else {
+            0
+        };
         let spr = self.spr_bucket() as u64;
         v1 | (lbf << 24) | (spr << 28) | (SIG_V2_VERSION << 60)
+    }
+
+    /// Fill `out` with the current infoset signature bytes and return
+    /// the length (4 for v1, 8 for v2). The length matters: FNV-1a
+    /// hashes the exact byte slice, so changing the length changes
+    /// every hash downstream.
+    ///
+    /// `SIG_V2_STREET_MONEY` dispatches between the two. When false
+    /// (default), output is byte-identical to `history_signature()
+    /// .to_le_bytes()`, so training is unaffected.
+    #[inline]
+    pub fn infoset_signature_into(&self, out: &mut [u8; 8]) -> usize {
+        if SIG_V2_STREET_MONEY {
+            out.copy_from_slice(&self.history_signature_v2().to_le_bytes());
+            8
+        } else {
+            out[..4].copy_from_slice(&self.history_signature().to_le_bytes());
+            4
+        }
     }
 }
 
@@ -1111,13 +1144,98 @@ mod c4b_tests {
         let full = setup(4.0);
         let over = setup(8.0);
 
-        // v1 collides — the bug we are fixing.
+        // v1 always collides — that is the bug we are fixing.
         assert_eq!(half.history_signature(), full.history_signature());
         assert_eq!(half.history_signature(), over.history_signature());
 
-        // v2 distinguishes.
-        assert_ne!(half.history_signature_v2(), full.history_signature_v2());
-        assert_ne!(full.history_signature_v2(), over.history_signature_v2());
-        assert_ne!(half.history_signature_v2(), over.history_signature_v2());
+        // v2 only distinguishes bet sizes if the LBF bits are included.
+        // With SIG_V2_INCLUDE_LBF = false (SPR-only config, the current
+        // production default), the LBF bucket does not participate in
+        // the hash and these three states collide under v2 as well.
+        if SIG_V2_INCLUDE_LBF {
+            assert_ne!(half.history_signature_v2(), full.history_signature_v2());
+            assert_ne!(full.history_signature_v2(), over.history_signature_v2());
+            assert_ne!(half.history_signature_v2(), over.history_signature_v2());
+        } else {
+            assert_eq!(
+                half.history_signature_v2(),
+                full.history_signature_v2(),
+                "with INCLUDE_LBF off, v2 does not distinguish bet sizes (expected)"
+            );
+            assert_eq!(half.history_signature_v2(), over.history_signature_v2());
+        }
+    }
+}
+
+#[cfg(test)]
+mod c4c_tests {
+    use super::*;
+
+    /// With the flag off, `infoset_signature_into` must produce exactly
+    /// the same 4 bytes as `history_signature().to_le_bytes()`. This
+    /// pins the flag-off no-op contract.
+    #[test]
+    fn flag_off_bytes_match_v1() {
+        if SIG_V2_STREET_MONEY {
+            eprintln!("SKIP: SIG_V2_STREET_MONEY is on; not a flag-off test");
+            return;
+        }
+        let s = GameState::new(200.0, 1.0, 2.0);
+        let mut buf = [0u8; 8];
+        let n = s.infoset_signature_into(&mut buf);
+        assert_eq!(n, 4, "flag off must return 4 bytes");
+        assert_eq!(
+            &buf[..4],
+            &s.history_signature().to_le_bytes()[..],
+            "flag-off bytes must match v1 exactly"
+        );
+    }
+
+    /// With the flag on, returns 8 bytes and the low 24 match v1.
+    /// Skipped when the flag is off so the suite stays green in either
+    /// configuration.
+    #[test]
+    fn flag_on_bytes_are_8_bytes_with_v2_version() {
+        if !SIG_V2_STREET_MONEY {
+            eprintln!("SKIP: SIG_V2_STREET_MONEY is off; run after C4d flip");
+            return;
+        }
+        let s = GameState::new(200.0, 1.0, 2.0);
+        let mut buf = [0u8; 8];
+        let n = s.infoset_signature_into(&mut buf);
+        assert_eq!(n, 8, "flag on must return 8 bytes");
+        let as_u64 = u64::from_le_bytes(buf);
+        assert_eq!(as_u64 >> 60, SIG_V2_VERSION);
+    }
+
+    /// `SIG_V2_INCLUDE_LBF` must actually gate the lbf bits.
+    #[test]
+    fn include_lbf_flag_gates_lbf_bits() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        s.advance_street_in_place(&[0, 1, 2]);
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(4.0),
+        });
+
+        let v2 = s.history_signature_v2();
+        let lbf = (v2 >> 24) & 0xF;
+        if SIG_V2_INCLUDE_LBF {
+            assert!(lbf > 0, "lbf bits should be non-zero with INCLUDE_LBF on");
+        } else {
+            assert_eq!(lbf, 0, "lbf bits must be zero with INCLUDE_LBF off");
+        }
     }
 }
