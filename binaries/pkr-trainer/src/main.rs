@@ -213,6 +213,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut last_ckpt_iter = start_iter;
     let mut last_report_iter = start_iter;
+    let mut last_eval_iter = start_iter;
     let mut stopped_early = false;
 
     let bench_deadline = if cli.bench_seconds > 0 {
@@ -294,7 +295,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
 
             // Sampled best-response exploitability check.
-            if cli.eval_every > 0 && done % cli.eval_every == 0 {
+            // Fire when done has advanced by at least eval_every since the
+            // last eval (done increments by ITERS_PER_SYNC, not by 1).
+            if cli.eval_every > 0 && done >= last_eval_iter.saturating_add(cli.eval_every) {
                 let br = pkr_exploit::best_response::sampled_exploitability(
                     trainer.get_table(),
                     abstraction_for_eval.as_ref(),
@@ -306,6 +309,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
                     done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
                 );
+                last_eval_iter = done;
             }
 
             if let Some(w) = csv_writer.as_mut() {
