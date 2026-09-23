@@ -420,7 +420,7 @@ fn decide_from_blueprint(
     // so we must match that here for lookups to hit. After the T0.2d
     // fix + retrain, this should change to &state.board[..board_len].
     let hole = &state.hole[state.actor];
-    let board: &[u8] = &state.board;
+    let board: &[u8] = &state.board[..state.board_len as usize];
     let history_bytes: [u8; 4] = state.history_signature().to_le_bytes();
     let street = state.street as u8;
     let hash = ctx
