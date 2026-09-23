@@ -923,6 +923,7 @@ dependencies = [
  "foldhash 0.1.5",
  "pkr-cfr",
  "pkr-contracts",
+ "pkr-core",
  "rand",
  "rayon",
  "thiserror",
