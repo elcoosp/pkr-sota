@@ -225,6 +225,12 @@ fn combinadic_rank_6(cards: &[u8; 6]) -> u64 {
 
 impl AbstractionBuilder for KMeansAbstraction {
     fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8], street: u8) -> u64 {
+        debug_assert!(
+            hole.iter().all(|h| !board.contains(h)),
+            "abstraction hash called with hole and board sharing a card: \
+             hole={:?} board={:?} street={}",
+            hole, board, street,
+        );
         let centroids = self
             .centroids
             .get(&street)
