@@ -415,9 +415,12 @@ fn decide_from_blueprint(
         return Action { player: state.actor, kind: ActionKind::Fold };
     }
 
-    // Compute the infoset hash the same way the trainer does.
+    // Compute the infoset hash. NOTE: older blueprints (v8 and earlier)
+    // were trained with the raw [u8; 5] board array (length 5 always),
+    // so we must match that here for lookups to hit. After the T0.2d
+    // fix + retrain, this should change to &state.board[..board_len].
     let hole = &state.hole[state.actor];
-    let board: &[u8] = &state.board[..state.board_len as usize];
+    let board: &[u8] = &state.board;
     let history_bytes: [u8; 4] = state.history_signature().to_le_bytes();
     let street = state.street as u8;
     let hash = ctx
