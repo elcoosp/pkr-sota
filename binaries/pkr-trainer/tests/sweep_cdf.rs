@@ -82,6 +82,16 @@ fn sweep_all_chunks() {
     }
 
     println!("");
+    println!("v13 (sizings reverted, thresholds fixed):");
+    for chunk in [5_000_000u32, 10_000_000, 15_000_000, 20_000_000] {
+        let bp = workspace_root
+            .join(format!("outputs/v13/blueprint_{}.bin", chunk))
+            .to_string_lossy().into_owned();
+        if !std::path::Path::new(&bp).exists() { continue; }
+        sweep(&bp, &abs_dir, sig, &format!("v13 @ {:>10}", chunk));
+    }
+
+    println!("");
     println!("v9 baseline for comparison:");
     for chunk in [5_000_000u32, 10_000_000, 15_000_000, 20_000_000] {
         let bp = workspace_root

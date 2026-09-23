@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# run-v13.sh — same as v12 but with [0.5, 1.0, 2.0] sizings and a
-# shorter iteration budget (20M, not 40M) to get the A/B result faster.
+# run-v14.sh — k=200 preflop/flop/turn abstraction (was k=8).
+# Preflop, flop, turn centroids trained at k=200.
+# River and flop_buckets still symlinked from v9 (k=8, unchanged).
 set -uo pipefail
 cd "$(dirname "$0")"
 export RUSTFLAGS="-C target-cpu=native"
 
 REPO_ROOT="$(pwd)"
-OUT=outputs/v13
+OUT=outputs/v14
 SRC=outputs/v9
-LOG=/tmp/v13.log
-EVAL_LOG=/tmp/v13_evals.log
+LOG=/tmp/v14.log
+EVAL_LOG=/tmp/v14_evals.log
 
 CHUNK=5000000
 TOTAL=20000000
 EVAL_HANDS=2000
 
 {
-    echo "=== pkr-sota v13: sizings reverted to [0.5, 1.0, 2.0] ==="
+    echo "=== pkr-sota v14: k=200 preflop/flop/turn abstraction ==="
     echo "  started:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "  chunk:    $CHUNK"
     echo "  total:    $TOTAL"
@@ -30,16 +31,23 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
-mkdir -p "$OUT"
-for f in centroids.bin preflop_abstraction.bin abstraction.bin \
-         turn_abstraction.bin river_buckets.bin flop_buckets.bin hand_ranks.bin; do
+# Verify the new tables exist
+for f in centroids.bin preflop_abstraction.bin abstraction.bin turn_abstraction.bin; do
+    if [ ! -e "$OUT/$f" ]; then
+        echo "ABORT: missing $OUT/$f — run the precompute fix first" | tee -a "$LOG"
+        exit 1
+    fi
+done
+
+# Symlink unchanged tables from v9
+for f in river_buckets.bin flop_buckets.bin hand_ranks.bin; do
     ln -sf "$REPO_ROOT/$SRC/$f" "$OUT/$f"
 done
 
 rm -f "$OUT/train.ckpt" "$OUT/train.ckpt.prev"
 
 echo "=== building ===" | tee -a "$LOG"
-cargo build --release -p pkr-trainer 2>&1 | tail -2
+cargo build --release -p pkr-trainer 2>&1 | tail -2 | tee -a "$LOG"
 
 for ((target = CHUNK; target <= TOTAL; target += CHUNK)); do
     echo "" | tee -a "$LOG"
@@ -64,7 +72,7 @@ for ((target = CHUNK; target <= TOTAL; target += CHUNK)); do
         2>&1 | tee -a "$LOG" | tail -3
 
     if [ ! -f "$OUT/blueprint_${target}.bin" ]; then
-        echo "  chunk $target FAILED -- aborting" | tee -a "$LOG"
+        echo "  chunk $target FAILED — aborting" | tee -a "$LOG"
         exit 1
     fi
 
@@ -86,4 +94,4 @@ for ((target = CHUNK; target <= TOTAL; target += CHUNK)); do
 done
 
 echo "" | tee -a "$LOG"
-echo "=== v13 COMPLETE at $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LOG"
+echo "=== v14 COMPLETE at $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LOG"
