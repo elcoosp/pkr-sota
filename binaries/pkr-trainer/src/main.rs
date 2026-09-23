@@ -358,7 +358,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     let mut best_expl_mbb: Option<f64> = None;
-    let mut best_iter: Option<u32> = None;
     // Whether we promoted a checkpoint inside the loop. If false (e.g.
     // --eval-every 0, or no eval fired), the end-of-run export runs
     // as before. If true, we skip the end-of-run export to avoid
@@ -537,7 +536,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         keys.len(),
                     );
                     best_expl_mbb = Some(br.exploitability_mbb);
-                    best_iter = Some(done);
                     promoted = true;
                 }
 
