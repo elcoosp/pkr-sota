@@ -22,6 +22,37 @@ const PRUNE_WARMUP: u32 = 1_000_000;
 const PRUNE_THRESHOLD: i32 = -400_000; // -400 chips at SCALE=1000
 const PRUNE_SKIP_PROB: f32 = 0.95;
 
+/// Exploration floor at opponent nodes during MCCFR sampling.
+///
+/// Rationale: regret-matching+ clips negative regrets to 0, so an action
+/// whose regret has been persistently negative gets probability 0. At
+/// opponent nodes, MCCFR *samples* one action from the opponent's current
+/// strategy, so a zero-probability action is never sampled. Any
+/// downstream infoset the traverser would reach through that action then
+/// receives no regret updates and its average strategy freezes at
+/// whatever accumulated before the sampling collapsed.
+///
+/// Concretely: preflop, once BB learns that SB folds to jams, BB's
+/// regret for jamming goes negative, jam is never sampled again, and SB's
+/// facing-jam infoset (sig=0x00010102) freezes. This makes KK fold 95%
+/// to a limp-rejam forever.
+///
+/// Epsilon-uniform exploration on top of regret-matching restores
+/// reachability. EPSILON=0.05 keeps the sampled distribution close to the
+/// intended strategy while ensuring every legal action has nonzero
+/// probability. Override via PKR_EXPLORE_EPSILON for A/B testing.
+fn exploration_epsilon() -> f32 {
+    use std::sync::OnceLock;
+    static E: OnceLock<f32> = OnceLock::new();
+    *E.get_or_init(|| {
+        std::env::var("PKR_EXPLORE_EPSILON")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|e| (0.0..1.0).contains(e))
+            .unwrap_or(0.05)
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn traverse(
     current: &mut GameState,
@@ -239,15 +270,55 @@ pub fn traverse(
 
         v_sigma
     } else {
+        // Opponent node: sample one action. Mix in epsilon-uniform
+        // exploration on top of regret-matching so actions with zero
+        // regret-matching probability are still sampled occasionally.
+        // Without this, an action whose regret has been persistently
+        // negative (RM+ gives it 0) is never sampled, and any infoset
+        // reachable only through that action freezes. See exploration_epsilon.
+        let eps = exploration_epsilon();
+        let mut sampled_abstract = usize::MAX;
         let r = rng.random::<f32>();
-        let mut acc = 0.0;
-        let mut sampled_abstract = K - 1;
-        for i in 0..K {
-            acc += strategy[i];
-            if r <= acc {
-                sampled_abstract = i;
-                break;
+        if r < eps {
+            // Uniform over legal buckets.
+            let mut legal_count = 0usize;
+            for a in 0..K {
+                if action_counts[a] > 0 { legal_count += 1; }
             }
+            if legal_count > 0 {
+                let pick = rng.random_range(0..legal_count);
+                let mut seen = 0usize;
+                for a in 0..K {
+                    if action_counts[a] > 0 {
+                        if seen == pick { sampled_abstract = a; break; }
+                        seen += 1;
+                    }
+                }
+            }
+        } else {
+            // Regret-matched distribution, with the exploration mass
+            // redistributed proportionally.
+            let r2 = (r - eps) / (1.0 - eps);
+            let mut acc = 0.0;
+            for i in 0..K {
+                if action_counts[i] == 0 { continue; }
+                acc += strategy[i];
+                if r2 <= acc {
+                    sampled_abstract = i;
+                    break;
+                }
+            }
+        }
+        // Fallback: uniform over legal buckets (covers r2 slightly past 1.0
+        // due to float rounding, and empty-strategy cases).
+        if sampled_abstract == usize::MAX || action_counts[sampled_abstract] == 0 {
+            let legal: Vec<usize> = (0..K).filter(|&a| action_counts[a] > 0).collect();
+            if legal.is_empty() {
+                if advanced { current.undo_action(); }
+                *deck_idx = saved_deck_idx;
+                return 0.0;
+            }
+            sampled_abstract = legal[rng.random_range(0..legal.len())];
         }
         let count = action_counts[sampled_abstract];
         if count == 0 {
