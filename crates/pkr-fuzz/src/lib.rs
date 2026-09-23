@@ -367,115 +367,277 @@ impl ScriptedBot for AggroBot {
 }
 
 /// Run eval harness: play hands against scripted opponents, tracking bb/100.
+/// Context for the eval harness. Takes the three trait objects the host
+/// application would provide at runtime — a blueprint source, an
+/// abstraction builder that hashes GameState, and a hand evaluator.
+///
+/// This mirrors what pkr-runtime exposes to a real host: the host knows
+/// the game state, hashes it via the abstraction, and looks up the
+/// blueprint. `run_eval_harness` does the same thing.
+pub struct EvalContext<'a> {
+    pub provider: &'a dyn pkr_contracts::BlueprintProvider,
+    pub abstraction: &'a dyn pkr_contracts::AbstractionBuilder,
+    pub evaluator: &'a dyn pkr_contracts::Evaluator,
+}
+
+const K_BUCKETS: usize = 6;
+
+/// Decode a u8 CDF into a probability vector of length K_BUCKETS.
+fn decode_cdf_into(advice: &pkr_contracts::SotaAdvice, out: &mut [f32; K_BUCKETS]) {
+    let mut prev = 0u16;
+    let n = (advice.len as usize).min(K_BUCKETS);
+    for i in 0..n {
+        let c = advice.cdf_probabilities[i] as u16;
+        out[i] = (c.saturating_sub(prev)) as f32 / 255.0;
+        prev = c;
+    }
+    for i in n..K_BUCKETS {
+        out[i] = 0.0;
+    }
+}
+
+/// Given a GameState at decision time, produce a legal concrete action by
+/// querying the blueprint through the abstraction. Falls back to
+/// check/call vs fold when the hash is missing.
+fn decide_from_blueprint(
+    ctx: &EvalContext,
+    state: &pkr_core::state::GameState,
+    rng: &mut impl rand::Rng,
+) -> pkr_core::state::Action {
+    use pkr_core::state::{Action, ActionKind};
+
+    // Legal concrete actions for the current actor.
+    let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+    let n_legal = state.legal_actions_into(&mut buf);
+
+    // Defensive fallback if somehow nothing is legal (should not happen).
+    if n_legal == 0 {
+        return Action { player: state.actor, kind: ActionKind::Fold };
+    }
+
+    // Compute the infoset hash the same way the trainer does.
+    let hole = &state.hole[state.actor];
+    let board: &[u8] = &state.board[..state.board_len as usize];
+    let history_bytes: [u8; 4] = state.history_signature().to_le_bytes();
+    let street = state.street as u8;
+    let hash = ctx
+        .abstraction
+        .get_infoset_hash(hole, board, &history_bytes, street);
+
+    // Look up the advice. Missing => pot-odds fallback.
+    let advice = match ctx.provider.lookup(hash) {
+        Some(a) => a,
+        None => {
+            // Fallback: check when free, call if to_call small relative to pot,
+            // fold otherwise. Deliberately conservative.
+            let to_call = state.bet_to_call();
+            if to_call <= 0.0 {
+                for act in buf.iter().take(n_legal) {
+                    if matches!(act.kind, ActionKind::Check) {
+                        return *act;
+                    }
+                }
+                return buf[0];
+            }
+            let pot = state.pot.max(1.0);
+            let pot_odds = to_call / (pot + to_call);
+            // Cheap hand strength proxy: sum of hole card ranks / 24.
+            let strength = (hole[0] as f32 + hole[1] as f32) / 100.0;
+            if strength >= pot_odds {
+                for act in buf.iter().take(n_legal) {
+                    if matches!(act.kind, ActionKind::Call) {
+                        return *act;
+                    }
+                }
+            }
+            for act in buf.iter().take(n_legal) {
+                if matches!(act.kind, ActionKind::Fold) {
+                    return *act;
+                }
+            }
+            return buf[0];
+        }
+    };
+
+    // Decode the CDF.
+    let mut probs = [0.0f32; K_BUCKETS];
+    decode_cdf_into(&advice, &mut probs);
+
+    // Mask: which buckets have at least one concrete legal action?
+    // Same bucket mapping as the traversal:
+    //   0 = fold, 1 = check/call, 2 = bet <0.75 pot, 3 = bet <1.5 pot,
+    //   4 = bet >=1.5 pot, 5 = all-in
+    let mut bucket_has_legal = [false; K_BUCKETS];
+    let mut bucket_pick = [0usize; K_BUCKETS]; // index into buf for each bucket
+    for (i, act) in buf.iter().take(n_legal).enumerate() {
+        let b = match act.kind {
+            ActionKind::Fold => 0,
+            ActionKind::Check | ActionKind::Call => 1,
+            ActionKind::Bet(amount) => {
+                let pot = state.pot.max(1.0);
+                let frac = amount / pot;
+                if amount >= state.stacks[state.actor] + state.street_bets[state.actor] {
+                    5
+                } else if frac < 0.75 {
+                    2
+                } else if frac < 1.5 {
+                    3
+                } else {
+                    4
+                }
+            }
+        };
+        bucket_has_legal[b] = true;
+        if bucket_pick[b] == 0 && !matches!(buf[i].kind, ActionKind::Check) {
+            // Prefer a non-check representative if this is the first seen
+        }
+        bucket_pick[b] = i;
+    }
+
+    // Zero out illegal buckets, renormalize.
+    let mut total = 0.0f32;
+    for b in 0..K_BUCKETS {
+        if !bucket_has_legal[b] {
+            probs[b] = 0.0;
+        }
+        total += probs[b];
+    }
+    if total <= 0.0 {
+        // No learned mass on any legal bucket: sample uniformly.
+        let legal_count = bucket_has_legal.iter().filter(|&&x| x).count().max(1);
+        let pick = rng.random_range(0..legal_count);
+        let mut acc = 0;
+        for b in 0..K_BUCKETS {
+            if bucket_has_legal[b] {
+                if acc == pick {
+                    return buf[bucket_pick[b]];
+                }
+                acc += 1;
+            }
+        }
+        return buf[0];
+    }
+    for b in 0..K_BUCKETS {
+        probs[b] /= total;
+    }
+
+    // Sample from the masked distribution.
+    let r: f32 = rng.random();
+    let mut acc = 0.0f32;
+    for b in 0..K_BUCKETS {
+        if !bucket_has_legal[b] {
+            continue;
+        }
+        acc += probs[b];
+        if r <= acc {
+            return buf[bucket_pick[b]];
+        }
+    }
+    // Fallback to last legal bucket.
+    for b in (0..K_BUCKETS).rev() {
+        if bucket_has_legal[b] {
+            return buf[bucket_pick[b]];
+        }
+    }
+    buf[0]
+}
+
 pub fn run_eval_harness(
-    blueprint: &dyn pkr_contracts::BlueprintProvider,
+    ctx: &EvalContext,
     num_hands: u32,
+    rng_seed: u64,
 ) -> EvalResult {
+    use pkr_core::state::GameState;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
     let mut results = EvalResult {
         bot_bb_per_100: 0.0,
         opponents: Vec::new(),
     };
 
-    let opponents: Vec<(&str, &dyn ScriptedBot)> = vec![
-        ("station", &StationBot),
-        ("nit", &NitBot),
-        ("aggresive", &AggroBot),
-    ];
+    let opponents: Vec<(&str, &dyn ScriptedBot)> =
+        vec![("station", &StationBot), ("nit", &NitBot), ("aggro", &AggroBot)];
 
-    let mut rng = rand::rng();
-    let evaluator = NlheEvaluator;
+    let mut rng = SmallRng::seed_from_u64(rng_seed);
 
     for (name, bot) in &opponents {
         let mut bot_profit = 0.0f32;
-        let actions_per_street = [[0u32; 32]; 4];
+        let mut hands_played = 0u32;
 
-        for _ in 0..num_hands {
+        for hand_no in 0..num_hands {
             let mut state = GameState::new(200.0, 1.0, 2.0);
-            let hero = [rng.random_range(0..52), rng.random_range(0..52)];
-            let villain = [rng.random_range(0..52), rng.random_range(0..52)];
-            if hero[0] == hero[1]
-                || villain[0] == villain[1]
-                || hero.iter().any(|&c| villain.contains(&c))
-            {
+            let c1 = (rng.random_range(0u32..52)) as u8;
+            let c2 = (rng.random_range(0u32..52)) as u8;
+            let c3 = (rng.random_range(0u32..52)) as u8;
+            let c4 = (rng.random_range(0u32..52)) as u8;
+            if c1 == c2 || c3 == c4 || c1 == c3 || c1 == c4 || c2 == c3 || c2 == c4 {
                 continue;
             }
-            state.set_hole_cards(hero, villain);
+            state.set_hole_cards([c1, c2], [c3, c4]);
+
+            // Pre-deal the runout deterministically from the RNG.
+            let mut deck: Vec<u8> = (0..52)
+                .filter(|c| c != &c1 && c != &c2 && c != &c3 && c != &c4)
+                .collect();
+            for i in 0..9 {
+                let k = rng.random_range(i..deck.len());
+                deck.swap(i, k);
+            }
 
             let mut steps = 0u32;
-            while !state.is_terminal() && steps < 50 {
+            while !state.is_terminal() && steps < 60 {
                 steps += 1;
-                let actions = state.legal_actions();
-                if actions.is_empty() {
-                    break;
-                }
 
                 let action = if state.actor == 0 {
-                    // Hero uses blueprint
-                    let advice = blueprint.lookup(0);
-                    if let Some(a) = advice {
-                        let total: u32 = (0..a.len as usize)
-                            .map(|i| a.cdf_probabilities[i] as u32)
-                            .sum::<u32>()
-                            .max(1);
-                        let r = rng.random_range(0..total);
-                        let mut cum = 0u32;
-                        let mut chosen = 0;
-                        for i in 0..a.len as usize {
-                            cum += a.cdf_probabilities[i] as u32;
-                            if r < cum {
-                                chosen = i;
-                                break;
-                            }
-                        }
-                        actions.get(chosen).cloned().unwrap()
-                    } else {
-                        // Fallback: call/check
-                        if state.bet_to_call() == 0.0 {
-                            Action {
-                                player: state.actor,
-                                kind: ActionKind::Check,
-                            }
-                        } else {
-                            Action {
-                                player: state.actor,
-                                kind: ActionKind::Call,
-                            }
-                        }
-                    }
+                    decide_from_blueprint(ctx, &state, &mut rng)
                 } else {
                     bot.act(&state)
                 };
 
                 state.apply_action_in_place(&action);
 
-                // Advance street if round is complete
-                if state.is_street_complete() && state.street != Street::River {
-                    let board_cards = draw_board_cards(&mut rng, state.street);
-                    state.advance_street_in_place(&board_cards);
+                if state.is_street_complete() && state.street != pkr_core::state::Street::River {
+                    let need = match state.street {
+                        pkr_core::state::Street::Preflop => 3,
+                        pkr_core::state::Street::Flop => 1,
+                        pkr_core::state::Street::Turn => 1,
+                        pkr_core::state::Street::River => 0,
+                    };
+                    let start = (state.board_len as usize).saturating_sub(3);
+                    let cards: Vec<u8> = deck[start..start + need].to_vec();
+                    state.advance_street_in_place(&cards);
                 }
             }
 
             if state.is_terminal() {
-                let payoff = state.terminal_payoff(0, &evaluator);
+                hands_played += 1;
+                let payoff = state.terminal_payoff(0, ctx.evaluator);
                 bot_profit += payoff;
             }
+            let _ = hand_no;
         }
 
-        let bb_per_100 = (bot_profit / (num_hands as f32 / 100.0)) / 2.0;
+        // bb/100: profit / (hands / 100) / big_blind (2.0)
+        let bb_per_100 = if hands_played == 0 {
+            0.0
+        } else {
+            (bot_profit / (hands_played as f32 / 100.0)) / 2.0
+        };
+
         results.opponents.push(OpponentResult {
             name: name.to_string(),
             bb_per_100: bb_per_100 as f64,
-            actions_per_street,
+            actions_per_street: [[0u32; 32]; 4],
         });
     }
 
-    let total_profit: f32 = results
+    results.bot_bb_per_100 = results
         .opponents
         .iter()
-        .map(|o| (o.bb_per_100 * 10.0) as f32)
-        .sum();
-    let bb_per_100: f32 = total_profit / (num_hands as f32 * opponents.len() as f32 / 100.0) / 2.0;
-    results.bot_bb_per_100 = bb_per_100 as f64;
+        .map(|o| o.bb_per_100)
+        .sum::<f64>()
+        / results.opponents.len().max(1) as f64;
 
     results
 }

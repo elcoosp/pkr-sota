@@ -11,3 +11,4 @@ pkr-cfr = { workspace = true }
 pkr-abstraction = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
+pkr-runtime = { workspace = true }
