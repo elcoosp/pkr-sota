@@ -235,9 +235,85 @@ pub struct ValidationResult {
     pub issues: Vec<String>,
 }
 
+use crate::table::CompactRegretTable;
+use pkr_contracts::AbstractionBuilder;
+
+/// Build a lookup closure that returns the open frequency for a
+/// canonical preflop hand, given a trained regret table and an
+/// abstraction with the preflop flat table loaded.
+///
+/// Assumes the state at preflop start: SB to act, no actions yet,
+/// history_signature = 0, board empty. This is the exact state the
+/// trainer starts from, so hashes match.
+pub fn lookup_from_table<'a>(
+    table: &'a CompactRegretTable,
+    abstraction: &'a dyn AbstractionBuilder,
+) -> impl Fn(Rank, Rank, bool) -> f32 + 'a {
+    move |r1, r2, suited| {
+        // Card encoding: suit*13 + rank.
+        //   Spade (suit 0), Heart (suit 1).
+        // Suited: both spades. Offsuit: first spade, second heart.
+        let card1 = r1 as u8;
+        let card2 = if suited { r2 as u8 } else { 13 + r2 as u8 };
+        let hole: [u8; 2] = [card1, card2];
+        // history_signature at preflop start is 0.
+        let history: [u8; 4] = 0u32.to_le_bytes();
+        let hash = abstraction.get_infoset_hash(&hole, &[], &history, 0);
+        let mut strat = [0.0f32; 6];
+        table.get_average_strategy_into(hash, &mut strat);
+        // Open frequency = 1 - P(fold). Fold is bucket 0.
+        1.0 - strat[0]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_lookup_from_table_mock_aa_opens() {
+        use crate::table::CompactRegretTable;
+        use pkr_contracts::AbstractionBuilder;
+
+        struct MockAbs;
+        impl AbstractionBuilder for MockAbs {
+            fn get_infoset_hash(
+                &self,
+                _hole: &[u8],
+                _board: &[u8],
+                _history: &[u8],
+                _street: u8,
+            ) -> u64 {
+                42
+            }
+        }
+
+        let table = CompactRegretTable::with_capacity(16);
+        // Assign 100% of strategy mass to bucket 1 (call). Fold prob = 0,
+        // so open frequency should be 1.0.
+        table.add_strategy_sum(42, 1, 1.0);
+
+        let abs = MockAbs;
+        let lookup = lookup_from_table(&table, &abs);
+        let open_freq = lookup(Rank::Ace, Rank::Ace, false);
+        assert!(
+            (open_freq - 1.0).abs() < 0.01,
+            "expected 1.0 open frequency, got {}",
+            open_freq
+        );
+
+        // Now overwrite mass on bucket 0 (fold) to make open freq 0.
+        let table2 = CompactRegretTable::with_capacity(16);
+        table2.add_strategy_sum(42, 0, 1.0);
+        let lookup2 = lookup_from_table(&table2, &abs);
+        let open_freq2 = lookup2(Rank::Ace, Rank::Ace, false);
+        assert!(
+            open_freq2.abs() < 0.01,
+            "expected 0.0 open frequency, got {}",
+            open_freq2
+        );
+    }
+
 
     /// Dummy lookup: opens with 80% of hands, 3-bets 15%, defends 60%
     fn dummy_lookup(r1: Rank, r2: Rank, suited: bool) -> f32 {
