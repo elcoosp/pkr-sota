@@ -62,6 +62,7 @@ pub struct UndoRecord {
     raises_this_street: u8,
     total_raises: u8,
     history_len: usize, // length of abstract_history before action
+    abstract_history_len: u8,
     board_len: usize,   // length of board before action
     folded: [bool; 2],
 }
@@ -132,6 +133,7 @@ impl GameState {
                 raises_this_street: 0,
                 total_raises: 0,
                 history_len: 0,
+                abstract_history_len: 0,
                 board_len: 0,
                 folded: [false; 2],
             }; 48],
@@ -267,13 +269,20 @@ impl GameState {
                 if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
                     // C2: see legal_actions — all-in total is
                     // stacks + street_bets, not stacks alone.
-                    out[n] = Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(
-                            self.stacks[self.actor] + self.street_bets[self.actor],
-                        ),
-                    };
-                    n += 1;
+                    let all_in_amount =
+                        self.stacks[self.actor] + self.street_bets[self.actor];
+                    // Dedup: skip the all-in push when a pot-fraction sizing
+                    // already offers (numerically) the same total.
+                    let already_offered = (0..n).any(|i| {
+                        matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
+                    });
+                    if !already_offered {
+                        out[n] = Action {
+                            player: self.actor,
+                            kind: ActionKind::Bet(all_in_amount),
+                        };
+                        n += 1;
+                    }
                 }
             }
         } else {
@@ -305,13 +314,18 @@ impl GameState {
                     }
                 }
                 if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                    out[n] = Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(
-                            self.stacks[self.actor] + self.street_bets[self.actor],
-                        ),
-                    };
-                    n += 1;
+                    let all_in_amount =
+                        self.stacks[self.actor] + self.street_bets[self.actor];
+                    let already_offered = (0..n).any(|i| {
+                        matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
+                    });
+                    if !already_offered {
+                        out[n] = Action {
+                            player: self.actor,
+                            kind: ActionKind::Bet(all_in_amount),
+                        };
+                        n += 1;
+                    }
                 }
             }
         }
@@ -368,6 +382,7 @@ impl GameState {
             raises_this_street: self.raises_this_street,
             total_raises: self.total_raises,
             history_len: self.history_len as usize,
+            abstract_history_len: self.abstract_history_len,
             board_len: self.board_len as usize,
             folded: self.folded,
         };
@@ -502,7 +517,7 @@ impl GameState {
         self.history_len = rec.history_len as u8;
         self.board_len = rec.board_len as u8;
         self.folded = rec.folded;
-        self.abstract_history_len = rec.history_len as u8; // same as history length
+        self.abstract_history_len = rec.abstract_history_len;
     }
 
     pub fn is_street_complete(&self) -> bool {
@@ -729,8 +744,7 @@ mod c1_tests {
     /// C1: a legal bet produces street_bets == current + chips (the
     /// invariant the fix restores). This is what training relies on.
     #[test]
-    fn legal_bet_satisfies_street_bets_invariant() {
-        let mut s = GameState::new(200.0, 1.0, 2.0);
+    fn legal_bet_satisfies_street_bets_invariant() {        let mut s = GameState::new(200.0, 1.0, 2.0);
         s.apply_action_in_place(&Action {
             player: 0,
             kind: ActionKind::Call,
@@ -746,6 +760,25 @@ mod c1_tests {
         assert_eq!(s.street_bets[1], total);
         assert_eq!(s.stacks[1], 200.0 - 2.0 - 8.0);
         assert_eq!(s.pot, pot + 8.0);
+    }
+
+    /// Audit F10 (Task 10): a short all-in records actual chips contributed,
+    /// not the requested total.
+    #[test]
+    fn short_allin_records_actual_chips() {
+        // Start stack 10: after blinds, stacks = [9, 8], street_bets = [1, 2], pot = 3.
+        let mut s = GameState::new(10.0, 1.0, 2.0);
+        s.set_hole_cards([0, 1], [2, 3]);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(500.0),
+        });
+        // Player 0 only has 9 behind; street_bets must equal what was actually
+        // contributed (1 + 9 = 10), not the requested 500.
+        assert_eq!(s.street_bets[0], 10.0);
+        assert_eq!(s.stacks[0], 0.0);
+        assert_eq!(s.pot, 12.0);
+        assert_eq!(s.total_invested[0], 10.0);
     }
 }
 

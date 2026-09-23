@@ -99,6 +99,7 @@ fi
 echo "==> [8/8] train"
 cargo run --release -p pkr-trainer -- \
     --iterations "$ITERATIONS" \
+    --bench-seconds "$BENCH_SECONDS" \
     --threads "$THREADS" \
     --capacity "$CAPACITY" \
     --centroids "$OUT/centroids.bin" \

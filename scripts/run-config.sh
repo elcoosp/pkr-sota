@@ -22,12 +22,17 @@ CENTROID_SAMPLES="${CENTROID_SAMPLES:-2000}"
 FLOP_BUCKETS="${FLOP_BUCKETS:-200}"
 RIVER_BUCKETS="${RIVER_BUCKETS:-200}"
 EHS_SAMPLES="${EHS_SAMPLES:-100}"
-EHS_SAMPLES_TURN="${EHS_SAMPLES_TURN:-10}"
+EHS_SAMPLES_TURN="${EHS_SAMPLES_TURN:-200}"
 
 # ---------- training budget ----------
 # 40M is the first checkpoint of a run that will be extended if the
 # exploitability curve (E1) is still descending at 40M.
 ITERATIONS="${ITERATIONS:-40000000}"
+# Wall-clock training budget in seconds (0 = off, iteration count rules).
+# When > 0 the trainer stops cleanly at the deadline (final checkpoint +
+# stats still written). Used for time-boxed runs, e.g. BENCH_SECONDS=43200
+# for 12h. Precompute is NOT counted (deadline starts with training).
+BENCH_SECONDS="${BENCH_SECONDS:-0}"
 CAPACITY="${CAPACITY:-60000000}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-5000000}"
 REPORT_EVERY="${REPORT_EVERY:-1000000}"

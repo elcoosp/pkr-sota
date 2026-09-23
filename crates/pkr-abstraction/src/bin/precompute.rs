@@ -533,7 +533,17 @@ fn generate_flop_buckets(
                 }
             }
             for _ in 0..500 {
-                let hole = [deck[rng.random_range(0..49)], deck[rng.random_range(0..49)]];
+                // Distinct, uniform hole cards via partial Fisher–Yates
+                // (audit F12): with-replacement draws can pick the same
+                // card twice (~2% of samples) and corrupt the histogram.
+                let a = rng.random_range(0..49);
+                let b = rng.random_range(1..49);
+                deck.swap(0, a);
+                deck.swap(1, b);
+                let hole = [deck[0], deck[1]];
+                // undo so the next draw sees the original deck
+                deck.swap(1, b);
+                deck.swap(0, a);
                 let (ehs, _) = calculate_ehs(&hole, &flop, evaluator.as_ref());
                 let bucket = (ehs * 10.0).clamp(0.0, 9.0) as usize;
                 histogram[bucket] += 1.0;
@@ -601,7 +611,14 @@ fn generate_river_buckets(
                 }
             }
             for _ in 0..200 {
-                let hole = [deck[rng.random_range(0..47)], deck[rng.random_range(0..47)]];
+                // Distinct, uniform hole cards (audit F12) — see flop path.
+                let a = rng.random_range(0..47);
+                let b = rng.random_range(1..47);
+                deck.swap(0, a);
+                deck.swap(1, b);
+                let hole = [deck[0], deck[1]];
+                deck.swap(1, b);
+                deck.swap(0, a);
                 let (ehs, _) = calculate_ehs(&hole, &board, evaluator.as_ref());
                 let bucket = (ehs * 10.0).clamp(0.0, 9.0) as usize;
                 histogram[bucket] += 1.0;

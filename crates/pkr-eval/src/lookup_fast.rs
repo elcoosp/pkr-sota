@@ -284,6 +284,18 @@ mod t13_tests {
     }
 
     #[test]
+    #[ignore = "requires generated hand_ranks.bin; run after regenerating the table"]
+    fn table_two_pair_ordering_matches_slow_eval() {
+        let path = std::env::var("PKR_RANK_TABLE").unwrap_or_else(|_| "hand_ranks.bin".into());
+        let t = TableEvaluator::new(&path).unwrap();
+        let kk447: [u8; 5] = [11, 24, 2, 15, 5];
+        let qq229: [u8; 5] = [10, 23, 0, 13, 7];
+        let a = t.evaluate_hand(&kk447, &[]);
+        let b = t.evaluate_hand(&qq229, &[]);
+        assert!(a < b, "table must rank KK447 better than QQ229 (lower = better)");
+    }
+
+    #[test]
     #[ignore]
     fn fast7_microbench() {
         let table_path = match find_rank_table() {
