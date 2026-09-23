@@ -348,9 +348,13 @@ impl ScriptedBot for AggroBot {
         let stack = state.stacks[state.actor];
         let street_bets = state.street_bets[state.actor];
         if to_call == 0.0 {
+            // C2: all-in is stacks + street_bets, not stacks alone.
+            // Preflop BB facing a limp has 2 chips already posted; the
+            // old `Bet(stack)` was a 199-total raise that left 1 chip
+            // behind and never actually exercised the all-in bucket.
             Action {
                 player: state.actor,
-                kind: ActionKind::Bet(stack),
+                kind: ActionKind::Bet(stack + street_bets),
             }
         } else if stack + street_bets > to_call {
             Action {
@@ -733,5 +737,27 @@ mod tests {
         let action = station.act(&state);
         assert_eq!(action.player, 0);
         assert!(matches!(action.kind, ActionKind::Call));
+    }
+}
+
+#[cfg(test)]
+mod c2_aggro_tests {
+    use super::*;
+
+    /// C2: after AggroBot acts on a check, it must have 0 chips behind.
+    #[test]
+    fn aggro_jam_from_check_leaves_zero_chips() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call }); // SB limps
+        // Now BB (actor 1) faces a check-equivalent situation.
+        let bot = AggroBot;
+        let act = bot.act(&s);
+        s.apply_action_in_place(&act);
+        assert_eq!(
+            s.stacks[1], 0.0,
+            "AggroBot check-jam left {} chips behind (act={:?})",
+            s.stacks[1], act
+        );
+        assert_eq!(s.street_bets[1], 200.0);
     }
 }

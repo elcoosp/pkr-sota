@@ -135,9 +135,17 @@ impl GameState {
                 }
             }
             if self.stacks[self.actor] > 0.0 {
+                // C2: `Bet` is the actor's street-bet TOTAL, not the
+                // incremental chips. Preflop BB facing a limp has
+                // street_bets[BB] == 2 already posted; `Bet(stacks)`
+                // would ask for a 199-total (chips moved = 197, 1 chip
+                // stays behind) and mis-bucket as bucket 4. The correct
+                // all-in total is stacks + street_bets.
                 actions.push(Action {
                     player: self.actor,
-                    kind: ActionKind::Bet(self.stacks[self.actor]),
+                    kind: ActionKind::Bet(
+                        self.stacks[self.actor] + self.street_bets[self.actor],
+                    ),
                 });
             }
         } else {
@@ -210,9 +218,13 @@ impl GameState {
                     }
                 }
                 if n < 8 && self.stacks[self.actor] > 0.0 {
+                    // C2: see legal_actions — all-in total is
+                    // stacks + street_bets, not stacks alone.
                     out[n] = Action {
                         player: self.actor,
-                        kind: ActionKind::Bet(self.stacks[self.actor]),
+                        kind: ActionKind::Bet(
+                            self.stacks[self.actor] + self.street_bets[self.actor],
+                        ),
                     };
                     n += 1;
                 }
@@ -570,5 +582,94 @@ mod c1_tests {
         assert_eq!(s.street_bets[1], total);
         assert_eq!(s.stacks[1], 200.0 - 2.0 - 8.0);
         assert_eq!(s.pot, pot + 8.0);
+    }
+}
+
+#[cfg(test)]
+mod c2_tests {
+    use super::*;
+
+    /// C2: preflop BB facing a limp must be offered a TRUE all-in
+    /// (leaves 0 chips behind, street_bets == starting stack).
+    #[test]
+    fn bb_check_jam_is_true_all_in() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // SB limps (calls the extra 1 chip): SB street_bets -> 2, pot -> 4.
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        // Now actor is BB. to_call == 0, street_bets[BB] == 2, stacks[BB] == 198.
+        assert_eq!(s.actor, 1);
+        assert_eq!(s.bet_to_call(), 0.0);
+        assert_eq!(s.street_bets[1], 2.0);
+        assert_eq!(s.stacks[1], 198.0);
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+
+        // Find the all-in: it should be Bet(200.0), i.e. stacks + street_bets.
+        let all_in = buf[..n]
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::Bet(x) if (x - 200.0).abs() < 1e-4))
+            .expect("BB facing a limp must be offered a true 200-total all-in");
+
+        // Old bug: Bet(198.0) was offered instead, leaving 1 chip behind.
+        let has_buggy_form = buf[..n]
+            .iter()
+            .any(|a| matches!(a.kind, ActionKind::Bet(x) if (x - 198.0).abs() < 1e-4));
+        assert!(
+            !has_buggy_form,
+            "old buggy Bet(stacks) form must not appear; buf={:?}",
+            &buf[..n]
+        );
+
+        s.apply_action_in_place(all_in);
+        assert_eq!(s.stacks[1], 0.0, "all-in leaves zero behind");
+        assert_eq!(s.street_bets[1], 200.0, "street-bet total equals start_stack");
+    }
+
+    /// C2: postflop with no bet facing, all-in total is just stacks
+    /// (street_bets already 0), unchanged from pre-C2 behaviour.
+    #[test]
+    fn postflop_check_jam_unchanged_when_street_bets_zero() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // SB limp, BB check -> flop
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.advance_street_in_place(&[0, 1, 2]);
+
+        assert_eq!(s.street_bets[1], 0.0, "post-flop street_bets reset to 0");
+        let stack = s.stacks[1];
+
+        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        let all_in = buf[..n]
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::Bet(x) if (x - stack).abs() < 1e-4))
+            .expect("postflop all-in must equal stacks (street_bets == 0)");
+        s.apply_action_in_place(all_in);
+        assert_eq!(s.stacks[1], 0.0);
+    }
+
+    /// C2 regression: the offered all-in must be bucketed 5, not 4.
+    /// (Uses the same thresholds as the trainer's `abstract_action_index`.)
+    #[test]
+    fn bb_check_jam_buckets_as_all_in() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        let all_in = buf[..n]
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::Bet(x) if (x - 200.0).abs() < 1e-4))
+            .expect("true all-in offered");
+        // Recompute bucket via state's own static mapper.
+        // (abstract_action_index_static is private but callable from this module.)
+        let bucket = super::abstract_action_index_static(&all_in.kind, &s);
+        assert_eq!(bucket, 5, "all-in total must bucket as 5, not 4");
     }
 }
