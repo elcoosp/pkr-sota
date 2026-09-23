@@ -50,6 +50,36 @@ impl SolverHandle {
 }
 
 impl SolverHandle {
+    /// T2.1: translated lookup. The host app has a desired bet amount
+    /// (chips) that may not exactly match any trained anchor. This method
+    /// fetches the trained CDF and redistributes the bet-bucket mass
+    /// between the two bracketing anchors via pseudo-harmonic translation
+    /// (Ganzfried & Sandholm 2013).
+    ///
+    /// Returns None if the infoset is not in the blueprint; the host app
+    /// should then fall back to `fallback_advice`.
+    ///
+    /// `street` is the street code (0=preflop, 1=flop, 2=turn, 3=river).
+    /// `requested_amount` is the bet/raise size in chips (not pot fraction).
+    /// `pot` is the current pot size in chips.
+    pub fn get_advice_translated(
+        &self,
+        infoset_hash: u64,
+        street: u8,
+        pot: f32,
+        requested_amount: f32,
+    ) -> Option<SotaAdvice> {
+        let advice = self.get_advice_fast(infoset_hash)?;
+        let street_idx = (street as usize).min(3);
+        let anchors = self.mmap.anchors()[street_idx];
+        Some(crate::translate::resolve_action(
+            &advice,
+            &anchors,
+            requested_amount,
+            pot,
+        ))
+    }
+
     /// Conservative fallback advice for lookup misses.
     ///
     /// The host application should call this when `get_advice_fast`
