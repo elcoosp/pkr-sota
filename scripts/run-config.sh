@@ -37,12 +37,18 @@ ITERS_PER_SYNC="${ITERS_PER_SYNC:-512}"
 # Fire the sampled-BR exploitability check every EVAL_EVERY iterations
 # and promote only if the new checkpoint is not worse than the best by
 # more than PROMOTE_GATE mbb.
-# Eval budget. 20000 deals at 6-bucket BR expansion takes ~3h/eval on
-# M1 single-threaded BR. 500 deals runs in ~2 min with SE ~±300 mbb —
-# coarse, but enough to answer "under 100 mbb or over 1000". Precise
-# measurement (memoized BR) is a separate, larger task.
+# Eval budget. The sampled game-tree BR walker runs at ~8 deals/s
+# single-threaded, so:
+#   500 deals    ~1 min   SE ~±1600 mbb  (too coarse)
+#   5000 deals   ~10 min  SE ~±500 mbb   (usable for A/B)
+#   20000 deals  ~40 min  SE ~±250 mbb   (for final validation)
+# We default to 5000: enough precision that a promote-gate decision is
+# meaningful, cheap enough to run at every 5M-iteration checkpoint.
+#
+# (The public-tree BR at `pkr-exploit::public_br` is WIP and cannot be
+# used — see that module's doc comment.)
 EVAL_EVERY="${EVAL_EVERY:-5000000}"
-EVAL_DEALS="${EVAL_DEALS:-500}"
+EVAL_DEALS="${EVAL_DEALS:-5000}"
 PROMOTE_GATE="${PROMOTE_GATE:-3.0}"
 
 # ---------- CFR dynamics (r3 V2 / E4) ----------

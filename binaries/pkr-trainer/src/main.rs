@@ -320,7 +320,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "EVAL-NOW: firing initial exploitability check at iter {}",
             start_iter
         );
-        let br = pkr_exploit::public_br::accelerated_exploitability(
+        let br = pkr_exploit::best_response::sampled_exploitability(
             trainer.get_table(),
             abstraction_for_eval.as_ref(),
             evaluator_for_eval.as_ref(),
@@ -490,7 +490,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Fire when done has advanced by at least eval_every since the
             // last eval (done increments by ITERS_PER_SYNC, not by 1).
             if cli.eval_every > 0 && done >= last_eval_iter.saturating_add(cli.eval_every) {
-                let br = pkr_exploit::public_br::accelerated_exploitability(
+                let br = pkr_exploit::best_response::sampled_exploitability(
                     trainer.get_table(),
                     abstraction_for_eval.as_ref(),
                     evaluator_for_eval.as_ref(),
