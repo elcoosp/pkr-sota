@@ -89,9 +89,24 @@ thread_local! {
         ));
 }
 
+// Generation counter for the thread-local IDX_CACHE (audit F14):
+// bumped on every checkpoint load so entries cached before the load
+// can never alias post-load indices on a worker thread that did not
+// observe the clear.
+static CACHE_GEN: AtomicU64 = AtomicU64::new(0);
+
 #[inline]
 fn cache_lookup(hash: u64) -> Option<usize> {
-    IDX_CACHE.with(|c| c.borrow().get(&hash).copied())
+    IDX_CACHE.with(|c| c.borrow().get(&cache_key(hash)).copied())
+}
+
+#[inline]
+fn cache_key(hash: u64) -> u64 {
+    // Fold the process-wide generation into the key. Entries inserted
+    // under an older generation simply miss (they are never returned),
+    // which is exactly the invalidation we want without cross-thread
+    // coordination.
+    hash ^ CACHE_GEN.load(Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
 #[inline]
@@ -101,7 +116,7 @@ fn cache_insert(hash: u64, idx: usize) {
         if m.len() >= IDX_CACHE_MAX {
             m.clear();
         }
-        m.insert(hash, idx);
+        m.insert(cache_key(hash), idx);
     });
 }
 
@@ -454,8 +469,7 @@ impl CompactRegretTable {
         if batch.is_empty() {
             return (0, 0);
         }
-        batch.par_sort_unstable_by_key(|item| (item.index, item.action));
-        let iteration = batch[0].iteration;
+        batch.par_sort_unstable_by_key(|item| (item.index, item.action, item.iteration));
 
         let mut groups: Vec<(usize, usize, u32, u32)> = Vec::with_capacity(batch.len() / 4 + 16);
         let mut i = 0usize;
@@ -475,23 +489,35 @@ impl CompactRegretTable {
         let chunk_size = (groups.len() / n_threads).max(1);
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u32) in grp_slice {
-                let mut delta = 0.0f32;
-                for k in start..end {
-                    delta += batch_ref[k].delta;
-                }
                 let idx = idx_u32 as usize;
                 let a = act_u32 as usize;
-                // T1.1: exact integer discount. cur/mom are raw fixed-point
-                // i32 at SCALE; delta is f32 chips, converted to fixed-point.
-                let cur_i64 = self.load_rm(idx, a, RM_REGRET) as i64;
-                let mom_i64 = self.load_rm(idx, a, RM_MOMENTUM) as i64;
-                let delta_i64 = (delta as f64 * SCALE as f64).round() as i64;
-                let (new_r, new_m) =
-                    crate::dcfr::update_regret_i64(cur_i64, mom_i64, iteration, delta_i64);
+                // Sequential per-iteration PCFR+ fold (audit F5): each delta is
+                // applied with its own iteration number and the max(0, ·) clamp
+                // between iterations, exactly as if flushes happened every
+                // iteration. Items are sorted by iteration within each
+                // (index, action) group, so slice order is iteration order.
+                // T1.1: exact integer discount on the i64 fixed-point path.
+                let mut cur_i64 = self.load_rm(idx, a, RM_REGRET) as i64;
+                let mut mom_i64 = self.load_rm(idx, a, RM_MOMENTUM) as i64;
+                for k in start..end {
+                    let delta_i64 =
+                        (batch_ref[k].delta as f64 * SCALE as f64).round() as i64;
+                    let (new_r, new_m) = crate::dcfr::update_regret_i64(
+                        cur_i64,
+                        mom_i64,
+                        batch_ref[k].iteration,
+                        delta_i64,
+                    );
+                    if new_r == i64::MAX || new_r == i64::MIN {
+                        warn_nonfinite_regret_once(batch_ref[k].iteration);
+                    }
+                    cur_i64 = new_r;
+                    mom_i64 = new_m;
+                }
                 // Clamp to i32 range for storage; the accumulator is i64
                 // across updates but the on-disk representation stays i32.
-                let r32 = new_r.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                let m32 = new_m.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                let r32 = cur_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                let m32 = mom_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
                 self.store_rm(idx, a, RM_REGRET, r32);
                 self.store_rm(idx, a, RM_MOMENTUM, m32);
             }
@@ -873,6 +899,7 @@ impl CompactRegretTable {
             self.strategy_sum[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);
+        CACHE_GEN.fetch_add(1, Ordering::Relaxed);
         IDX_CACHE.with(|c| c.borrow_mut().clear());
         Ok(iteration)
     }
@@ -965,11 +992,13 @@ mod tests {
         assert_eq!(input, 5);
         assert_eq!(unique, 2);
 
-        let gamma = 1.0 / std::f32::consts::SQRT_2;
-        let expected_i1 = gamma * 0.8;
-        let expected_i2 = gamma * 0.7;
-        assert!((table.get_regret(0xBEEF_0001, 0) - expected_i1).abs() < 0.01);
-        assert!((table.get_regret(0xBEEF_0002, 2) - expected_i2).abs() < 0.01);
+        // Sequential per-iteration PCFR+ fold (audit F5) at t=1 (warmup,
+        // discount=1, gamma=1/sqrt(2)): each delta folds with its own
+        // momentum state rather than collapsing to one update.
+        //   i1: 100 -> r=71; +300 -> r=304; +400 -> r=655  => 0.655
+        //   i2: 200 -> r=141; +500 -> r=536                => 0.536
+        assert!((table.get_regret(0xBEEF_0001, 0) - 0.655).abs() < 0.01);
+        assert!((table.get_regret(0xBEEF_0002, 2) - 0.536).abs() < 0.01);
     }
 
     /// Regression for the fixed-point truncation bug: an infoset whose
@@ -1013,5 +1042,47 @@ mod tests {
                 avg[a]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod f5_tests {
+    use super::*;
+
+    #[test]
+    fn flush_folds_deltas_sequentially_per_iteration() {
+        let table = CompactRegretTable::with_capacity(4096);
+        let i1 = table.get_or_create_idx(0xCAFE_0001);
+        // r=0; iter1 delta=+10 (t=1 < TAU -> no discount); iter2 delta=-6.
+        //
+        // Sequential PCFR+ on the i64 fixed-point path (SCALE=1000,
+        // gamma = 1/sqrt(t+1)):
+        //   t=1: pred = round(0.7071*10000) = 7071 -> r = 7071, m = 7071
+        //   t=2: pred = round(0.4226*7071 + 0.5774*(-6000)) = -476
+        //        r = max(0, 7071 - 476) = 6595  => 6.595
+        // Collapsed (old code): one update with delta_sum = +4:
+        //   pred = round(0.7071*4000) = 2828 -> r = 2.828
+        // The sequential result must win. This is the clamp-semantics
+        // regression the audit (F5) is about.
+        let mut batch = vec![
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 10.0,
+            },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 2,
+                delta: -6.0,
+            },
+        ];
+        table.flush_cpu_batch(&mut batch);
+        let r = table.get_regret(0xCAFE_0001, 0);
+        assert!(
+            (r - 6.595).abs() < 0.05,
+            "expected ~6.595 (sequential fold), got {r}"
+        );
     }
 }
