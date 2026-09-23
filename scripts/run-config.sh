@@ -37,8 +37,12 @@ ITERS_PER_SYNC="${ITERS_PER_SYNC:-512}"
 # Fire the sampled-BR exploitability check every EVAL_EVERY iterations
 # and promote only if the new checkpoint is not worse than the best by
 # more than PROMOTE_GATE mbb.
+# Eval budget. 20000 deals at 6-bucket BR expansion takes ~3h/eval on
+# M1 single-threaded BR. 500 deals runs in ~2 min with SE ~±300 mbb —
+# coarse, but enough to answer "under 100 mbb or over 1000". Precise
+# measurement (memoized BR) is a separate, larger task.
 EVAL_EVERY="${EVAL_EVERY:-5000000}"
-EVAL_DEALS="${EVAL_DEALS:-20000}"
+EVAL_DEALS="${EVAL_DEALS:-500}"
 PROMOTE_GATE="${PROMOTE_GATE:-3.0}"
 
 # ---------- CFR dynamics (r3 V2 / E4) ----------
