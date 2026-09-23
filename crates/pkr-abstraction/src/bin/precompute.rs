@@ -319,7 +319,33 @@ fn generate_turn_table(
     let evaluator = TableEvaluator::new(rank_table_path)?;
     let total_combos = choose(52, 6) as usize;
     let entries = total_combos * 15;
+
+    // Checkpoint/resume state. `.tmp` holds the partial table bytes;
+    // `.progress` is a u64 LE combo counter. If both exist and are
+    // coherent, we resume from that point instead of restarting a
+    // ~20-minute job.
+    let tmp_path = format!("{}.tmp", output);
+    let prog_path = format!("{}.progress", output);
     let mut table: Vec<u8> = vec![0u8; entries];
+    let mut resume_from: usize = 0;
+    if let Ok(prog_bytes) = std::fs::read(&prog_path) {
+        if prog_bytes.len() == 8 {
+            let p = u64::from_le_bytes(prog_bytes.try_into().unwrap()) as usize;
+            if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
+                if let Ok(disk) = std::fs::read(&tmp_path) {
+                    let copy = disk.len().min(table.len());
+                    table[..copy].copy_from_slice(&disk[..copy]);
+                    resume_from = p;
+                    eprintln!(
+                        "  turn: resuming from combo {} / {} ({:.1}%)",
+                        p,
+                        total_combos,
+                        100.0 * p as f64 / total_combos as f64,
+                    );
+                }
+            }
+        }
+    }
 
     let masks: [[usize; 2]; 15] = [
         [0, 1],
@@ -339,41 +365,82 @@ fn generate_turn_table(
         [4, 5],
     ];
 
-    table
-        .par_chunks_mut(15)
-        .enumerate()
-        .for_each(|(combo_idx, chunk)| {
-            let cards = combinadic_unrank_6(combo_idx as u32);
-            for (mask_idx, slot) in chunk.iter_mut().enumerate() {
-                let pos = masks[mask_idx];
-                let hole = [cards[pos[0]], cards[pos[1]]];
-                let mut board = [0u8; 4];
-                let mut b_idx = 0;
-                for j in 0..6 {
-                    if j != pos[0] && j != pos[1] {
-                        board[b_idx] = cards[j];
-                        b_idx += 1;
+    // Batch size between disk checkpoints. 5M combos ~= 75 MB written
+    // per checkpoint; four checkpoints in a full run (~0.3 s each on the
+    // M1 SSD) cost <0.1% overhead.
+    let checkpoint_every: usize = 5_000_000;
+    let t_start = std::time::Instant::now();
+    let mut done = resume_from;
+    while done < total_combos {
+        let end = (done + checkpoint_every).min(total_combos);
+        let lo_off = done * 15;
+        let hi_off = end * 15;
+
+        table[lo_off..hi_off]
+            .par_chunks_mut(15)
+            .enumerate()
+            .for_each(|(rel_idx, chunk)| {
+                let combo_idx = done + rel_idx;
+                let cards = combinadic_unrank_6(combo_idx as u32);
+                for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+                    let pos = masks[mask_idx];
+                    let hole = [cards[pos[0]], cards[pos[1]]];
+                    let mut board = [0u8; 4];
+                    let mut b_idx = 0;
+                    for j in 0..6 {
+                        if j != pos[0] && j != pos[1] {
+                            board[b_idx] = cards[j];
+                            b_idx += 1;
+                        }
                     }
-                }
-                let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
-                let mut best_idx = 0u8;
-                let mut best_dist = f32::MAX;
-                for (ci, c) in centroids.iter().enumerate() {
-                    let dx = ehs - c.0;
-                    let dy = ehs_sq - c.1;
-                    let dist = dx * dx + dy * dy;
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_idx = ci as u8;
+                    let (ehs, ehs_sq) = calculate_ehs(&hole, &board, &evaluator);
+                    let mut best_idx = 0u8;
+                    let mut best_dist = f32::MAX;
+                    for (ci, c) in centroids.iter().enumerate() {
+                        let dx = ehs - c.0;
+                        let dy = ehs_sq - c.1;
+                        let dist = dx * dx + dy * dy;
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_idx = ci as u8;
+                        }
                     }
+                    *slot = best_idx;
                 }
-                *slot = best_idx;
-            }
-        });
+            });
+
+        done = end;
+
+        let mut f = File::create(&tmp_path)
+            .map_err(|e| format!("create {}: {}", tmp_path, e))?;
+        f.write_all(&table)
+            .map_err(|e| format!("write {}: {}", tmp_path, e))?;
+        f.sync_all().ok();
+        let mut pf = File::create(&prog_path)
+            .map_err(|e| format!("create {}: {}", prog_path, e))?;
+        pf.write_all(&(done as u64).to_le_bytes())
+            .map_err(|e| format!("write {}: {}", prog_path, e))?;
+        pf.sync_all().ok();
+
+        let pct = 100.0 * done as f64 / total_combos as f64;
+        let elapsed = t_start.elapsed().as_secs_f64();
+        let eta = if done > resume_from {
+            elapsed * (total_combos - done) as f64 / (done - resume_from).max(1) as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "  turn: {}/{} combos ({:.1}%), {:.0}s elapsed, ETA {:.0}s",
+            done, total_combos, pct, elapsed, eta,
+        );
+    }
 
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
     file.write_all(&table)
-        .map_err(|e| format!("write: {}", e))?;
+        .map_err(|e| format!("write {}: {}", output, e))?;
+    file.sync_all().ok();
+    let _ = std::fs::remove_file(&tmp_path);
+    let _ = std::fs::remove_file(&prog_path);
     println!(
         "Generated turn table ({} entries, {} centroids) -> {}",
         entries,
