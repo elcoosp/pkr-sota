@@ -276,6 +276,24 @@ fn combinadic_rank_6(cards: &[u8; 6]) -> u64 {
 
 impl AbstractionBuilder for KMeansAbstraction {
     fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8], street: u8) -> u64 {
+        // INVARIANT: the board slice must contain exactly the cards dealt for
+        // `street`. A caller passing the raw [u8;5] array silently routes every
+        // street through the river branch (regression guard, see audit F1).
+        let expected_len = match street {
+            0 => 0,
+            1 => 3,
+            2 => 4,
+            3 => 5,
+            _ => board.len(),
+        };
+        debug_assert_eq!(
+            board.len(),
+            expected_len,
+            "get_infoset_hash: board.len()={} but street {} expects {} cards",
+            board.len(),
+            street,
+            expected_len
+        );
         debug_assert!(
             hole.iter().all(|h| !board.contains(h)),
             "abstraction hash called with hole and board sharing a card: \
@@ -334,16 +352,17 @@ impl AbstractionBuilder for KMeansAbstraction {
                 }
             }
             5 => {
-                // River: bucket hand rank into ~128 tiers. Raw hand_rank
-                // has cardinality 7462, which alone produces millions of
-                // river infosets over a full training run and dominates the
-                // map size. >> 3 gives 116 tiers — coarse enough to make
-                // CFR see each river infoset repeatedly, fine enough to
-                // preserve strategic distinctions (a made hand vs a busted
-                // draw vs a middle pair still land in different tiers).
-                // The precomputed board bucket (if any) is mixed in.
+                // River: bucket hand strength into ~256 ordered tiers.
+                //
+                // evaluate_hand returns the inverted-bit encoding !raw =
+                // ~(category << 20 | rank_bits) — NOT a 7462-scale rank. Its value
+                // range is ~[2^32 - 9*2^20, 2^32] (audit F6). `>> 15` is a monotone
+                // quantization of that range into ~287 tiers where lower tier =
+                // stronger hand. (The old `>> 6` produced ~147k tiers and blew up the
+                // river infoset count; a true 7462-scale dense rank is the M1-playbook
+                // fast7 follow-up.)
                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
-                let hand_bucket = hand_rank >> 6;
+                let hand_bucket = hand_rank >> 15; // ~0..=287, monotone
                 let board_bucket = if let Some(table) = self.tables.get(&3u8).and_then(|l| l.get())
                 {
                     let idx = Self::flat_index_river_board(board);
@@ -442,6 +461,15 @@ mod tests {
         let h1 = builder.get_infoset_hash(&[0, 1], &[], &[], 0);
         let h2 = builder.get_infoset_hash(&[0, 1], &[], &[0], 0);
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    #[should_panic(expected = "board.len()")]
+    fn hash_panics_when_board_len_does_not_match_street() {
+        let builder =
+            KMeansAbstraction::new(vec![(0.3, 0.09), (0.7, 0.49)], Arc::new(MockEvaluator));
+        // street 1 (flop) requires exactly 3 board cards; 4 is a caller bug.
+        let _ = builder.get_infoset_hash(&[0, 1], &[2, 3, 4, 5], &[], 1);
     }
 }
 
@@ -564,20 +592,25 @@ mod c6_unit_tests {
     }
 
     // ------------------------------------------------------------------
-    // River tier coverage (r3 C6.4)
+    // River tier coverage (audit F6)
     //
-    // The river hash uses `hand_rank >> 6`, which maps the 7462-rank
-    // space to 117 buckets (0..=116). If T2.2 changes the shift to
-    // `>> 3`, this test must be updated in the SAME commit that bumps
-    // the blueprint format version — that is the contract.
+    // evaluate_hand returns the inverted-bit encoding !raw, whose value
+    // range is ~[2^32 - 9*2^20, 2^32]. `>> 15` quantizes that range into
+    // ~287 monotone tiers. If the shift changes, bump the blueprint
+    // format version — that is the contract.
     // ------------------------------------------------------------------
     #[test]
-    fn river_tier_coverage_shift_6_is_117_buckets() {
-        const HAND_RANK_MAX: u32 = 7461; // 7462-scale ranks 0..=7461
-        let tiers = (HAND_RANK_MAX >> 6) + 1;
-        assert_eq!(
-            tiers, 117,
-            "river `>> 6` must yield 117 tiers; if this changed, bump the blueprint format"
+    fn river_hand_bucket_is_monotone_and_bounded() {
+        // Stronger hand must map to a <= bucket (monotone) and the tier count
+        // must be small (bounded infoset space).
+        // Direct check of the quantization math used in the river branch:
+        let strong = (u32::MAX - 9_437_184) as u64 >> 15; // best hand in range
+        let weak = (u32::MAX) as u64 >> 15;
+        assert!(strong <= weak);
+        assert!(
+            weak - strong < 512,
+            "river hand tiers must stay bounded, got {}",
+            weak - strong
         );
     }
 
