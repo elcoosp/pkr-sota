@@ -419,7 +419,8 @@ impl CompactRegretTable {
         }
         ops.par_sort_unstable_by_key(|op| (op.index, op.action));
 
-        let mut groups: Vec<(usize, usize, u32, u8)> = Vec::new();
+        let mut groups: Vec<(usize, usize, u32, u8)> =
+            Vec::with_capacity(ops.len() / 4 + 16);
         let mut i = 0usize;
         while i < ops.len() {
             let (idx, act) = (ops[i].index, ops[i].action);
@@ -457,7 +458,8 @@ impl CompactRegretTable {
         batch.par_sort_unstable_by_key(|item| (item.index, item.action));
         let iteration = batch[0].iteration;
 
-        let mut groups: Vec<(usize, usize, u32, u32)> = Vec::new();
+        let mut groups: Vec<(usize, usize, u32, u32)> =
+            Vec::with_capacity(batch.len() / 4 + 16);
         let mut i = 0usize;
         while i < batch.len() {
             let (idx, act) = (batch[i].index, batch[i].action);

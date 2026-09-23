@@ -149,10 +149,10 @@ impl Trainer {
         let mut merged_batch = Vec::with_capacity(total_items);
         let mut merged_strategy = Vec::with_capacity(total_strats);
         let mut batch_metrics = LocalMetrics::default();
-        for (b, s, m) in thread_results {
-            merged_batch.extend(b);
-            merged_strategy.extend(s);
-            batch_metrics.merge_from(&m);
+        for entry in thread_results.iter() {
+            merged_batch.extend_from_slice(&entry.0);
+            merged_strategy.extend_from_slice(&entry.1);
+            batch_metrics.merge_from(&entry.2);
         }
         let t_merge = t1.elapsed();
 

@@ -78,6 +78,13 @@ struct Cli {
     #[arg(long, default_value_t = 10000)]
     report_every: u32,
 
+    /// Iterations per rayon dispatch. Larger amortizes the serial
+    /// merge/flush work across more logical iterations; smaller reduces
+    /// staleness of the regrets each traversal sees. 512 measured best
+    /// on M1 in v11 (55K it/s vs 38K at 256).
+    #[arg(long, default_value_t = 512)]
+    iters_per_sync: u32,
+
     /// After training, run preflop chart sanity checks against the
     /// trained strategy and print the results. Validates BU open
     /// frequency against published ranges.
@@ -255,12 +262,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cli.iterations
     };
 
-    // Larger batches amortize the serial merge + flush further. Measured
-    // at 256 vs 512 in the earlier bench: same throughput per wall-second,
-    // but 512 reduces per-dispatch overhead on the merge side. DCFR
-    // tolerates the staleness (Brown & Sandholm).
-    const ITERS_PER_SYNC: u32 = 512;
-
     let mut done = start_iter;
     let mut prev_metrics_snapshot = pkr_cfr::metrics::global().snapshot();
 
@@ -272,7 +273,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let batch = ITERS_PER_SYNC.min(max_iters - done);
+        let batch = cli.iters_per_sync.min(max_iters - done);
         trainer.run_iterations_parallel(batch as usize);
         done += batch;
 
@@ -439,7 +440,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "iterations": cli.iterations,
                 "threads": num_threads,
                 "capacity": cli.capacity,
-                "iters_per_sync": ITERS_PER_SYNC,
+                "iters_per_sync": cli.iters_per_sync,
                 "report_every": cli.report_every,
                 "start_iter": start_iter,
                 "end_iter": trainer.iteration(),
