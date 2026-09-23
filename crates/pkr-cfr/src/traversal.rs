@@ -114,7 +114,12 @@ pub fn traverse(
     let history_bytes = sig.to_le_bytes();
 
     let hole = &current.hole[acting_player];
-    let board = &current.board;
+    // Hash on the valid community-card slice, not the padded [u8; 5] array.
+    // The abstraction's match on board.len() distinguishes preflop(0),
+    // flop(3), turn(4), river(5). Passing the raw array always sends
+    // length 5, which routes every call through the river branch and
+    // ignores the preflop/flop/turn tables entirely.
+    let board: &[u8] = &current.board[..current.board_len as usize];
     let street_code = current.street as u8;
     let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
 
