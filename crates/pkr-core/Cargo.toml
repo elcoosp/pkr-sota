@@ -4,4 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+bytemuck = { workspace = true }
 pkr-contracts = { workspace = true }

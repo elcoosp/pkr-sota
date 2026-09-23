@@ -21,6 +21,7 @@
 //! already-posted blind and collapses distinct sizings into one bucket.
 
 use crate::state::ActionKind;
+use bytemuck::{Pod, Zeroable};
 
 /// Number of abstract action buckets.
 pub const NUM_ACTION_BUCKETS: usize = 6;
@@ -165,5 +166,228 @@ mod c3_tests {
         // Degenerate: pot 0 → clamped to 1.2; bet 0.6 → frac 0.5 → bucket 2.
         let b = action_bucket(&ActionKind::Bet(0.6), 199.0, 0.0, 0.0, 0.0);
         assert_eq!(b, 2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F2a: abstraction fingerprint (r3 F2)
+// ---------------------------------------------------------------------------
+//
+// Semantic changes that alter infoset identity or action meaning:
+//   - bucket sizing constants (BET_SIZINGS)
+//   - bucket thresholds (BUCKET_THRESHOLD_*)
+//   - signature version (SIG_V2_STREET_MONEY / SIG_V2_INCLUDE_LBF)
+//   - hash algorithm
+//   - the preflop cluster count `k` (and, in future, flop/river k)
+//
+// Resuming a checkpoint across any of these silently corrupts training:
+// the regrets were accumulated against a *different* game. This struct
+// is written into every checkpoint and blueprint, and compared on load.
+// Mismatch ⇒ hard error, telling the operator to delete the checkpoint.
+//
+// It is deliberately a POD `#[repr(C)]` struct with fixed layout so it
+// can be written byte-for-byte into both on-disk formats without
+// per-format serialization logic.
+
+/// Semantic-configuration fingerprint. 40 bytes, `#[repr(C)]`, POD.
+///
+/// Compare with `==`. Field order is part of the on-disk format; do not
+/// reorder without a format-version bump.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Pod, Zeroable)]
+pub struct AbstractionFingerprint {
+    /// Number of preflop centroids / buckets (`centroids.bin` size).
+    pub preflop_k: u32,
+    /// Number of flop board buckets (currently untracked; 0).
+    pub flop_k: u32,
+    /// Number of river board buckets (currently untracked; 0).
+    pub river_buckets: u32,
+    /// Pot-fraction sizings, must equal `BET_SIZINGS`.
+    pub sizing_small: f32,
+    pub sizing_medium: f32,
+    pub sizing_large: f32,
+    /// Bucket thresholds, must equal `BUCKET_THRESHOLD_*`.
+    pub threshold_small: f32,
+    pub threshold_large: f32,
+    /// Signature version: 1 = legacy 24-bit, 2 = SPR+faced-bet-size v2.
+    pub sig_version: u8,
+    /// Hash algorithm identifier (`HASH_ALGO_FNV1A64_INFOSET`).
+    pub hash_algo: u8,
+    pub _pad: [u8; 6],
+}
+
+impl AbstractionFingerprint {
+    /// Build a fingerprint from the current compile-time constants plus
+    /// the runtime-discovered preflop cluster count.
+    ///
+    /// `preflop_k` comes from `centroids.bin` at trainer startup; pass
+    /// the same value to every writer so a resumed checkpoint can
+    /// detect a k change.
+    ///
+    /// `flop_k` and `river_buckets` are currently `0` (untracked).
+    /// Wiring them requires the trainer to know the abstraction table
+    /// dimensions; the F2b commit keeps this constructor's signature
+    /// stable and adds those fields when needed.
+    pub fn from_constants(preflop_k: u32) -> Self {
+        Self {
+            preflop_k,
+            flop_k: 0,
+            river_buckets: 0,
+            sizing_small: BET_SIZINGS[0],
+            sizing_medium: BET_SIZINGS[1],
+            sizing_large: BET_SIZINGS[2],
+            threshold_small: BUCKET_THRESHOLD_SMALL,
+            threshold_large: BUCKET_THRESHOLD_LARGE,
+            sig_version: if crate::state::SIG_V2_STREET_MONEY {
+                2
+            } else {
+                1
+            },
+            hash_algo: pkr_contracts::HASH_ALGO_FNV1A64_INFOSET,
+            _pad: [0; 6],
+        }
+    }
+
+    /// Human-readable mismatch report. Called on checkpoint load when
+    /// the stored fingerprint differs from the current one.
+    pub fn describe_mismatch(&self, expected: &Self) -> String {
+        let mut diffs = Vec::new();
+        if self.preflop_k != expected.preflop_k {
+            diffs.push(format!(
+                "preflop_k: {} (checkpoint) vs {} (current)",
+                self.preflop_k, expected.preflop_k
+            ));
+        }
+        if self.flop_k != expected.flop_k {
+            diffs.push(format!("flop_k: {} vs {}", self.flop_k, expected.flop_k));
+        }
+        if self.river_buckets != expected.river_buckets {
+            diffs.push(format!(
+                "river_buckets: {} vs {}",
+                self.river_buckets, expected.river_buckets
+            ));
+        }
+        if self.sizing_small != expected.sizing_small
+            || self.sizing_medium != expected.sizing_medium
+            || self.sizing_large != expected.sizing_large
+        {
+            diffs.push(format!(
+                "sizings: [{}, {}, {}] vs [{}, {}, {}]",
+                self.sizing_small,
+                self.sizing_medium,
+                self.sizing_large,
+                expected.sizing_small,
+                expected.sizing_medium,
+                expected.sizing_large,
+            ));
+        }
+        if self.threshold_small != expected.threshold_small
+            || self.threshold_large != expected.threshold_large
+        {
+            diffs.push(format!(
+                "thresholds: [{}, {}] vs [{}, {}]",
+                self.threshold_small,
+                self.threshold_large,
+                expected.threshold_small,
+                expected.threshold_large,
+            ));
+        }
+        if self.sig_version != expected.sig_version {
+            diffs.push(format!(
+                "sig_version: {} vs {}",
+                self.sig_version, expected.sig_version
+            ));
+        }
+        if self.hash_algo != expected.hash_algo {
+            diffs.push(format!(
+                "hash_algo: {} vs {}",
+                self.hash_algo, expected.hash_algo
+            ));
+        }
+        if diffs.is_empty() {
+            "no differences (this should not have been called)".to_string()
+        } else {
+            diffs.join("; ")
+        }
+    }
+}
+
+/// Compile-time size guard: the fingerprint must be exactly 40 bytes so
+/// the checkpoint reader can `read_exact` it without knowing the layout.
+const _: () = assert!(std::mem::size_of::<AbstractionFingerprint>() == 40);
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    #[test]
+    fn from_constants_captures_current_compile_time_values() {
+        let f = AbstractionFingerprint::from_constants(200);
+        assert_eq!(f.preflop_k, 200);
+        assert_eq!(f.flop_k, 0);
+        assert_eq!(f.river_buckets, 0);
+        assert_eq!(f.sizing_small, BET_SIZINGS[0]);
+        assert_eq!(f.sizing_medium, BET_SIZINGS[1]);
+        assert_eq!(f.sizing_large, BET_SIZINGS[2]);
+        assert_eq!(f.threshold_small, BUCKET_THRESHOLD_SMALL);
+        assert_eq!(f.threshold_large, BUCKET_THRESHOLD_LARGE);
+        let expected_sig = if crate::state::SIG_V2_STREET_MONEY {
+            2
+        } else {
+            1
+        };
+        assert_eq!(f.sig_version, expected_sig);
+        assert_eq!(f.hash_algo, pkr_contracts::HASH_ALGO_FNV1A64_INFOSET);
+    }
+
+    #[test]
+    fn identical_inputs_produce_equal_fingerprints() {
+        let a = AbstractionFingerprint::from_constants(200);
+        let b = AbstractionFingerprint::from_constants(200);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn k_change_produces_inequality() {
+        let a = AbstractionFingerprint::from_constants(200);
+        let b = AbstractionFingerprint::from_constants(8);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn describe_mismatch_names_the_difference() {
+        let a = AbstractionFingerprint::from_constants(200);
+        let b = AbstractionFingerprint::from_constants(8);
+        let msg = a.describe_mismatch(&b);
+        assert!(msg.contains("preflop_k"), "msg: {msg}");
+        assert!(msg.contains("200"), "msg: {msg}");
+        assert!(msg.contains("8"), "msg: {msg}");
+    }
+
+    #[test]
+    fn describe_mismatch_sizings() {
+        let mut a = AbstractionFingerprint::from_constants(200);
+        let b = AbstractionFingerprint::from_constants(200);
+        a.sizing_small = 0.33;
+        let msg = a.describe_mismatch(&b);
+        assert!(msg.contains("sizings"), "msg: {msg}");
+    }
+
+    #[test]
+    fn describe_mismatch_sig_version() {
+        let mut a = AbstractionFingerprint::from_constants(200);
+        let b = AbstractionFingerprint::from_constants(200);
+        a.sig_version = 2;
+        let msg = a.describe_mismatch(&b);
+        assert!(msg.contains("sig_version"), "msg: {msg}");
+    }
+
+    #[test]
+    fn pod_roundtrip_preserves_all_fields() {
+        let f = AbstractionFingerprint::from_constants(200);
+        let bytes = bytemuck::bytes_of(&f);
+        assert_eq!(bytes.len(), 40);
+        let back: &AbstractionFingerprint = bytemuck::from_bytes(bytes);
+        assert_eq!(*back, f);
     }
 }
