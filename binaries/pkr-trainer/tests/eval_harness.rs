@@ -26,17 +26,29 @@ use std::sync::Arc;
 #[test]
 #[ignore]
 fn eval_harness_runs_against_real_blueprint() {
+    // Resolve any relative path against the workspace root, not the
+    // package directory. cargo test sets CWD to binaries/pkr-trainer/.
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("expected crates/pkr-trainer to have two parents")
+        .to_path_buf();
+    let abs = |p: String| -> std::path::PathBuf {
+        let pb = std::path::PathBuf::from(&p);
+        if pb.is_absolute() { pb } else { workspace_root.join(pb) }
+    };
+
     let bp = match std::env::var("PKR_BLUEPRINT") {
-        Ok(p) => p,
+        Ok(p) => abs(p),
         Err(_) => {
             eprintln!("PKR_BLUEPRINT not set; skipping");
             return;
         }
     };
-    let centroids_path = std::env::var("PKR_CENTROIDS")
-        .expect("PKR_CENTROIDS must be set alongside PKR_BLUEPRINT");
-    let rank_table_path = std::env::var("PKR_RANK_TABLE")
-        .expect("PKR_RANK_TABLE must be set");
+    let centroids_path = abs(std::env::var("PKR_CENTROIDS")
+        .expect("PKR_CENTROIDS must be set alongside PKR_BLUEPRINT"));
+    let rank_table_path = abs(std::env::var("PKR_RANK_TABLE")
+        .expect("PKR_RANK_TABLE must be set"));
 
     // Build evaluator (needed by abstraction EHS fallback + harness).
     let evaluator = Arc::new(
@@ -44,22 +56,22 @@ fn eval_harness_runs_against_real_blueprint() {
     );
 
     // Build abstraction with whatever tables are available.
-    let store = load_centroids(&centroids_path).expect("failed to load centroids");
+    let store = load_centroids(centroids_path.to_str().unwrap()).expect("failed to load centroids");
     let abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
     if let Ok(p) = std::env::var("PKR_PREFLOP_TABLE") {
-        abstraction.init_table(0, &p).ok();
+        abstraction.init_table(0, abs(p).to_str().unwrap()).ok();
     }
     if let Ok(p) = std::env::var("PKR_FLOP_TABLE") {
-        abstraction.init_table(1, &p).ok();
+        abstraction.init_table(1, abs(p).to_str().unwrap()).ok();
     }
     if let Ok(p) = std::env::var("PKR_TURN_TABLE") {
-        abstraction.init_table(2, &p).ok();
+        abstraction.init_table(2, abs(p).to_str().unwrap()).ok();
     }
     if let Ok(p) = std::env::var("PKR_RIVER_TABLE") {
-        abstraction.init_table(3, &p).ok();
+        abstraction.init_table(3, abs(p).to_str().unwrap()).ok();
     }
     if let Ok(p) = std::env::var("PKR_FLOP_BUCKETS") {
-        abstraction.load_flop_buckets(&p).ok();
+        abstraction.load_flop_buckets(abs(p).to_str().unwrap()).ok();
     }
 
     // Load blueprint through the runtime path.
