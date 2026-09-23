@@ -42,30 +42,33 @@ MANEOF
 
 cargo build --release -p pkr-trainer -p pkr-abstraction
 
-# Cache precompute on the OUTPUT FILE. If the file exists and is
-# non-empty, skip. The final argument is always the output path for every
-# subcommand used here (hand_ranks, centroids, flop, river, preflop,
-# abs5). REBUILD=1 forces regeneration.
+# Cache precompute on the OUTPUT FILE.
+#
+# Every subcommand takes the output path as a .bin argument. Some
+# subcommands have trailing non-.bin args (flop/river take k last, turn
+# takes samples last). So we scan ALL args for the last one ending in
+# .bin — that's always the output path.
+#
+# REBUILD=1 forces regeneration. Precompute output is deterministic for
+# a given (subcommand, args, code) triple, so file existence is a sound
+# cache signal.
 pre() {
-    local last="${@: -1}"
-    if [ "${REBUILD:-0}" != "1" ] && [ -s "$last" ]; then
-        echo "  [cached] $1 -> $(basename "$last")"
+    local target=""
+    for arg in "$@"; do
+        if [[ "$arg" == *.bin ]]; then
+            target="$arg"
+        fi
+    done
+    if [ "${REBUILD:-0}" != "1" ] && [ -n "$target" ] && [ -s "$target" ]; then
+        echo "  [cached] $1 -> $(basename "$target")"
         return 0
     fi
-    cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- "$@"
-}
-
-# turn's last arg is the number of samples, not the output path.
-# Handle it explicitly by checking the second-to-last arg.
-pre_turn() {
-    # args: turn centroids rank out samples
-    local out="$4"
-    if [ "${REBUILD:-0}" != "1" ] && [ -s "$out" ]; then
-        echo "  [cached] turn -> $(basename "$out")"
-        return 0
-    fi
-    EHS_SAMPLES="$EHS_SAMPLES_TURN" \
+    if [[ "$1" == "turn" ]]; then
+        EHS_SAMPLES="$EHS_SAMPLES_TURN" \
+            cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- "$@"
+    else
         cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute -- "$@"
+    fi
 }
 
 echo "==> [1/8] hand_ranks"
@@ -87,7 +90,7 @@ echo "==> [6/8] flop table"
 pre abs5 "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/abstraction.bin"
 
 echo "==> [7/8] turn table"
-pre_turn turn "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/turn_abstraction.bin" 10000
+pre turn "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/turn_abstraction.bin" 10000
 
 echo "==> [8/8] TRAIN"
 cargo run --release --quiet -p pkr-trainer -- \
