@@ -1,5 +1,21 @@
 use pkr_contracts::Evaluator;
 
+/// Feature flag: when true, the traverser and every hash consumer
+/// should use `history_signature_v2()` instead of `history_signature()`.
+///
+/// Flipping this constant to `true` is a SEMANTIC CHANGE — it changes
+/// infoset identity. Before flipping:
+///   1. Wipe every checkpoint in the tree (rule 0.1).
+///   2. Bump the blueprint format version (r3 F2, format v4).
+///   3. Confirm the capacity math in r3 P6 says v16 fits.
+///
+/// Default: OFF. The v2 helpers are landed and tested but not wired
+/// into the traverser, so this commit is a no-op for training.
+pub const SIG_V2_STREET_MONEY: bool = false;
+
+/// Version tag stored in bits 60..64 of `history_signature_v2()`.
+pub const SIG_V2_VERSION: u64 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Street {
     Preflop,
@@ -534,6 +550,79 @@ impl GameState {
 // (C3) `abstract_action_index_static` deleted; use
 // `crate::abstraction::action_bucket` instead.
 
+impl GameState {
+    /// Coarse bucket of the fraction of pot represented by the bet
+    /// currently being faced. Returns 0 when no bet is faced.
+    ///
+    /// Buckets (r3 C4):
+    ///   0 = no bet / check
+    ///   1 = very small (<0.35 pot)
+    ///   2 = ~half pot (0.35..0.75)
+    ///   3 = ~pot (0.75..1.30)
+    ///   4 = ~2x overbet (1.30..2.20)
+    ///   5 = jam-scale (>= 2.20)
+    pub fn last_bet_fraction_bucket(&self) -> u8 {
+        let to_call = self.bet_to_call();
+        if to_call <= 0.0 {
+            return 0;
+        }
+        let pot_before = (self.pot - to_call).max(1.2);
+        let frac = to_call / pot_before;
+        if frac < 0.35 {
+            1
+        } else if frac < 0.75 {
+            2
+        } else if frac < 1.30 {
+            3
+        } else if frac < 2.20 {
+            4
+        } else {
+            5
+        }
+    }
+
+    /// Coarse bucket of pot / effective stack.
+    ///   0 = SPR < 0.5
+    ///   1 = 0.5..1.0
+    ///   2 = 1.0..2.0
+    ///   3 = 2.0..4.0
+    ///   4 = 4.0..8.0
+    ///   5 = >= 8.0
+    pub fn spr_bucket(&self) -> u8 {
+        let a = self.stacks[self.actor];
+        let b = self.stacks[1 - self.actor];
+        let eff = a.min(b).max(0.001);
+        let spr = self.pot / eff;
+        if spr < 0.5 {
+            0
+        } else if spr < 1.0 {
+            1
+        } else if spr < 2.0 {
+            2
+        } else if spr < 4.0 {
+            3
+        } else if spr < 8.0 {
+            4
+        } else {
+            5
+        }
+    }
+
+    /// Signature v2. Layout (u64):
+    ///   bits  0..24 : legacy v1 (actions_this_street | raises<<8 | last_was_bet<<16)
+    ///   bits 24..28 : last_bet_fraction_bucket (0..=5)
+    ///   bits 28..32 : spr_bucket (0..=5)
+    ///   bits 60..64 : version tag = SIG_V2_VERSION
+    ///
+    /// Not yet wired into the traverser. See `SIG_V2_STREET_MONEY`.
+    pub fn history_signature_v2(&self) -> u64 {
+        let v1 = self.history_signature() as u64;
+        let lbf = self.last_bet_fraction_bucket() as u64;
+        let spr = self.spr_bucket() as u64;
+        v1 | (lbf << 24) | (spr << 28) | (SIG_V2_VERSION << 60)
+    }
+}
+
 #[cfg(test)]
 mod c1_tests {
     use super::*;
@@ -900,5 +989,135 @@ mod c1_5_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod c4b_tests {
+    use super::*;
+
+    #[test]
+    fn v2_version_tag_set() {
+        let s = GameState::new(200.0, 1.0, 2.0);
+        let v2 = s.history_signature_v2();
+        assert_eq!(
+            v2 >> 60,
+            SIG_V2_VERSION,
+            "version tag must occupy bits 60..64"
+        );
+    }
+
+    #[test]
+    fn v2_low_24_bits_match_v1() {
+        let s = GameState::new(200.0, 1.0, 2.0);
+        let v1 = s.history_signature() as u64;
+        let v2 = s.history_signature_v2();
+        assert_eq!(
+            v2 & 0x00FF_FFFF,
+            v1 & 0x00FF_FFFF,
+            "low 24 bits must match v1"
+        );
+    }
+
+    #[test]
+    fn last_bet_fraction_bucket_is_zero_when_no_bet() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        s.advance_street_in_place(&[0, 1, 2]);
+        assert_eq!(s.bet_to_call(), 0.0);
+        assert_eq!(s.last_bet_fraction_bucket(), 0);
+    }
+
+    #[test]
+    fn last_bet_fraction_bucket_distinguishes_sizes() {
+        let setup = |bet: f32| -> GameState {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Call,
+            });
+            s.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
+            s.advance_street_in_place(&[0, 1, 2]);
+            s.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Bet(bet),
+            });
+            s
+        };
+        // After limp/check, pot = 4. Villain (SB, actor 0 postflop) bets X.
+        assert_eq!(setup(2.0).last_bet_fraction_bucket(), 2, "0.5x pot");
+        assert_eq!(setup(4.0).last_bet_fraction_bucket(), 3, "1.0x pot");
+        assert_eq!(setup(8.0).last_bet_fraction_bucket(), 4, "2.0x pot");
+        assert_eq!(setup(10.0).last_bet_fraction_bucket(), 5, ">2.2x pot");
+    }
+
+    #[test]
+    fn spr_bucket_ranges() {
+        let s = GameState::new(200.0, 1.0, 2.0);
+        // stacks [199, 198], effective 198, pot 3 → SPR ≈ 0.015 → bucket 0
+        assert_eq!(s.spr_bucket(), 0, "fresh preflop SPR is near zero");
+        let s = GameState::new(2000.0, 1.0, 2.0);
+        // effective ≈ 1998, pot 3 → SPR ≈ 0.0015 → bucket 0 too
+        assert_eq!(s.spr_bucket(), 0);
+        // Synthetic: force pot/stack ratio.
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.pot = 100.0;
+        s.stacks = [150.0, 150.0];
+        assert_eq!(s.spr_bucket(), 1, "SPR 0.667 -> bucket 1");
+        s.pot = 400.0;
+        assert_eq!(s.spr_bucket(), 3, "SPR 2.67 -> bucket 3");
+        s.pot = 1600.0;
+        assert_eq!(s.spr_bucket(), 5, "SPR 10.7 -> bucket 5");
+    }
+
+    #[test]
+    fn v2_distinguishes_bet_sizes() {
+        let setup = |bet: f32| -> GameState {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Call,
+            });
+            s.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
+            s.advance_street_in_place(&[0, 1, 2]);
+            s.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Bet(bet),
+            });
+            s
+        };
+        let half = setup(2.0);
+        let full = setup(4.0);
+        let over = setup(8.0);
+
+        // v1 collides — the bug we are fixing.
+        assert_eq!(half.history_signature(), full.history_signature());
+        assert_eq!(half.history_signature(), over.history_signature());
+
+        // v2 distinguishes.
+        assert_ne!(half.history_signature_v2(), full.history_signature_v2());
+        assert_ne!(full.history_signature_v2(), over.history_signature_v2());
+        assert_ne!(half.history_signature_v2(), over.history_signature_v2());
     }
 }
