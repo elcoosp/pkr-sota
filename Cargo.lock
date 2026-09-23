@@ -974,6 +974,7 @@ dependencies = [
  "pkr-eval",
  "pkr-exploit",
  "pkr-export",
+ "pkr-fuzz",
  "pkr-runtime",
  "rand",
  "rand_xoshiro",

@@ -26,5 +26,6 @@ bytemuck = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+pkr-fuzz = { workspace = true }
 pkr-runtime = { workspace = true }
 tempfile = "3"
