@@ -8,3 +8,8 @@ pub use slow::NlheEvaluator;
 pub mod lookup_fast;
 #[cfg(feature = "fast-eval")]
 pub use lookup_fast::TableEvaluator;
+
+#[cfg(feature = "fast-eval")]
+pub mod fast7;
+#[cfg(feature = "fast-eval")]
+pub use fast7::Fast7Evaluator;
