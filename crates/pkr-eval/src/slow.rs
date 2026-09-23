@@ -137,14 +137,19 @@ fn eval_5(hand: &[u8; 5]) -> u32 {
         .map(|(i, _)| i)
         .collect();
     if pairs.len() >= 2 {
-        let p1 = pairs[0] as u8;
-        let p2 = pairs[1] as u8;
+        // pairs[] is ascending by rank index; the HIGH pair must occupy the
+        // high bits so that hands compare on the top pair first (audit F3).
+        let p_high = pairs[pairs.len() - 1] as u8;
+        let p_low = pairs[pairs.len() - 2] as u8;
         let kicker = ranks
             .iter()
-            .find(|&&r| r != p1 && r != p2)
+            .find(|&&r| r != p_high && r != p_low)
             .copied()
             .unwrap_or(0);
-        let raw = (2u32 << 20) | ((p1 as u32) << 16) | ((p2 as u32) << 12) | ((kicker as u32) << 8);
+        let raw = (2u32 << 20)
+            | ((p_high as u32) << 16)
+            | ((p_low as u32) << 12)
+            | ((kicker as u32) << 8);
         return !raw;
     }
     if let Some(&p) = pairs.first() {
@@ -235,5 +240,41 @@ impl Evaluator for NlheEvaluator {
             }
         }
         best
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Card id encoding (see file header): id = suit*13 + rank, rank 0..=12.
+    // Helper: evaluate 5 cards given (rank, suit) pairs.
+    fn ev(cards: [(usize, usize); 5]) -> u32 {
+        let arr: [u8; 5] = cards.map(|(r, s)| (s * 13 + r) as u8);
+        NlheEvaluator.evaluate_hand(&arr, &[])
+    }
+
+    #[test]
+    fn two_pair_compares_on_high_pair_first() {
+        // K K 4 4 7  must beat  Q Q 2 2 9   (rank idx: K=11, 4=2, 7=5, Q=10, 2=0)
+        let kk447 = ev([(11, 0), (11, 1), (2, 0), (2, 1), (5, 0)]);
+        let qq229 = ev([(10, 0), (10, 1), (0, 0), (0, 1), (7, 0)]);
+        assert!(kk447 < qq229, "kings-up must rank better (lower) than queens-up");
+    }
+
+    #[test]
+    fn two_pair_compares_on_low_pair_when_high_ties() {
+        // A A 9 9 2 must beat  A A 8 8 K  (rank idx: A=12, 9=7, 2=0, 8=6, K=11)
+        let aa992 = ev([(12, 0), (12, 1), (7, 0), (7, 1), (0, 0)]);
+        let aa88k = ev([(12, 2), (12, 3), (6, 2), (6, 3), (11, 2)]);
+        assert!(aa992 < aa88k);
+    }
+
+    #[test]
+    fn two_pair_kicker_breaks_ties() {
+        // A A 7 7 K  beats  A A 7 7 Q
+        let a77k = ev([(12, 0), (12, 1), (5, 0), (5, 1), (11, 0)]);
+        let a77q = ev([(12, 2), (12, 3), (5, 2), (5, 3), (10, 2)]);
+        assert!(a77k < a77q);
     }
 }
