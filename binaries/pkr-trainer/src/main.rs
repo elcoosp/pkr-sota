@@ -147,10 +147,11 @@ fn main() {
 fn save_checkpoint_rolling(
     trainer: &pkr_cfr::Trainer,
     ckpt: &std::path::Path,
+    fingerprint: &pkr_core::abstraction::AbstractionFingerprint,
 ) -> std::io::Result<()> {
     let tmp = ckpt.with_extension("ckpt.tmp");
     let prev = ckpt.with_extension("ckpt.prev");
-    trainer.save_checkpoint(tmp.to_str().unwrap())?;
+    trainer.save_checkpoint(tmp.to_str().unwrap(), fingerprint)?;
     if ckpt.exists() {
         std::fs::rename(ckpt, &prev)?;
     }
@@ -209,6 +210,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
 
+    // F2b: fingerprint the semantic configuration. Every checkpoint
+    // carries this; mismatch on load aborts (see table.rs).
+    let fingerprint = pkr_core::abstraction::AbstractionFingerprint::from_constants(k as u32);
+    eprintln!(
+        "fingerprint: k={} sizings=[{:.2},{:.2},{:.2}] thresholds=[{:.2},{:.2}] sig_v={} hash_algo={}",
+        fingerprint.preflop_k,
+        fingerprint.sizing_small,
+        fingerprint.sizing_medium,
+        fingerprint.sizing_large,
+        fingerprint.threshold_small,
+        fingerprint.threshold_large,
+        fingerprint.sig_version,
+        fingerprint.hash_algo,
+    );
+
     if let Some(path) = &cli.flop_centroids {
         abstraction
             .load_street_centroids(1, path.to_str().unwrap())
@@ -263,7 +279,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_iter = if let Some(ckpt) = &cli.checkpoint {
         if ckpt.exists() {
-            match trainer.load_checkpoint(ckpt.to_str().unwrap()) {
+            match trainer.load_checkpoint(ckpt.to_str().unwrap(), &fingerprint) {
                 Ok(()) => {
                     let it = trainer.iteration();
                     eprintln!("Resumed from checkpoint at iteration {}", it);
@@ -593,7 +609,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             && (done - last_ckpt_iter) >= cli.checkpoint_every
         {
             if let Some(ckpt) = &cli.checkpoint {
-                match save_checkpoint_rolling(&trainer, ckpt) {
+                match save_checkpoint_rolling(&trainer, ckpt, &fingerprint) {
                     Ok(()) => {
                         eprintln!("Checkpoint written at iteration {}", done);
                         last_ckpt_iter = done;
@@ -606,7 +622,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if !stopped_early {
         if let Some(ckpt) = &cli.checkpoint {
-            if let Err(e) = save_checkpoint_rolling(&trainer, ckpt) {
+            if let Err(e) = save_checkpoint_rolling(&trainer, ckpt, &fingerprint) {
                 eprintln!("WARNING: final checkpoint failed: {}", e);
             }
         }

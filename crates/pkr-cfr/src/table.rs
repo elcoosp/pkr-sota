@@ -744,13 +744,19 @@ impl CompactRegretTable {
         self.capacity
     }
 
-    pub fn save_checkpoint(&self, path: &str, iteration: u32) -> std::io::Result<()> {
+    pub fn save_checkpoint(
+        &self,
+        path: &str,
+        iteration: u32,
+        fingerprint: &pkr_core::abstraction::AbstractionFingerprint,
+    ) -> std::io::Result<()> {
         use std::io::{BufWriter, Write};
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
-        w.write_all(b"PKRCKPT4")?;
-        w.write_all(&4u32.to_le_bytes())?;
+        w.write_all(b"PKRCKPT5")?;
+        w.write_all(&5u32.to_le_bytes())?;
+        w.write_all(bytemuck::bytes_of(fingerprint))?;
         w.write_all(&(K as u32).to_le_bytes())?;
         w.write_all(&iteration.to_le_bytes())?;
         w.write_all(&(n as u64).to_le_bytes())?;
@@ -773,7 +779,11 @@ impl CompactRegretTable {
         Ok(())
     }
 
-    pub fn load_checkpoint(&self, path: &str) -> std::io::Result<u32> {
+    pub fn load_checkpoint(
+        &self,
+        path: &str,
+        current: &pkr_core::abstraction::AbstractionFingerprint,
+    ) -> std::io::Result<u32> {
         use std::io::Read;
         let mut f = std::fs::File::open(path)?;
         let mut buf = Vec::new();
@@ -791,17 +801,36 @@ impl CompactRegretTable {
             Ok(s)
         };
         let magic = read(&mut p, 8)?;
-        if magic != b"PKRCKPT4" {
+        if magic != b"PKRCKPT5" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "bad checkpoint magic (expected v4 format)",
+                "bad checkpoint magic (expected v5 format)",
             ));
         }
         let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        if version != 4 {
+        if version != 5 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported checkpoint version",
+            ));
+        }
+        // F2b: read the stored fingerprint and compare to the current
+        // configuration. A mismatch means the checkpoint was written
+        // by a binary whose abstraction differed in a way that changes
+        // infoset identity or action meaning. Resuming would silently
+        // corrupt training (r3 rule 0.1).
+        let fp_bytes = read(&mut p, 40)?;
+        let stored_fp: &pkr_core::abstraction::AbstractionFingerprint =
+            bytemuck::from_bytes(fp_bytes);
+        if stored_fp != current {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "checkpoint abstraction mismatch: {}. \
+                     Delete the checkpoint and restart, or resume with the \
+                     original binary.",
+                    stored_fp.describe_mismatch(current),
+                ),
             ));
         }
         let k = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap()) as usize;

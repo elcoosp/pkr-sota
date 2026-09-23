@@ -216,12 +216,21 @@ impl Trainer {
         cap > 0 && self.table.len() * 100 / cap >= 95
     }
 
-    pub fn save_checkpoint(&self, path: &str) -> std::io::Result<()> {
-        self.table.save_checkpoint(path, self.iteration())
+    pub fn save_checkpoint(
+        &self,
+        path: &str,
+        fingerprint: &pkr_core::abstraction::AbstractionFingerprint,
+    ) -> std::io::Result<()> {
+        self.table
+            .save_checkpoint(path, self.iteration(), fingerprint)
     }
 
-    pub fn load_checkpoint(&self, path: &str) -> std::io::Result<()> {
-        let iter = self.table.load_checkpoint(path)?;
+    pub fn load_checkpoint(
+        &self,
+        path: &str,
+        current: &pkr_core::abstraction::AbstractionFingerprint,
+    ) -> std::io::Result<()> {
+        let iter = self.table.load_checkpoint(path, current)?;
         self.iteration.store(iter, Ordering::Relaxed);
         Ok(())
     }

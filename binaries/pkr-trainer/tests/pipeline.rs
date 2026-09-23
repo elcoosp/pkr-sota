@@ -153,15 +153,17 @@ fn checkpoint_roundtrip_preserves_table() {
     let pre_len = trainer.get_table().len();
     let pre_iter = trainer.iteration();
 
+    let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
     trainer
-        .save_checkpoint(tmp.path().to_str().unwrap())
+        .save_checkpoint(tmp.path().to_str().unwrap(), &fp)
         .unwrap();
 
     let abstraction2: Arc<dyn AbstractionBuilder> = Arc::new(MockAbstraction);
     let evaluator2: Arc<dyn Evaluator> = Arc::new(MockEvaluator);
     let trainer2 = Trainer::with_capacity(abstraction2, evaluator2, 4096);
+    let fp2 = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
     trainer2
-        .load_checkpoint(tmp.path().to_str().unwrap())
+        .load_checkpoint(tmp.path().to_str().unwrap(), &fp2)
         .unwrap();
 
     assert_eq!(
@@ -176,4 +178,42 @@ fn checkpoint_roundtrip_preserves_table() {
     a.sort_unstable();
     b.sort_unstable();
     assert_eq!(a, b, "key sets differ after checkpoint roundtrip");
+}
+
+/// F2b: a checkpoint written under one fingerprint must refuse to load
+/// under a different one.
+#[test]
+fn fingerprint_mismatch_aborts_load() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+
+    let abstraction: Arc<dyn AbstractionBuilder> = Arc::new(MockAbstraction);
+    let evaluator: Arc<dyn Evaluator> = Arc::new(MockEvaluator);
+    let mut trainer = Trainer::with_capacity(abstraction, evaluator, 4096);
+    for _ in 0..10 {
+        trainer.run_iteration_parallel();
+    }
+
+    // Write with k=4.
+    let fp_written = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
+    trainer
+        .save_checkpoint(tmp.path().to_str().unwrap(), &fp_written)
+        .unwrap();
+
+    // Try to load under a different k.
+    let abstraction2: Arc<dyn AbstractionBuilder> = Arc::new(MockAbstraction);
+    let evaluator2: Arc<dyn Evaluator> = Arc::new(MockEvaluator);
+    let trainer2 = Trainer::with_capacity(abstraction2, evaluator2, 4096);
+    let fp_loaded = pkr_core::abstraction::AbstractionFingerprint::from_constants(8);
+    let err = trainer2
+        .load_checkpoint(tmp.path().to_str().unwrap(), &fp_loaded)
+        .unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("abstraction mismatch"),
+        "expected mismatch error, got: {msg}"
+    );
+    assert!(
+        msg.contains("preflop_k"),
+        "error must name the diff, got: {msg}"
+    );
 }
