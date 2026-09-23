@@ -93,6 +93,10 @@ impl KMeansAbstraction {
         Ok(())
     }
 
+    /// SUPERSEDED: flop_bucket was removed from the river infoset hash
+    /// (T2.2). The method is retained until a follow-up cleanup removes
+    /// the whole path (method + loader + field + trainer flag).
+    #[allow(dead_code)]
     fn flop_bucket(&self, board: &[u8]) -> u8 {
         if board.len() >= 3 {
             if let Some(buckets) = self.flop_buckets.get() {
@@ -272,7 +276,7 @@ impl AbstractionBuilder for KMeansAbstraction {
                 // River: bucket hand rank into ~128 tiers. Raw hand_rank
                 // has cardinality 7462, which alone produces millions of
                 // river infosets over a full training run and dominates the
-                // map size. >> 6 gives 116 tiers — coarse enough to make
+                // map size. >> 3 gives 116 tiers — coarse enough to make
                 // CFR see each river infoset repeatedly, fine enough to
                 // preserve strategic distinctions (a made hand vs a busted
                 // draw vs a middle pair still land in different tiers).
@@ -295,14 +299,11 @@ impl AbstractionBuilder for KMeansAbstraction {
             _ => ehs_fallback(),
         };
 
-        let flop_bucket = self.flop_bucket(board);
-
         let mut h: u64 = FNV_OFFSET;
         fnv1a(&mut h, std::slice::from_ref(&street));
         fnv1a(&mut h, &[history.len() as u8]);
         fnv1a(&mut h, history);
         fnv1a(&mut h, &cluster_id.to_le_bytes());
-        fnv1a(&mut h, &[flop_bucket]);
         h
     }
 }
@@ -354,16 +355,17 @@ mod tests {
         // If these values change, every exported blueprint in existence is invalidated
         // (requires a format_version bump + full retrain + re-export).
         //
-        // Computed with FNV-1a 64-bit, little-endian cluster_id, length-prefixed history.
+        // Computed with FNV-1a 64-bit, little-endian cluster_id, length-prefixed
+// history. Regenerated for T2.2 (river >> 3, no flop_bucket in hash), 2026-09-23.
         let builder =
             KMeansAbstraction::new(vec![(0.3, 0.09), (0.7, 0.49)], Arc::new(MockEvaluator));
         assert_eq!(
             builder.get_infoset_hash(&[0, 1], &[], &[], 0),
-            0xc885ccdc03990c97
+            0x69d307cc20f6ef8d
         );
         assert_eq!(
             builder.get_infoset_hash(&[0, 1], &[], &[0], 0),
-            0x23ae4ee1fbe6228a
+            0xafe0abd88048ea4e
         );
         assert_ne!(
             builder.get_infoset_hash(&[0, 1], &[], &[], 0),
@@ -381,6 +383,7 @@ mod tests {
         assert_ne!(h1, h2);
     }
 }
+
 #[cfg(test)]
 mod extended_tests {
     use super::*;
