@@ -53,7 +53,13 @@ fn full_pipeline_trains_exports_loads_queries() {
     );
     keys.sort_unstable();
 
-    write_blueprint(tmp.path().to_str().unwrap(), trainer.get_table(), &keys);
+    let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
+    write_blueprint(
+        tmp.path().to_str().unwrap(),
+        trainer.get_table(),
+        &keys,
+        &fp,
+    );
 
     let reader = MmapReader::new(tmp.path()).unwrap();
     assert_eq!(reader.file_header().infoset_count as usize, keys.len());
@@ -216,4 +222,49 @@ fn fingerprint_mismatch_aborts_load() {
         msg.contains("preflop_k"),
         "error must name the diff, got: {msg}"
     );
+}
+
+/// F2c: a v4 blueprint stores the AbstractionFingerprint and the
+/// reader exposes it (and can enforce a match).
+#[test]
+fn blueprint_v4_roundtrip_carries_fingerprint() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+
+    let abstraction: Arc<dyn AbstractionBuilder> = Arc::new(MockAbstraction);
+    let evaluator: Arc<dyn Evaluator> = Arc::new(MockEvaluator);
+    let mut trainer = Trainer::with_capacity(abstraction, evaluator, 4096);
+    for _ in 0..20 {
+        trainer.run_iteration_parallel();
+    }
+    let mut keys = trainer.get_table().get_keys();
+    keys.sort_unstable();
+
+    let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
+    write_blueprint(
+        tmp.path().to_str().unwrap(),
+        trainer.get_table(),
+        &keys,
+        &fp,
+    );
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    assert_eq!(reader.file_header().version, 4, "writer must emit v4");
+
+    let stored = reader.fingerprint().expect("v4 must carry a fingerprint");
+    assert_eq!(stored, fp, "stored fingerprint must match written");
+
+    // Matching current fingerprint: OK.
+    reader
+        .check_fingerprint(&fp)
+        .expect("matching fingerprint must pass check");
+
+    // Mismatched current fingerprint: error.
+    let fp_mismatch = pkr_core::abstraction::AbstractionFingerprint::from_constants(8);
+    let err = reader.check_fingerprint(&fp_mismatch).unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("abstraction mismatch"),
+        "expected mismatch error, got: {msg}"
+    );
+    assert!(msg.contains("preflop_k"), "error must name the diff: {msg}");
 }

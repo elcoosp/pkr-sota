@@ -1,7 +1,8 @@
 use crate::header::{
-    AnchorsSection, FileHeader, ANCHORS, FORMAT_VERSION_V3, HASH_ALGO_FNV1A64_INFOSET,
+    AnchorsSection, FileHeader, ANCHORS, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
 };
 use pkr_cfr::table::CompactRegretTable;
+use pkr_core::abstraction::AbstractionFingerprint;
 use std::fs::File;
 use std::io::Write;
 
@@ -10,12 +11,17 @@ const K: usize = 6;
 
 /// Write a complete blueprint file.
 ///
-/// v3 layout:
-///   [FileHeader:32][AnchorsSection:48][key_count:u32][cdf_size:u32][keys][cdf]
+/// v4 layout:
+///   [FileHeader:32][AnchorsSection:48][Fingerprint:40][key_count:u32][cdf_size:u32][keys][cdf]
 ///
 /// Keys are u64 ascending; CDFs are K bytes per key with monotonic
 /// non-decreasing values ending at 255.
-pub fn write_blueprint(path: &str, table: &CompactRegretTable, keys: &[u64]) {
+pub fn write_blueprint(
+    path: &str,
+    table: &CompactRegretTable,
+    keys: &[u64],
+    fingerprint: &AbstractionFingerprint,
+) {
     // Sort defensively (reader uses binary search).
     let mut sorted_keys: Vec<u64> = keys.to_vec();
     sorted_keys.sort_unstable();
@@ -39,7 +45,7 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable, keys: &[u64]) {
 
     let file_header = FileHeader {
         magic: *MAGIC,
-        version: FORMAT_VERSION_V3,
+        version: FORMAT_VERSION_V4,
         variant_id: 0,
         infoset_count: num_keys as u64,
         max_actions_k: K as u8,
@@ -55,13 +61,15 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable, keys: &[u64]) {
     file.write_all(bytemuck::bytes_of(&file_header)).unwrap();
     // 2. AnchorsSection (48 B)
     file.write_all(bytemuck::bytes_of(&anchors)).unwrap();
-    // 3. key_count:u32, cdf_size:u32
+    // 3. AbstractionFingerprint (40 B) — F2c
+    file.write_all(bytemuck::bytes_of(fingerprint)).unwrap();
+    // 4. key_count:u32, cdf_size:u32
     file.write_all(&(num_keys as u32).to_le_bytes()).unwrap();
     file.write_all(&((K * num_keys) as u32).to_le_bytes())
         .unwrap();
-    // 4. keys
+    // 5. keys
     file.write_all(&key_bytes).unwrap();
-    // 5. cdfs
+    // 6. cdfs
     file.write_all(&cdf_bytes).unwrap();
 
     file.flush().unwrap();

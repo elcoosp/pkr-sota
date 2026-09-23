@@ -1,6 +1,8 @@
 use bytemuck;
 use memmap2::Mmap;
-use pkr_export::header::{FileHeader, FORMAT_VERSION_V2, HASH_ALGO_FNV1A64_INFOSET};
+use pkr_export::header::{
+    FileHeader, FORMAT_VERSION_V2, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
+};
 use std::fs::File;
 use std::path::Path;
 use thiserror::Error;
@@ -22,6 +24,8 @@ pub enum MmapError {
     FileTooSmall,
     #[error("invalid section offset: {0}")]
     InvalidOffset(&'static str),
+    #[error("blueprint abstraction mismatch: {0}")]
+    FingerprintMismatch(String),
 }
 
 const MAGIC: &[u8; 8] = b"PKRSOTA1";
@@ -34,6 +38,7 @@ pub struct MmapReader {
     num_keys: usize,
     offset_cdf: usize,
     len_cdf: usize,
+    fingerprint: Option<pkr_core::abstraction::AbstractionFingerprint>,
 }
 
 unsafe impl Send for MmapReader {}
@@ -67,14 +72,43 @@ impl MmapReader {
             ));
         }
 
-        // After FileHeader, v3 files have a 48-byte AnchorsSection, then
-        // two u32 (key_count, cdf_bytes_len). v2 files have no anchors.
+        // Layout by version (see pkr-export/src/writer.rs):
+        //   v2: [FH:32][key_count:4][cdf_size:4][keys][cdf]
+        //   v3: [FH:32][Anchors:48][key_count:4][cdf_size:4][keys][cdf]
+        //   v4: [FH:32][Anchors:48][Fingerprint:40][key_count:4][cdf_size:4][keys][cdf]
         let after_file_header = std::mem::size_of::<FileHeader>();
         let anchors_size = if file_header.version >= 3 { 48 } else { 0 };
-        let after_header = after_file_header + anchors_size;
+        let fp_size = if file_header.version >= FORMAT_VERSION_V4 {
+            std::mem::size_of::<pkr_core::abstraction::AbstractionFingerprint>()
+        } else {
+            0
+        };
+        let after_header = after_file_header + anchors_size + fp_size;
+
         if mmap.len() < after_header + 8 {
             return Err(MmapError::FileTooSmall);
         }
+
+        let fingerprint = if fp_size > 0 {
+            let base = after_file_header + anchors_size;
+            let raw = &mmap[base..base + fp_size];
+            let fp: &pkr_core::abstraction::AbstractionFingerprint = bytemuck::from_bytes(raw);
+            Some(*fp)
+        } else {
+            // v2/v3: no fingerprint. Emit a one-time warning.
+            use std::sync::OnceLock;
+            static WARNED: OnceLock<()> = OnceLock::new();
+            WARNED.get_or_init(|| {
+                eprintln!(
+                    "WARNING: blueprint is v{} (no abstraction fingerprint). \
+                     Upgrade with the current pkr-trainer to embed the \
+                     semantic-config fingerprint in v4 blueprints.",
+                    file_header.version,
+                );
+            });
+            None
+        };
+
         let key_count =
             u32::from_le_bytes(mmap[after_header..after_header + 4].try_into().unwrap()) as usize;
         let cdf_bytes_len =
@@ -96,7 +130,32 @@ impl MmapReader {
             num_keys: key_count,
             offset_cdf,
             len_cdf: cdf_bytes_len,
+            fingerprint,
         })
+    }
+
+    /// F2c: enforcement helper. Callers that want to refuse a
+    /// blueprint whose abstraction doesn't match their current config
+    /// should use this after `new`. Returns `Ok(())` if the blueprint
+    /// has no fingerprint (v3) or if it matches `current`.
+    pub fn check_fingerprint(
+        &self,
+        current: &pkr_core::abstraction::AbstractionFingerprint,
+    ) -> Result<(), MmapError> {
+        if let Some(stored) = self.fingerprint {
+            if stored != *current {
+                return Err(MmapError::FingerprintMismatch(
+                    stored.describe_mismatch(current),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// F2c: expose the stored fingerprint for diagnostic logging.
+    /// `None` for v2/v3 blueprints.
+    pub fn fingerprint(&self) -> Option<pkr_core::abstraction::AbstractionFingerprint> {
+        self.fingerprint
     }
 
     #[inline]

@@ -542,7 +542,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                     let output_path = cli.output.to_str().expect("invalid output path");
-                    write_blueprint(output_path, trainer.get_table(), &keys);
+                    write_blueprint(output_path, trainer.get_table(), &keys, &fingerprint);
                     eprintln!(
                         "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
                         done,
@@ -777,7 +777,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Exporting {} infosets...", keys.len());
 
         let output_path = cli.output.to_str().expect("invalid output path");
-        write_blueprint(output_path, trainer.get_table(), &keys);
+        write_blueprint(output_path, trainer.get_table(), &keys, &fingerprint);
         eprintln!("Blueprint written to {}", output_path);
     }
 

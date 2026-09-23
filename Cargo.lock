@@ -951,6 +951,7 @@ dependencies = [
  "bytemuck",
  "memmap2",
  "pkr-contracts",
+ "pkr-core",
  "pkr-export",
  "tempfile",
  "thiserror",
