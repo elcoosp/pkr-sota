@@ -83,8 +83,8 @@ fn eval_5(hand: &[u8; 5]) -> u32 {
     }
     let trips = rank_counts.iter().position(|&c| c == 3);
     let pair = rank_counts.iter().position(|&c| c == 2);
-    if trips.is_some() && pair.is_some() {
-        let raw = (6u32 << 20) | ((trips.unwrap() as u32) << 16) | ((pair.unwrap() as u32) << 12);
+    if let (Some(t), Some(p)) = (trips, pair) {
+        let raw = (6u32 << 20) | ((t as u32) << 16) | ((p as u32) << 12);
         return !raw;
     }
     if let Some(fs) = flush_suit {
@@ -147,7 +147,7 @@ fn eval_5(hand: &[u8; 5]) -> u32 {
         let raw = (2u32 << 20) | ((p1 as u32) << 16) | ((p2 as u32) << 12) | ((kicker as u32) << 8);
         return !raw;
     }
-    if let Some(&p) = pairs.get(0) {
+    if let Some(&p) = pairs.first() {
         let mut kickers = [0u8; 3];
         let mut ki = 0;
         for &r in ranks.iter() {
@@ -166,8 +166,7 @@ fn eval_5(hand: &[u8; 5]) -> u32 {
             | ((kickers[2] as u32) << 4);
         return !raw;
     }
-    let raw = (0u32 << 20)
-        | ((ranks[0] as u32) << 16)
+    let raw = ((ranks[0] as u32) << 16)
         | ((ranks[1] as u32) << 12)
         | ((ranks[2] as u32) << 8)
         | ((ranks[3] as u32) << 4)
@@ -184,18 +183,9 @@ impl Evaluator for NlheEvaluator {
 
         // Filter out sentinel values (≥52) AND duplicate cards
         for &c in hole.iter().chain(board) {
-            if c < 52 {
-                let mut is_dup = false;
-                for i in 0..idx {
-                    if cards[i] == c {
-                        is_dup = true;
-                        break;
-                    }
-                }
-                if !is_dup {
-                    cards[idx] = c;
-                    idx += 1;
-                }
+            if c < 52 && !cards[..idx].contains(&c) {
+                cards[idx] = c;
+                idx += 1;
             }
         }
 
@@ -234,8 +224,7 @@ impl Evaluator for NlheEvaluator {
             7 => 21,
             _ => 0,
         };
-        for i in 0..num {
-            let combo = COMBOS_7_5[i];
+        for combo in COMBOS_7_5.iter().take(num) {
             let mut h = [0u8; 5];
             for (j, &ci) in combo.iter().enumerate() {
                 h[j] = cards[ci as usize];

@@ -1,0 +1,14 @@
+[package]
+name = "pkr-fuzz"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pkr-contracts = { workspace = true }
+pkr-core = { workspace = true }
+pkr-eval = { workspace = true }
+pkr-cfr = { workspace = true }
+pkr-abstraction = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+pkr-runtime = { workspace = true }

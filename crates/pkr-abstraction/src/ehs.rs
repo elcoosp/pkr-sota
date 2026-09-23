@@ -1,6 +1,7 @@
 use pkr_contracts::Evaluator;
-use rand::rng;
+use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use std::sync::OnceLock;
 
 fn num_samples() -> usize {
@@ -11,6 +12,18 @@ fn num_samples() -> usize {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1000)
     })
+}
+
+/// FNV-1a hash over (hole, board), producing a deterministic 64-bit
+/// seed for `calculate_ehs`'s Monte-Carlo draws.
+#[inline]
+fn seed_for(hole: &[u8], board: &[u8]) -> u64 {
+    let mut s: u64 = 0xcbf2_9ce4_8422_2325;
+    for &c in hole.iter().chain(board.iter()) {
+        s ^= c as u64;
+        s = s.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    s ^ ((hole.len() as u64) << 32) ^ (board.len() as u64)
 }
 
 /// Calculates Expected Hand Strength (EHS) and EHS².
@@ -32,7 +45,15 @@ pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f
         }
     }
 
-    let mut rng = rng();
+    // Deterministic per-input RNG. Using a fresh SmallRng seeded from
+    // (hole, board) instead of `rand::rng()` does two things:
+    //   1. Kills the per-call ThreadRng access (RefCell + reseed check);
+    //      SmallRng is ~10x faster on short-range draws.
+    //   2. Makes precompute reproducible: same input → same EHS table
+    //      byte-for-byte, so `REBUILD=1` no longer churns the golden
+    //      abstraction. SmallRng quality is more than sufficient for
+    //      Monte-Carlo equity sampling.
+    let mut rng = SmallRng::seed_from_u64(seed_for(hole, board));
     let mut sum_equity: f64 = 0.0;
     let mut sum_sq: f64 = 0.0;
 

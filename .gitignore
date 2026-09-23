@@ -1,17 +1,23 @@
-
 # Generated assets
-# IDE
-# OS files
-# Release build artifacts
 *.bin
-.DS_Store
+.ckpt
+*.ckpt
+
+# IDE
 .idea/
 .vscode/
-blueprint.bin
-centroids.bin
-flop_buckets.bin
-hand_ranks.bin
-preflop_abstraction.bin
+
+# OS files
+.DS_Store
+
+# Release build artifacts
 target
 target/
 wr.sh
+dump.txt
+
+# All generated artifacts live under outputs/
+outputs/
+
+.proftest/
+.smoke/

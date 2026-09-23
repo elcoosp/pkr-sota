@@ -7,8 +7,17 @@ edition.workspace = true
 pkr-contracts = { workspace = true }
 pkr-abstraction = { workspace = true }
 pkr-core = { workspace = true }
+pkr-eval = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
-dashmap = { workspace = true }
 papaya = { workspace = true }
+foldhash = { workspace = true }
+wgpu = { version = "29.0.3", optional = true }
+bytemuck = { workspace = true }
+pollster = "0.3"
+
+[features]
+# GPU path is opt-in. Production uses flush_cpu_batch.
+default = []
+gpu = ["wgpu"]
