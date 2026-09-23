@@ -99,6 +99,17 @@ fn eval_harness_runs_against_real_blueprint() {
         );
     }
     eprintln!("  mean bb/100 = {:+.2}", result.bot_bb_per_100);
+    eprintln!(
+        "  decisions:    {} (blueprint hits: {}, fallback: {}, hit rate: {:.1}%)",
+        result.decisions,
+        result.blueprint_hits,
+        result.fallback_hits,
+        if result.decisions > 0 {
+            100.0 * result.blueprint_hits as f64 / result.decisions as f64
+        } else {
+            0.0
+        }
+    );
 
     // Sanity assertions. We are not asserting profitability — that would
     // require the blueprint to actually be trained. We assert only that

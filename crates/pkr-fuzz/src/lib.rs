@@ -403,7 +403,7 @@ fn decide_from_blueprint(
     ctx: &EvalContext,
     state: &pkr_core::state::GameState,
     rng: &mut impl rand::Rng,
-) -> pkr_core::state::Action {
+) -> (pkr_core::state::Action, bool) {
     use pkr_core::state::{Action, ActionKind};
 
     // Legal concrete actions for the current actor.
@@ -412,7 +412,7 @@ fn decide_from_blueprint(
 
     // Defensive fallback if somehow nothing is legal (should not happen).
     if n_legal == 0 {
-        return Action { player: state.actor, kind: ActionKind::Fold };
+        return (Action { player: state.actor, kind: ActionKind::Fold }, false);
     }
 
     // Compute the infoset hash. NOTE: older blueprints (v8 and earlier)
@@ -431,34 +431,33 @@ fn decide_from_blueprint(
     let advice = match ctx.provider.lookup(hash) {
         Some(a) => a,
         None => {
-            // Fallback: check when free, call if to_call small relative to pot,
-            // fold otherwise. Deliberately conservative.
+            // Fallback: check when free, call if to_call small relative to
+            // pot, fold otherwise. Deliberately conservative.
             let to_call = state.bet_to_call();
             if to_call <= 0.0 {
                 for act in buf.iter().take(n_legal) {
                     if matches!(act.kind, ActionKind::Check) {
-                        return *act;
+                        return (*act, false);
                     }
                 }
-                return buf[0];
+                return (buf[0], false);
             }
             let pot = state.pot.max(1.0);
             let pot_odds = to_call / (pot + to_call);
-            // Cheap hand strength proxy: sum of hole card ranks / 24.
             let strength = (hole[0] as f32 + hole[1] as f32) / 100.0;
             if strength >= pot_odds {
                 for act in buf.iter().take(n_legal) {
                     if matches!(act.kind, ActionKind::Call) {
-                        return *act;
+                        return (*act, false);
                     }
                 }
             }
             for act in buf.iter().take(n_legal) {
                 if matches!(act.kind, ActionKind::Fold) {
-                    return *act;
+                    return (*act, false);
                 }
             }
-            return buf[0];
+            return (buf[0], false);
         }
     };
 
@@ -513,12 +512,12 @@ fn decide_from_blueprint(
         for b in 0..K_BUCKETS {
             if bucket_has_legal[b] {
                 if acc == pick {
-                    return buf[bucket_pick[b]];
+                    return (buf[bucket_pick[b]], true);
                 }
                 acc += 1;
             }
         }
-        return buf[0];
+        return (buf[0], true);
     }
     for b in 0..K_BUCKETS {
         probs[b] /= total;
@@ -533,16 +532,15 @@ fn decide_from_blueprint(
         }
         acc += probs[b];
         if r <= acc {
-            return buf[bucket_pick[b]];
+            return (buf[bucket_pick[b]], true);
         }
     }
-    // Fallback to last legal bucket.
     for b in (0..K_BUCKETS).rev() {
         if bucket_has_legal[b] {
-            return buf[bucket_pick[b]];
+            return (buf[bucket_pick[b]], true);
         }
     }
-    buf[0]
+    (buf[0], true)
 }
 
 pub fn run_eval_harness(
@@ -554,9 +552,16 @@ pub fn run_eval_harness(
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
+    let mut decisions: u64 = 0;
+    let mut blueprint_hits: u64 = 0;
+    let mut fallback_hits: u64 = 0;
+
     let mut results = EvalResult {
         bot_bb_per_100: 0.0,
         opponents: Vec::new(),
+        decisions: 0,
+        blueprint_hits: 0,
+        fallback_hits: 0,
     };
 
     let opponents: Vec<(&str, &dyn ScriptedBot)> =
@@ -599,7 +604,10 @@ pub fn run_eval_harness(
                 steps += 1;
 
                 let action = if state.actor == 0 {
-                    decide_from_blueprint(ctx, &state, &mut rng)
+                    let (act, used_bp) = decide_from_blueprint(ctx, &state, &mut rng);
+                    decisions += 1;
+                    if used_bp { blueprint_hits += 1; } else { fallback_hits += 1; }
+                    act
                 } else {
                     bot.act(&state)
                 };
@@ -650,6 +658,9 @@ pub fn run_eval_harness(
         .map(|o| o.bb_per_100)
         .sum::<f64>()
         / results.opponents.len().max(1) as f64;
+    results.decisions = decisions;
+    results.blueprint_hits = blueprint_hits;
+    results.fallback_hits = fallback_hits;
 
     results
 }
@@ -663,6 +674,13 @@ pub struct FuzzingResult {
 pub struct EvalResult {
     pub bot_bb_per_100: f64,
     pub opponents: Vec<OpponentResult>,
+    /// How many decisions resolved through the blueprint vs the
+    /// conservative fallback. Zero hits means the eval's hashes don't
+    /// match the trainer's, and the printed bb/100 is the fallback's
+    /// score, not the trained strategy's.
+    pub decisions: u64,
+    pub blueprint_hits: u64,
+    pub fallback_hits: u64,
 }
 
 pub struct OpponentResult {
