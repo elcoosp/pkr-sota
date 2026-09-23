@@ -182,6 +182,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let store =
         load_centroids(cli.centroids.to_str().unwrap()).expect("Failed to load default centroids");
+    let k = store.centroids.len();
+    eprintln!("centroids: k={}", k);
+    if k < 100 && std::env::var("PKR_ALLOW_SMALL_K").as_deref() != Ok("1") {
+        return Err(format!(
+            "centroids.bin has k={k} - below the production floor of 100. \
+             This is the smoke-test config that caused the v9-v13 incident. \
+             Regenerate with run.sh (CENTROID_K=200), or set PKR_ALLOW_SMALL_K=1 \
+             to explicitly acknowledge the small-k config."
+        ).into());
+    }
     let mut abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
 
     if let Some(path) = &cli.flop_centroids {

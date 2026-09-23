@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The smoke test intentionally uses k=8 to keep the run fast.
+# The trainer refuses k < 100 unless this is set explicitly.
+export PKR_ALLOW_SMALL_K=1
+
 SMOKE_DIR="${SMOKE_DIR:-./outputs/v0-smoke}"
 [ "${SMOKE_FRESH:-0}" = "1" ] && { echo "wiping $SMOKE_DIR"; rm -rf "$SMOKE_DIR"; }
 mkdir -p "$SMOKE_DIR"
