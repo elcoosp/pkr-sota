@@ -103,6 +103,13 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     eval_every: u32,
 
+    /// Fire one sampled best-response exploitability check immediately
+    /// after loading the checkpoint, before any training. Measures an
+    /// existing checkpoint without needing --eval-every to wait for a
+    /// report boundary.
+    #[arg(long, default_value_t = false)]
+    eval_now: bool,
+
     /// Deals sampled per exploitability check. Accuracy ~ 1/sqrt(deals).
     #[arg(long, default_value_t = 2000)]
     eval_deals: u32,
@@ -266,6 +273,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => None,
     };
+
+    if cli.eval_now {
+        eprintln!(
+            "EVAL-NOW: firing initial exploitability check at iter {}",
+            start_iter
+        );
+        let br = pkr_exploit::best_response::sampled_exploitability(
+            trainer.get_table(),
+            abstraction_for_eval.as_ref(),
+            evaluator_for_eval.as_ref(),
+            cli.eval_deals,
+            start_iter as u64,
+        );
+        eprintln!(
+            "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
+            start_iter, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
+        );
+    }
 
     let start = Instant::now();
     let mut last_ckpt_iter = start_iter;
