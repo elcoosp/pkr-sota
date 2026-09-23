@@ -79,7 +79,7 @@ pub struct GameState {
     pub actor: usize,
     pub dealer: usize,
     pub street_bets: [f32; 2],
-    pub history: [Action; 32], // fixed array for action history
+    pub history: [Action; 48], // fixed array for action history
     pub history_len: u8,
     pub folded: [bool; 2],
     pub actions_this_street: u8,
@@ -91,9 +91,9 @@ pub struct GameState {
     /// to the previous loop (counts every `Bet` action regardless of
     /// whether it moved chips).
     pub total_raises: u8,
-    pub abstract_history: [u8; 32], // abstract action buckets
+    pub abstract_history: [u8; 48], // abstract action buckets
     pub abstract_history_len: u8,
-    pub undo_stack: [UndoRecord; 32],
+    pub undo_stack: [UndoRecord; 48],
     pub undo_len: u8,
 }
 
@@ -113,13 +113,13 @@ impl GameState {
             history: [Action {
                 player: 0,
                 kind: ActionKind::Fold,
-            }; 32],
+            }; 48],
             history_len: 0,
             folded: [false; 2],
             actions_this_street: 0,
             raises_this_street: 0,
             total_raises: 0,
-            abstract_history: [0u8; 32],
+            abstract_history: [0u8; 48],
             abstract_history_len: 0,
             undo_stack: [UndoRecord {
                 actor: 0,
@@ -134,7 +134,7 @@ impl GameState {
                 history_len: 0,
                 board_len: 0,
                 folded: [false; 2],
-            }; 32],
+            }; 48],
             undo_len: 0,
         }
     }
@@ -346,9 +346,16 @@ impl GameState {
     /// Save current state before applying an action.
     fn push_undo(&mut self) {
         if self.undo_len as usize == self.undo_stack.len() {
-            // Should never happen in reasonable play; if it does, we'd panic,
-            // but 32 undo slots is plenty for a hand.
-            return;
+            // C5a: the overflow branch used to silently return, which
+            // popped the wrong record on the next undo and silently
+            // corrupted traversal state. With the array now at 48
+            // slots (worst legal hand ~33 pushes), an overflow means
+            // something is genuinely wrong — panic so we catch it.
+            panic!(
+                "undo stack overflow: {} pushes into {} slots",
+                self.undo_len,
+                self.undo_stack.len()
+            );
         }
         let record = UndoRecord {
             actor: self.actor,
@@ -1236,6 +1243,83 @@ mod c4c_tests {
             assert!(lbf > 0, "lbf bits should be non-zero with INCLUDE_LBF on");
         } else {
             assert_eq!(lbf, 0, "lbf bits must be zero with INCLUDE_LBF off");
+        }
+    }
+}
+
+#[cfg(test)]
+mod c5a_tests {
+    use super::*;
+
+    /// C5a: worst-case hand (three streets of max-raise wars) must
+    /// leave undo_len < 48. This is the "48 slots is enough" claim,
+    /// made executable.
+    #[test]
+    fn worst_case_hand_fits_undo_stack() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.set_hole_cards([0, 1], [2, 3]);
+        // Play a maximum-length sequence: on every street, raise/re-raise
+        // until the street caps out (MAX_RAISES_PER_STREET = 3 per player).
+        // We do it crudely: apply the largest legal bet until the street
+        // completes, then advance.
+        for _street in 0..4 {
+            let mut safety = 0;
+            while !s.is_street_complete() && !s.is_terminal() && safety < 30 {
+                safety += 1;
+                let mut buf: [Action; 8] = [Action {
+                    player: 0,
+                    kind: ActionKind::Fold,
+                }; 8];
+                let n = s.legal_actions_into(&mut buf);
+                if n == 0 {
+                    break;
+                }
+                // Pick the largest non-all-in Bet, else call/check.
+                let mut chosen = buf[0];
+                let mut best_amt = -1.0f32;
+                for a in buf.iter().take(n) {
+                    if let ActionKind::Bet(amt) = a.kind {
+                        if amt > best_amt && amt < 199.0 {
+                            best_amt = amt;
+                            chosen = *a;
+                        }
+                    }
+                }
+                if best_amt < 0.0 {
+                    // No raise available; call/check.
+                    for a in buf.iter().take(n) {
+                        if matches!(a.kind, ActionKind::Call | ActionKind::Check) {
+                            chosen = *a;
+                            break;
+                        }
+                    }
+                }
+                s.apply_action_in_place(&chosen);
+            }
+            if s.is_terminal() {
+                break;
+            }
+            s.advance_street_in_place(&[10, 11, 12]);
+        }
+        assert!(
+            (s.undo_len as usize) < 48,
+            "worst-case hand used {} undo slots; 48 was supposed to suffice",
+            s.undo_len
+        );
+    }
+
+    /// C5a: pushing more than 48 times must panic, not silently drop.
+    #[test]
+    #[should_panic(expected = "undo stack overflow")]
+    fn push_undo_panics_on_overflow() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // Apply many no-op actions (Check) directly via push_undo path
+        // by using advance_street_in_place which also pushes.
+        for _ in 0..50 {
+            s.apply_action_in_place(&Action {
+                player: s.actor,
+                kind: ActionKind::Check,
+            });
         }
     }
 }
