@@ -4,7 +4,7 @@
 //!
 //! Run: cargo run --release -p pkr-testgames --bin kuhn-experiment
 
-#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+#![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 use pkr_cfr::dcfr::{DiscountMode, MomentumMode};
 use pkr_testgames::kuhn::KuhnCfr;
@@ -21,10 +21,26 @@ struct Config {
 
 fn main() {
     let configs = [
-        Config { label: "vanilla",   discount: DiscountMode::None,          momentum: MomentumMode::Off },
-        Config { label: "van-mom",   discount: DiscountMode::None,          momentum: MomentumMode::On  },
-        Config { label: "canon",     discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::Off },
-        Config { label: "canon-mom", discount: DiscountMode::CanonicalDcfr, momentum: MomentumMode::On  },
+        Config {
+            label: "vanilla",
+            discount: DiscountMode::None,
+            momentum: MomentumMode::Off,
+        },
+        Config {
+            label: "van-mom",
+            discount: DiscountMode::None,
+            momentum: MomentumMode::On,
+        },
+        Config {
+            label: "canon",
+            discount: DiscountMode::CanonicalDcfr,
+            momentum: MomentumMode::Off,
+        },
+        Config {
+            label: "canon-mom",
+            discount: DiscountMode::CanonicalDcfr,
+            momentum: MomentumMode::On,
+        },
     ];
 
     println!("=== Kuhn poker: discount x momentum ===");
@@ -102,16 +118,14 @@ fn main() {
             let card_name = ["J", "Q", "K"][card_idx];
             let action_names: [&str; 2] = match (player, dp) {
                 (0, 0) => ["check", "bet"],
-                (0, 1) => ["fold",  "call"],
+                (0, 1) => ["fold", "call"],
                 (1, 0) => ["check", "bet"],
-                (1, 1) => ["fold",  "call"],
+                (1, 1) => ["fold", "call"],
                 _ => ["a0", "a1"],
             };
             println!(
                 "    P{} {} dp={}:  {:>5}={:.4}  {:>5}={:.4}",
-                player, card_name, dp,
-                action_names[0], s[0],
-                action_names[1], s[1],
+                player, card_name, dp, action_names[0], s[0], action_names[1], s[1],
             );
         }
         println!();
@@ -132,13 +146,14 @@ fn main() {
     }
     println!(
         "DISQUALIFIED (NaN in regrets): {}",
-        if disq.is_empty() { "(none)".to_string() } else { disq.join(", ") }
+        if disq.is_empty() {
+            "(none)".to_string()
+        } else {
+            disq.join(", ")
+        }
     );
     match best {
-        Some((name, val)) => println!(
-            "best_mode={} best_exploitability={:.3e}",
-            name, val
-        ),
+        Some((name, val)) => println!("best_mode={} best_exploitability={:.3e}", name, val),
         None => println!("no finite mode."),
     }
 }

@@ -94,7 +94,8 @@ pub fn write_blueprint(path: &str, table: &CompactRegretTable, keys: &[u64]) {
 
     file.write_all(bytemuck::bytes_of(&file_header)).unwrap();
     file.write_all(&(num_keys as u32).to_le_bytes()).unwrap();
-    file.write_all(&((K * num_keys) as u32).to_le_bytes()).unwrap();
+    file.write_all(&((K * num_keys) as u32).to_le_bytes())
+        .unwrap();
     file.write_all(&key_bytes).unwrap();
     file.write_all(&cdf_bytes).unwrap();
 

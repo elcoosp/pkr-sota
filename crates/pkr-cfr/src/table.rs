@@ -849,9 +849,24 @@ mod tests {
         let i2 = table.get_or_create_idx(0xDEAD_0002);
 
         let mut batch = vec![
-            BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 1.5 },
-            BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 0.5 },
-            BatchItem { index: i2 as u32, action: 3, iteration: 1, delta: -0.25 },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 1.5,
+            },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.5,
+            },
+            BatchItem {
+                index: i2 as u32,
+                action: 3,
+                iteration: 1,
+                delta: -0.25,
+            },
         ];
         table.flush_gpu_batch(&batch);
 
@@ -874,11 +889,36 @@ mod tests {
         let i2 = table.get_or_create_idx(0xBEEF_0002);
 
         let mut batch = vec![
-            BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 0.1 },
-            BatchItem { index: i2 as u32, action: 2, iteration: 1, delta: 0.2 },
-            BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 0.3 },
-            BatchItem { index: i1 as u32, action: 0, iteration: 1, delta: 0.4 },
-            BatchItem { index: i2 as u32, action: 2, iteration: 1, delta: 0.5 },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.1,
+            },
+            BatchItem {
+                index: i2 as u32,
+                action: 2,
+                iteration: 1,
+                delta: 0.2,
+            },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.3,
+            },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.4,
+            },
+            BatchItem {
+                index: i2 as u32,
+                action: 2,
+                iteration: 1,
+                delta: 0.5,
+            },
         ];
         let (input, unique) = table.flush_cpu_batch(&mut batch);
         assert_eq!(input, 5);
@@ -903,7 +943,10 @@ mod tests {
 
         // Simulate a depth-12 infoset: reach_prob = 0.3^12 ≈ 5.3e-7.
         let tiny = (0.3f32).powi(12);
-        assert!(tiny < 1.0e-3, "test setup: tiny must be below fixed-point SCALE");
+        assert!(
+            tiny < 1.0e-3,
+            "test setup: tiny must be below fixed-point SCALE"
+        );
 
         let mut ops = vec![];
         for a in 0..K {

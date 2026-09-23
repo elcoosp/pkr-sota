@@ -122,13 +122,19 @@ impl GlobalMetrics {
     ) {
         self.nodes.fetch_add(m.nodes, Ordering::Relaxed);
         self.depth_sum.fetch_add(m.depth_sum, Ordering::Relaxed);
-        self.max_depth.fetch_max(m.max_depth as u64, Ordering::Relaxed);
+        self.max_depth
+            .fetch_max(m.max_depth as u64, Ordering::Relaxed);
         self.cache_hits.fetch_add(m.cache_hits, Ordering::Relaxed);
-        self.cache_misses.fetch_add(m.cache_misses, Ordering::Relaxed);
-        self.infosets_created.fetch_add(m.infosets_created, Ordering::Relaxed);
-        self.strategy_pushed.fetch_add(m.strategy_pushed, Ordering::Relaxed);
-        self.regret_pushed.fetch_add(m.regret_pushed, Ordering::Relaxed);
-        self.strategy_applied.fetch_add(strategy_in, Ordering::Relaxed);
+        self.cache_misses
+            .fetch_add(m.cache_misses, Ordering::Relaxed);
+        self.infosets_created
+            .fetch_add(m.infosets_created, Ordering::Relaxed);
+        self.strategy_pushed
+            .fetch_add(m.strategy_pushed, Ordering::Relaxed);
+        self.regret_pushed
+            .fetch_add(m.regret_pushed, Ordering::Relaxed);
+        self.strategy_applied
+            .fetch_add(strategy_in, Ordering::Relaxed);
         self.regret_input.fetch_add(regret_in, Ordering::Relaxed);
         self.regret_unique.fetch_add(regret_out, Ordering::Relaxed);
         self.batches.fetch_add(1, Ordering::Relaxed);
@@ -198,16 +204,10 @@ impl Snapshot {
             max_depth: self.max_depth,
             cache_hits: self.cache_hits.saturating_sub(prev.cache_hits),
             cache_misses: self.cache_misses.saturating_sub(prev.cache_misses),
-            infosets_created: self
-                .infosets_created
-                .saturating_sub(prev.infosets_created),
-            strategy_pushed: self
-                .strategy_pushed
-                .saturating_sub(prev.strategy_pushed),
+            infosets_created: self.infosets_created.saturating_sub(prev.infosets_created),
+            strategy_pushed: self.strategy_pushed.saturating_sub(prev.strategy_pushed),
             regret_pushed: self.regret_pushed.saturating_sub(prev.regret_pushed),
-            strategy_applied: self
-                .strategy_applied
-                .saturating_sub(prev.strategy_applied),
+            strategy_applied: self.strategy_applied.saturating_sub(prev.strategy_applied),
             regret_input: self.regret_input.saturating_sub(prev.regret_input),
             regret_unique: self.regret_unique.saturating_sub(prev.regret_unique),
             batches: self.batches.saturating_sub(prev.batches),

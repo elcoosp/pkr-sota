@@ -164,11 +164,19 @@ impl KuhnCfr {
                 let infoset = infoset_index(0, cards[0], 0);
                 let s = strat[infoset];
                 let v0 = Self::traverse(
-                    strat, strategy_sum, delta_accum, cards, &[0],
+                    strat,
+                    strategy_sum,
+                    delta_accum,
+                    cards,
+                    &[0],
                     [reach[0] * s[0], reach[1]],
                 );
                 let v1 = Self::traverse(
-                    strat, strategy_sum, delta_accum, cards, &[1],
+                    strat,
+                    strategy_sum,
+                    delta_accum,
+                    cards,
+                    &[1],
                     [reach[0] * s[1], reach[1]],
                 );
                 let v = s[0] * v0 + s[1] * v1;
@@ -185,11 +193,19 @@ impl KuhnCfr {
                 let infoset = infoset_index(1, cards[1], dp);
                 let s = strat[infoset];
                 let v0 = Self::traverse(
-                    strat, strategy_sum, delta_accum, cards, &[history[0], 0],
+                    strat,
+                    strategy_sum,
+                    delta_accum,
+                    cards,
+                    &[history[0], 0],
                     [reach[0], reach[1] * s[0]],
                 );
                 let v1 = Self::traverse(
-                    strat, strategy_sum, delta_accum, cards, &[history[0], 1],
+                    strat,
+                    strategy_sum,
+                    delta_accum,
+                    cards,
+                    &[history[0], 1],
                     [reach[0], reach[1] * s[1]],
                 );
                 let v = s[0] * v0 + s[1] * v1;
@@ -376,113 +392,132 @@ impl KuhnCfr {
     }
 
     /// Tree walk with pluggable strategy sources. `s0` is looked up at
-/// P0's decision nodes, `s1` at P1's. Both return [prob_action0, prob_action1].
-/// Returns the value to P0 at `history`.
-fn walk_with_strats(
-    &self,
-    c0: u8,
-    c1: u8,
-    s0: &dyn Fn(usize) -> [f32; 2],
-    s1: &dyn Fn(usize) -> [f32; 2],
-    history: &[u8],
-) -> f32 {
-    match history.len() {
-        0 => {
-            let infoset = infoset_index(0, c0, 0);
-            let p = s0(infoset);
-            let v0 = self.walk_with_strats(c0, c1, s0, s1, &[0]);
-            let v1 = self.walk_with_strats(c0, c1, s0, s1, &[1]);
-            p[0] * v0 + p[1] * v1
-        }
-        1 => {
-            let dp = if history[0] == 0 { 0 } else { 1 };
-            let infoset = infoset_index(1, c1, dp);
-            let p = s1(infoset);
-            let v0 = self.walk_with_strats(c0, c1, s0, s1, &[history[0], 0]);
-            let v1 = self.walk_with_strats(c0, c1, s0, s1, &[history[0], 1]);
-            p[0] * v0 + p[1] * v1
-        }
-        2 => match (history[0], history[1]) {
-            (0, 0) => if c0 > c1 { 1.0 } else { -1.0 },
-            (0, 1) => {
-                let infoset = infoset_index(0, c0, 1);
+    /// P0's decision nodes, `s1` at P1's. Both return [prob_action0, prob_action1].
+    /// Returns the value to P0 at `history`.
+    fn walk_with_strats(
+        &self,
+        c0: u8,
+        c1: u8,
+        s0: &dyn Fn(usize) -> [f32; 2],
+        s1: &dyn Fn(usize) -> [f32; 2],
+        history: &[u8],
+    ) -> f32 {
+        match history.len() {
+            0 => {
+                let infoset = infoset_index(0, c0, 0);
                 let p = s0(infoset);
-                let v_fold: f32 = -1.0;
-                let v_call: f32 = if c0 > c1 { 2.0 } else { -2.0 };
-                p[0] * v_fold + p[1] * v_call
+                let v0 = self.walk_with_strats(c0, c1, s0, s1, &[0]);
+                let v1 = self.walk_with_strats(c0, c1, s0, s1, &[1]);
+                p[0] * v0 + p[1] * v1
             }
-            (1, 0) => 1.0,
-            (1, 1) => if c0 > c1 { 2.0 } else { -2.0 },
+            1 => {
+                let dp = if history[0] == 0 { 0 } else { 1 };
+                let infoset = infoset_index(1, c1, dp);
+                let p = s1(infoset);
+                let v0 = self.walk_with_strats(c0, c1, s0, s1, &[history[0], 0]);
+                let v1 = self.walk_with_strats(c0, c1, s0, s1, &[history[0], 1]);
+                p[0] * v0 + p[1] * v1
+            }
+            2 => match (history[0], history[1]) {
+                (0, 0) => {
+                    if c0 > c1 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
+                (0, 1) => {
+                    let infoset = infoset_index(0, c0, 1);
+                    let p = s0(infoset);
+                    let v_fold: f32 = -1.0;
+                    let v_call: f32 = if c0 > c1 { 2.0 } else { -2.0 };
+                    p[0] * v_fold + p[1] * v_call
+                }
+                (1, 0) => 1.0,
+                (1, 1) => {
+                    if c0 > c1 {
+                        2.0
+                    } else {
+                        -2.0
+                    }
+                }
+                _ => unreachable!(),
+            },
             _ => unreachable!(),
-        },
-        _ => unreachable!(),
+        }
     }
-}
 
-/// Value to P0 under the given per-seat strategies, averaged over the
-/// 6 equiprobable deals.
-fn value_over_deals(
-    &self,
-    s0: &dyn Fn(usize) -> [f32; 2],
-    s1: &dyn Fn(usize) -> [f32; 2],
-) -> f32 {
-    let mut total = 0.0f32;
-    for c0 in 0..3u8 {
-        for c1 in 0..3u8 {
-            if c0 == c1 {
-                continue;
+    /// Value to P0 under the given per-seat strategies, averaged over the
+    /// 6 equiprobable deals.
+    fn value_over_deals(
+        &self,
+        s0: &dyn Fn(usize) -> [f32; 2],
+        s1: &dyn Fn(usize) -> [f32; 2],
+    ) -> f32 {
+        let mut total = 0.0f32;
+        for c0 in 0..3u8 {
+            for c1 in 0..3u8 {
+                if c0 == c1 {
+                    continue;
+                }
+                total += self.walk_with_strats(c0, c1, s0, s1, &[]) / 6.0;
             }
-            total += self.walk_with_strats(c0, c1, s0, s1, &[]) / 6.0;
         }
+        total
     }
-    total
-}
 
-/// Value to P0 when P0 best-responds against the average strategy of P1.
-/// Enumerates all 2^6 = 64 pure strategies of P0; per-infoset choice is
-/// thus consistent across all histories in the infoset (the crucial
-/// property the previous per-card-pair version lacked).
-pub fn br_value_p0(&self) -> f32 {
-    let avg_s1 = |infoset: usize| self.average_strategy_at(infoset);
-    let mut best = f32::NEG_INFINITY;
-    for mask in 0u8..64 {
-        let s0_pure = move |infoset: usize| -> [f32; 2] {
-            let bit = (infoset % 6) as u8;
-            if (mask >> bit) & 1 == 0 { [1.0, 0.0] } else { [0.0, 1.0] }
-        };
-        let v = self.value_over_deals(&s0_pure, &avg_s1);
-        if v > best {
-            best = v;
+    /// Value to P0 when P0 best-responds against the average strategy of P1.
+    /// Enumerates all 2^6 = 64 pure strategies of P0; per-infoset choice is
+    /// thus consistent across all histories in the infoset (the crucial
+    /// property the previous per-card-pair version lacked).
+    pub fn br_value_p0(&self) -> f32 {
+        let avg_s1 = |infoset: usize| self.average_strategy_at(infoset);
+        let mut best = f32::NEG_INFINITY;
+        for mask in 0u8..64 {
+            let s0_pure = move |infoset: usize| -> [f32; 2] {
+                let bit = (infoset % 6) as u8;
+                if (mask >> bit) & 1 == 0 {
+                    [1.0, 0.0]
+                } else {
+                    [0.0, 1.0]
+                }
+            };
+            let v = self.value_over_deals(&s0_pure, &avg_s1);
+            if v > best {
+                best = v;
+            }
         }
+        best
     }
-    best
-}
 
-/// Value to P0 when P1 best-responds against the average strategy of P0.
-/// P1 minimizes; the value reported is still to P0.
-pub fn br_value_p0_given_br1(&self) -> f32 {
-    let avg_s0 = |infoset: usize| self.average_strategy_at(infoset);
-    let mut best = f32::INFINITY;
-    for mask in 0u8..64 {
-        let s1_pure = move |infoset: usize| -> [f32; 2] {
-            let bit = (infoset % 6) as u8;
-            if (mask >> bit) & 1 == 0 { [1.0, 0.0] } else { [0.0, 1.0] }
-        };
-        let v = self.value_over_deals(&avg_s0, &s1_pure);
-        if v < best {
-            best = v;
+    /// Value to P0 when P1 best-responds against the average strategy of P0.
+    /// P1 minimizes; the value reported is still to P0.
+    pub fn br_value_p0_given_br1(&self) -> f32 {
+        let avg_s0 = |infoset: usize| self.average_strategy_at(infoset);
+        let mut best = f32::INFINITY;
+        for mask in 0u8..64 {
+            let s1_pure = move |infoset: usize| -> [f32; 2] {
+                let bit = (infoset % 6) as u8;
+                if (mask >> bit) & 1 == 0 {
+                    [1.0, 0.0]
+                } else {
+                    [0.0, 1.0]
+                }
+            };
+            let v = self.value_over_deals(&avg_s0, &s1_pure);
+            if v < best {
+                best = v;
+            }
         }
+        best
     }
-    best
-}
 
-pub fn exploitability(&self) -> f32 {
+    pub fn exploitability(&self) -> f32 {
         let br0 = self.br_value_p0();
         let br1_p0 = self.br_value_p0_given_br1();
         (br0 - br1_p0) / 2.0
     }
 }
-
 
 #[cfg(test)]
 mod t03_tests {
@@ -494,7 +529,10 @@ mod t03_tests {
     fn uniform_strategy_is_exploitable() {
         let k = KuhnCfr::new(pkr_cfr::dcfr::DiscountMode::None);
         let e = k.exploitability();
-        assert!(e > 0.05, "uniform exploitability should be positive, got {e}");
+        assert!(
+            e > 0.05,
+            "uniform exploitability should be positive, got {e}"
+        );
         assert!(e < 0.5, "uniform exploitability should be bounded, got {e}");
     }
 

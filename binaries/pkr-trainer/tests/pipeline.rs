@@ -65,10 +65,7 @@ fn full_pipeline_trains_exports_loads_queries() {
             .unwrap_or_else(|| panic!("expected hit for key {k:#x}"));
         let probs = &advice.cdf_probabilities[..advice.len as usize];
         for j in 1..probs.len() {
-            assert!(
-                probs[j] >= probs[j - 1],
-                "CDF must be monotonic: {probs:?}"
-            );
+            assert!(probs[j] >= probs[j - 1], "CDF must be monotonic: {probs:?}");
         }
         assert_eq!(*probs.last().unwrap(), 255, "CDF must end at 255");
     }
@@ -115,9 +112,7 @@ fn load_external_blueprint() {
     let num = header.infoset_count as usize;
     let mut hits = 0usize;
     for i in 0..num.min(64) {
-        let key = u64::from_le_bytes(
-            handle_slice_key(&handle, i),
-        );
+        let key = u64::from_le_bytes(handle_slice_key(&handle, i));
         if let Some(a) = handle.get_advice_fast(key) {
             hits += 1;
             let probs = &a.cdf_probabilities[..a.len as usize];
@@ -158,14 +153,22 @@ fn checkpoint_roundtrip_preserves_table() {
     let pre_len = trainer.get_table().len();
     let pre_iter = trainer.iteration();
 
-    trainer.save_checkpoint(tmp.path().to_str().unwrap()).unwrap();
+    trainer
+        .save_checkpoint(tmp.path().to_str().unwrap())
+        .unwrap();
 
     let abstraction2: Arc<dyn AbstractionBuilder> = Arc::new(MockAbstraction);
     let evaluator2: Arc<dyn Evaluator> = Arc::new(MockEvaluator);
     let trainer2 = Trainer::with_capacity(abstraction2, evaluator2, 4096);
-    trainer2.load_checkpoint(tmp.path().to_str().unwrap()).unwrap();
+    trainer2
+        .load_checkpoint(tmp.path().to_str().unwrap())
+        .unwrap();
 
-    assert_eq!(trainer2.get_table().len(), pre_len, "infoset count mismatch");
+    assert_eq!(
+        trainer2.get_table().len(),
+        pre_len,
+        "infoset count mismatch"
+    );
     assert_eq!(trainer2.iteration(), pre_iter, "iteration mismatch");
 
     let mut a = pre_keys;

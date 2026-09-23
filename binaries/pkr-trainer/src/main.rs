@@ -1,4 +1,4 @@
-#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+#![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 use clap::Parser;
 use pkr_abstraction::{load_centroids, KMeansAbstraction};
@@ -86,6 +86,12 @@ struct Cli {
     /// Deals sampled per exploitability check. Accuracy ~ 1/sqrt(deals).
     #[arg(long, default_value_t = 2000)]
     eval_deals: u32,
+
+    /// Skip exporting infosets whose reach-weighted strategy mass is below
+    /// this many visits. 0 = export everything. Reduces blueprint size
+    /// and removes uniform-fallback infosets from the shipped file.
+    #[arg(long, default_value_t = 0.0)]
+    min_visits: f32,
 }
 
 fn main() {
@@ -132,33 +138,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let evaluator =
         Arc::new(TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin"));
 
-    let store = load_centroids(cli.centroids.to_str().unwrap())
-        .expect("Failed to load default centroids");
+    let store =
+        load_centroids(cli.centroids.to_str().unwrap()).expect("Failed to load default centroids");
     let mut abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
 
     if let Some(path) = &cli.flop_centroids {
-        abstraction.load_street_centroids(1, path.to_str().unwrap()).expect("flop centroids");
+        abstraction
+            .load_street_centroids(1, path.to_str().unwrap())
+            .expect("flop centroids");
     }
     if let Some(path) = &cli.turn_centroids {
-        abstraction.load_street_centroids(2, path.to_str().unwrap()).expect("turn centroids");
+        abstraction
+            .load_street_centroids(2, path.to_str().unwrap())
+            .expect("turn centroids");
     }
     if let Some(path) = &cli.river_centroids {
-        abstraction.load_street_centroids(3, path.to_str().unwrap()).expect("river centroids");
+        abstraction
+            .load_street_centroids(3, path.to_str().unwrap())
+            .expect("river centroids");
     }
     if let Some(path) = &cli.preflop_table {
-        abstraction.init_table(0, path.to_str().unwrap()).expect("preflop table");
+        abstraction
+            .init_table(0, path.to_str().unwrap())
+            .expect("preflop table");
     }
     if let Some(path) = &cli.flop_table {
-        abstraction.init_table(1, path.to_str().unwrap()).expect("flop table");
+        abstraction
+            .init_table(1, path.to_str().unwrap())
+            .expect("flop table");
     }
     if let Some(path) = &cli.turn_table {
-        abstraction.init_table(2, path.to_str().unwrap()).expect("turn table");
+        abstraction
+            .init_table(2, path.to_str().unwrap())
+            .expect("turn table");
     }
     if let Some(path) = &cli.flop_buckets {
-        abstraction.load_flop_buckets(path.to_str().unwrap()).expect("flop buckets");
+        abstraction
+            .load_flop_buckets(path.to_str().unwrap())
+            .expect("flop buckets");
     }
     if let Some(path) = &cli.river_table {
-        abstraction.init_table(3, path.to_str().unwrap()).expect("river table");
+        abstraction
+            .init_table(3, path.to_str().unwrap())
+            .expect("river table");
     }
 
     let abstraction = Arc::new(abstraction);
@@ -228,10 +250,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Larger batches amortize the serial merge + flush further. Measured
-// at 256 vs 512 in the earlier bench: same throughput per wall-second,
-// but 512 reduces per-dispatch overhead on the merge side. DCFR
-// tolerates the staleness (Brown & Sandholm).
-const ITERS_PER_SYNC: u32 = 512;
+    // at 256 vs 512 in the earlier bench: same throughput per wall-second,
+    // but 512 reduces per-dispatch overhead on the merge side. DCFR
+    // tolerates the staleness (Brown & Sandholm).
+    const ITERS_PER_SYNC: u32 = 512;
 
     let mut done = start_iter;
     let mut prev_metrics_snapshot = pkr_cfr::metrics::global().snapshot();
@@ -486,6 +508,31 @@ const ITERS_PER_SYNC: u32 = 512;
 
     let mut keys = trainer.get_table().get_keys();
     keys.sort_unstable();
+
+    // T2.4: filter infosets whose accumulated reach-weighted strategy
+    // mass is below min_visits. These are the ones that would export as
+    // uniform fallback (never reached with meaningful probability) and
+    // contribute nothing but size to the blueprint. The runtime's
+    // host-app fallback handles them at inference time.
+    if cli.min_visits > 0.0 {
+        let before = keys.len();
+        keys.retain(
+            |k| match trainer.get_table().get_average_strategy_slice(*k) {
+                Some(strat) => {
+                    let mass: f32 = strat.iter().sum();
+                    mass >= cli.min_visits
+                }
+                None => false,
+            },
+        );
+        eprintln!(
+            "min-visits filter ({:.1}): {} -> {} infosets",
+            cli.min_visits,
+            before,
+            keys.len()
+        );
+    }
+
     eprintln!("Exporting {} infosets...", keys.len());
 
     let output_path = cli.output.to_str().expect("invalid output path");

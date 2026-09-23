@@ -21,18 +21,22 @@ impl SolverHandle {
         let mut hi = num_keys;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            let k = u64::from_le_bytes(keys[mid*8..mid*8+8].try_into().unwrap());
+            let k = u64::from_le_bytes(keys[mid * 8..mid * 8 + 8].try_into().unwrap());
             if k < infoset_hash {
                 lo = mid + 1;
             } else if k > infoset_hash {
                 hi = mid;
             } else {
                 let max_actions = self.mmap.file_header().max_actions_k as usize;
-                if max_actions > 16 { return None; }
+                if max_actions > 16 {
+                    return None;
+                }
                 let cdf_start = mid * max_actions;
                 let cdf_end = cdf_start + max_actions;
                 let cdf = self.mmap.cdf_data();
-                if cdf_end > cdf.len() { return None; }
+                if cdf_end > cdf.len() {
+                    return None;
+                }
                 let mut prob = [0u8; 16];
                 prob[..max_actions].copy_from_slice(&cdf[cdf_start..cdf_end]);
                 return Some(SotaAdvice {

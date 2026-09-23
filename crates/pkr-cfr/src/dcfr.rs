@@ -156,8 +156,14 @@ mod tests {
     fn standard_dcfr_no_momentum() {
         // t=2 < TAU=1000, so discount factor = 1.0 (no discount).
         // regret = max(0, 1.0 * 10.0 + 5.0) = 15.0.
-        let (r, _m) =
-            update_regret_full(10.0, 0.0, 2, 5.0, DiscountMode::CanonicalDcfr, MomentumMode::Off);
+        let (r, _m) = update_regret_full(
+            10.0,
+            0.0,
+            2,
+            5.0,
+            DiscountMode::CanonicalDcfr,
+            MomentumMode::Off,
+        );
         assert_eq!(r, 15.0);
     }
 
@@ -207,7 +213,10 @@ mod tests {
             f < 1.0,
             "transitional range must be strictly < 1.0, got {f}"
         );
-        assert!(f > 0.99, "transitional range should be close to 1.0, got {f}");
+        assert!(
+            f > 0.99,
+            "transitional range should be close to 1.0, got {f}"
+        );
     }
 
     #[test]

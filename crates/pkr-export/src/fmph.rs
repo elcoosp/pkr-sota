@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use crate::header::FmphHeader;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 pub struct FmphData {

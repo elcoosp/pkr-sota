@@ -1,7 +1,8 @@
-
 /// Binomial coefficient C(n,k), safe for 0≤k≤7. Uses u64 for intermediates.
 pub fn choose(n: u32, k: u32) -> u32 {
-    if k > n { return 0; }
+    if k > n {
+        return 0;
+    }
     let n = n as u64;
     let result: u64 = match k {
         0 => 1,

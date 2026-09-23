@@ -3,8 +3,8 @@ use crate::metrics::LocalMetrics;
 use crate::table::{CompactRegretTable, StrategyOp};
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, ActionKind, GameState, Street};
-use rand::RngExt;
 use rand::Rng;
+use rand::RngExt;
 
 const K: usize = 6;
 const MAX_DEPTH: u32 = 50;
@@ -86,7 +86,10 @@ pub fn traverse(
     }
 
     let acting_player = current.actor;
-    let mut action_buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+    let mut action_buf: [Action; 8] = [Action {
+        player: 0,
+        kind: ActionKind::Fold,
+    }; 8];
     let num_actions_n = current.legal_actions_into(&mut action_buf);
     if num_actions_n == 0 {
         undo_advance_and_return!(0.0);
@@ -113,8 +116,7 @@ pub fn traverse(
     let hole = &current.hole[acting_player];
     let board = &current.board;
     let street_code = current.street as u8;
-    let infoset_hash =
-        abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
+    let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
 
     let mut strategy = [0.0f32; K];
     let traverser_idx = if acting_player == traverser {
@@ -149,10 +151,11 @@ pub fn traverse(
         }
     }
 
-
     if let Some(idx) = traverser_idx {
         for a in 0..K {
-            if strategy[a] <= 0.0 { continue; }
+            if strategy[a] <= 0.0 {
+                continue;
+            }
             strategy_batch.push(StrategyOp {
                 index: idx as u32,
                 action: a as u8,
@@ -212,7 +215,9 @@ pub fn traverse(
             .sum();
 
         for a in 0..K {
-            if action_counts[a] == 0 { continue; }
+            if action_counts[a] == 0 {
+                continue;
+            }
             let delta = v[a] - v_sigma;
             batch.push(BatchItem {
                 index: idx as u32,

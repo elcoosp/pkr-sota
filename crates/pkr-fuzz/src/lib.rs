@@ -4,7 +4,6 @@
 //! Covers: min-raise legality, all-in-below-min-raise, uncalled-bet return,
 //! split pots, exact stack arithmetic. (Roadmap §4)
 
-
 #![allow(clippy::assign_op_pattern)]
 #![allow(clippy::map_clone)]
 #![allow(clippy::clone_on_copy)]
@@ -377,8 +376,11 @@ pub fn run_eval_harness(
         opponents: Vec::new(),
     };
 
-    let opponents: Vec<(&str, &dyn ScriptedBot)> =
-        vec![("station", &StationBot), ("nit", &NitBot), ("aggresive", &AggroBot)];
+    let opponents: Vec<(&str, &dyn ScriptedBot)> = vec![
+        ("station", &StationBot),
+        ("nit", &NitBot),
+        ("aggresive", &AggroBot),
+    ];
 
     let mut rng = rand::rng();
     let evaluator = NlheEvaluator;
@@ -472,8 +474,7 @@ pub fn run_eval_harness(
         .iter()
         .map(|o| (o.bb_per_100 * 10.0) as f32)
         .sum();
-    let bb_per_100: f32 =
-        total_profit / (num_hands as f32 * opponents.len() as f32 / 100.0) / 2.0;
+    let bb_per_100: f32 = total_profit / (num_hands as f32 * opponents.len() as f32 / 100.0) / 2.0;
     results.bot_bb_per_100 = bb_per_100 as f64;
 
     results

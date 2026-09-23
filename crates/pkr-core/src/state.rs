@@ -34,8 +34,8 @@ pub struct UndoRecord {
     total_invested: [f32; 2],
     actions_this_street: u8,
     raises_this_street: u8,
-    history_len: usize,        // length of abstract_history before action
-    board_len: usize,          // length of board before action
+    history_len: usize, // length of abstract_history before action
+    board_len: usize,   // length of board before action
     folded: [bool; 2],
 }
 
@@ -43,7 +43,7 @@ pub struct UndoRecord {
 #[derive(Debug, Clone)]
 pub struct GameState {
     pub hole: [[u8; 2]; 2],
-    pub board: [u8; 5],        // fixed 5 cards, board_len indicates how many are valid
+    pub board: [u8; 5], // fixed 5 cards, board_len indicates how many are valid
     pub board_len: u8,
     pub pot: f32,
     pub stacks: [f32; 2],
@@ -52,7 +52,7 @@ pub struct GameState {
     pub actor: usize,
     pub dealer: usize,
     pub street_bets: [f32; 2],
-    pub history: [Action; 32],     // fixed array for action history
+    pub history: [Action; 32], // fixed array for action history
     pub history_len: u8,
     pub folded: [bool; 2],
     pub actions_this_street: u8,
@@ -65,7 +65,6 @@ pub struct GameState {
 
 impl GameState {
     pub fn new(start_stack: f32, sb: f32, bb: f32) -> Self {
-        
         Self {
             hole: [[0; 2]; 2],
             board: [0u8; 5],
@@ -77,7 +76,10 @@ impl GameState {
             actor: 0,
             dealer: 0,
             street_bets: [sb, bb],
-            history: [Action { player: 0, kind: ActionKind::Fold }; 32],
+            history: [Action {
+                player: 0,
+                kind: ActionKind::Fold,
+            }; 32],
             history_len: 0,
             folded: [false; 2],
             actions_this_street: 0,
@@ -85,11 +87,17 @@ impl GameState {
             abstract_history: [0u8; 32],
             abstract_history_len: 0,
             undo_stack: [UndoRecord {
-                actor: 0, street: Street::Preflop, pot: 0.0,
-                stacks: [0.0; 2], street_bets: [0.0; 2],
+                actor: 0,
+                street: Street::Preflop,
+                pot: 0.0,
+                stacks: [0.0; 2],
+                street_bets: [0.0; 2],
                 total_invested: [0.0; 2],
-                actions_this_street: 0, raises_this_street: 0, history_len: 0,
-                board_len: 0, folded: [false; 2],
+                actions_this_street: 0,
+                raises_this_street: 0,
+                history_len: 0,
+                board_len: 0,
+                folded: [false; 2],
             }; 32],
             undo_len: 0,
         }
@@ -112,29 +120,50 @@ impl GameState {
         let mut actions = Vec::new();
         let to_call = self.bet_to_call();
         if to_call == 0.0 {
-            actions.push(Action { player: self.actor, kind: ActionKind::Check });
+            actions.push(Action {
+                player: self.actor,
+                kind: ActionKind::Check,
+            });
             let pot = self.pot;
             for &frac in &[0.5, 1.0, 2.0] {
                 let bet = pot * frac;
                 if bet <= self.stacks[self.actor] {
-                    actions.push(Action { player: self.actor, kind: ActionKind::Bet(bet) });
+                    actions.push(Action {
+                        player: self.actor,
+                        kind: ActionKind::Bet(bet),
+                    });
                 }
             }
             if self.stacks[self.actor] > 0.0 {
-                actions.push(Action { player: self.actor, kind: ActionKind::Bet(self.stacks[self.actor]) });
+                actions.push(Action {
+                    player: self.actor,
+                    kind: ActionKind::Bet(self.stacks[self.actor]),
+                });
             }
         } else {
-            actions.push(Action { player: self.actor, kind: ActionKind::Fold });
-            actions.push(Action { player: self.actor, kind: ActionKind::Call });
+            actions.push(Action {
+                player: self.actor,
+                kind: ActionKind::Fold,
+            });
+            actions.push(Action {
+                player: self.actor,
+                kind: ActionKind::Call,
+            });
             let pot = self.pot;
             for &frac in &[0.5, 1.0, 2.0] {
                 let raise = to_call + pot * frac;
                 if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
-                    actions.push(Action { player: self.actor, kind: ActionKind::Bet(raise) });
+                    actions.push(Action {
+                        player: self.actor,
+                        kind: ActionKind::Bet(raise),
+                    });
                 }
             }
             if self.stacks[self.actor] > 0.0 {
-                actions.push(Action { player: self.actor, kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]) });
+                actions.push(Action {
+                    player: self.actor,
+                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
+                });
             }
         }
         actions
@@ -160,15 +189,23 @@ impl GameState {
         let mut n = 0usize;
         let to_call = self.bet_to_call();
         if to_call == 0.0 {
-            out[n] = Action { player: self.actor, kind: ActionKind::Check };
+            out[n] = Action {
+                player: self.actor,
+                kind: ActionKind::Check,
+            };
             n += 1;
             if can_raise {
                 let pot = self.pot;
                 for &frac in &[0.5, 1.0, 2.0] {
-                    if n >= 8 { break; }
+                    if n >= 8 {
+                        break;
+                    }
                     let bet = pot * frac;
                     if bet <= self.stacks[self.actor] {
-                        out[n] = Action { player: self.actor, kind: ActionKind::Bet(bet) };
+                        out[n] = Action {
+                            player: self.actor,
+                            kind: ActionKind::Bet(bet),
+                        };
                         n += 1;
                     }
                 }
@@ -181,24 +218,37 @@ impl GameState {
                 }
             }
         } else {
-            out[n] = Action { player: self.actor, kind: ActionKind::Fold };
+            out[n] = Action {
+                player: self.actor,
+                kind: ActionKind::Fold,
+            };
             n += 1;
-            out[n] = Action { player: self.actor, kind: ActionKind::Call };
+            out[n] = Action {
+                player: self.actor,
+                kind: ActionKind::Call,
+            };
             n += 1;
             if can_raise {
                 let pot = self.pot;
                 for &frac in &[0.5, 1.0, 2.0] {
-                    if n >= 8 { break; }
+                    if n >= 8 {
+                        break;
+                    }
                     let raise = to_call + pot * frac;
                     if raise <= self.stacks[self.actor] + self.street_bets[self.actor] {
-                        out[n] = Action { player: self.actor, kind: ActionKind::Bet(raise) };
+                        out[n] = Action {
+                            player: self.actor,
+                            kind: ActionKind::Bet(raise),
+                        };
                         n += 1;
                     }
                 }
                 if n < 8 && self.stacks[self.actor] > 0.0 {
                     out[n] = Action {
                         player: self.actor,
-                        kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
+                        kind: ActionKind::Bet(
+                            self.stacks[self.actor] + self.street_bets[self.actor],
+                        ),
                     };
                     n += 1;
                 }
@@ -354,8 +404,10 @@ impl GameState {
         if self.folded[other] {
             return self.pot - self.total_invested[player];
         }
-        let hero_rank = evaluator.evaluate_hand(&self.hole[0], &self.board[..self.board_len as usize]);
-        let vill_rank = evaluator.evaluate_hand(&self.hole[1], &self.board[..self.board_len as usize]);
+        let hero_rank =
+            evaluator.evaluate_hand(&self.hole[0], &self.board[..self.board_len as usize]);
+        let vill_rank =
+            evaluator.evaluate_hand(&self.hole[1], &self.board[..self.board_len as usize]);
         let win = hero_rank < vill_rank;
         let tie = hero_rank == vill_rank;
         if tie {

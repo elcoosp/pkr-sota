@@ -231,16 +231,25 @@ impl RiverResolver {
             }
             ActionKind::Bet(_) => {
                 // For all-in bets on river, treat similar to call
-                self.action_ev(&Action { player: action.player, kind: ActionKind::Call }, hero_wins, is_tie)
+                self.action_ev(
+                    &Action {
+                        player: action.player,
+                        kind: ActionKind::Call,
+                    },
+                    hero_wins,
+                    is_tie,
+                )
             }
             _ => 0.0,
         }
     }
 
     fn strategy_value(&self, strategy: &[f32], hero_wins: bool, is_tie: bool) -> f32 {
-        strategy.iter().enumerate().map(|(a, &p)| {
-            p * self.action_ev(&self.abstract_to_action(a), hero_wins, is_tie)
-        }).sum()
+        strategy
+            .iter()
+            .enumerate()
+            .map(|(a, &p)| p * self.action_ev(&self.abstract_to_action(a), hero_wins, is_tie))
+            .sum()
     }
 }
 
@@ -252,9 +261,7 @@ fn regrets_copy() -> Vec<f32> {
 /// This means: we're on the river, the hand is not yet terminal,
 /// and we're at the first to act on the river (0 or 1 actions this street).
 pub fn is_river_resolvable(state: &GameState) -> bool {
-    state.street == Street::River
-        && !state.is_terminal()
-        && state.actions_this_street < 2
+    state.street == Street::River && !state.is_terminal() && state.actions_this_street < 2
 }
 
 #[cfg(test)]
@@ -271,7 +278,9 @@ mod tests {
 
     #[test]
     fn test_river_range_enumerate_combos() {
-        let range = RiverRange { mask: 0xFFFFFFFFFFFF }; // 48 cards available
+        let range = RiverRange {
+            mask: 0xFFFFFFFFFFFF,
+        }; // 48 cards available
         let combos = range.enumerate_combos(100);
         assert!(combos.len() <= 100);
         assert!(!combos.is_empty());
@@ -327,8 +336,14 @@ mod tests {
     fn test_abstract_to_action_indices() {
         let state = GameState::new(100.0, 1.0, 2.0);
         let resolver = RiverResolver::new(&state, [0, 1], [2, 3], &[]);
-        assert!(matches!(resolver.abstract_to_action(0).kind, ActionKind::Fold));
-        assert!(matches!(resolver.abstract_to_action(1).kind, ActionKind::Call));
+        assert!(matches!(
+            resolver.abstract_to_action(0).kind,
+            ActionKind::Fold
+        ));
+        assert!(matches!(
+            resolver.abstract_to_action(1).kind,
+            ActionKind::Call
+        ));
         // Action 5 should be all-in
         let a5 = resolver.abstract_to_action(5);
         assert!(matches!(a5.kind, ActionKind::Bet(_)));

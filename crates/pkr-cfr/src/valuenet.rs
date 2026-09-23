@@ -46,15 +46,21 @@ impl ValueNet {
         }
 
         // Layer 1: input(4) -> hidden1(128)
-        let w1 = init(rng, HIDDEN1 * INPUT_DIM, (6.0 / (INPUT_DIM + HIDDEN1) as f32).sqrt());
+        let w1 = init(
+            rng,
+            HIDDEN1 * INPUT_DIM,
+            (6.0 / (INPUT_DIM + HIDDEN1) as f32).sqrt(),
+        );
         let b1 = vec![0.0f32; HIDDEN1];
 
         // Layer 2: hidden1(128) -> hidden2(64)
         let w2: Vec<f32> = (0..HIDDEN2 * HIDDEN1)
-            .map(|_| rng.random_range(
-                -(6.0 / (HIDDEN1 + HIDDEN2) as f32).sqrt()
-                    ..(6.0 / (HIDDEN1 + HIDDEN2) as f32).sqrt(),
-            ))
+            .map(|_| {
+                rng.random_range(
+                    -(6.0 / (HIDDEN1 + HIDDEN2) as f32).sqrt()
+                        ..(6.0 / (HIDDEN1 + HIDDEN2) as f32).sqrt(),
+                )
+            })
             .collect();
         let b2 = vec![0.0f32; HIDDEN2];
 
@@ -65,7 +71,14 @@ impl ValueNet {
             .collect();
         let b3 = 0.0f32;
 
-        ValueNet { w1, b1, w2, b2, w3, b3 }
+        ValueNet {
+            w1,
+            b1,
+            w2,
+            b2,
+            w3,
+            b3,
+        }
     }
 
     /// Forward pass: features → scalar value in [0, 1].
@@ -254,7 +267,14 @@ impl ValueNet {
         let b3 = floats[offset];
         // Note: offset += OUTPUT_DIM is not needed — b3 is the last field
 
-        Ok(ValueNet { w1, b1, w2, b2, w3, b3 })
+        Ok(ValueNet {
+            w1,
+            b1,
+            w2,
+            b2,
+            w3,
+            b3,
+        })
     }
 
     /// Total number of parameters in the network.
@@ -271,7 +291,10 @@ impl ValueNet {
 /// in production, you'd generate data from CFR replay, but for
 /// initialization, synthetic data where value ≈ mean hand strength
 /// works as a reasonable starting point.
-pub fn generate_training_data(n: usize, rng: &mut impl rand::Rng) -> Vec<(f32, f32, f32, f32, f32)> {
+pub fn generate_training_data(
+    n: usize,
+    rng: &mut impl rand::Rng,
+) -> Vec<(f32, f32, f32, f32, f32)> {
     let mut data = Vec::with_capacity(n);
     for _ in 0..n {
         // Sample EHS from a beta-like distribution (biased toward 0.5)
@@ -301,7 +324,15 @@ mod tests {
     fn test_network_initializes_and_forward() {
         let mut rng = rand::rng();
         let net = ValueNet::new(&mut rng);
-        assert_eq!(net.param_count(), HIDDEN1 * INPUT_DIM + HIDDEN1 + HIDDEN2 * HIDDEN1 + HIDDEN2 + OUTPUT_DIM * HIDDEN2 + OUTPUT_DIM);
+        assert_eq!(
+            net.param_count(),
+            HIDDEN1 * INPUT_DIM
+                + HIDDEN1
+                + HIDDEN2 * HIDDEN1
+                + HIDDEN2
+                + OUTPUT_DIM * HIDDEN2
+                + OUTPUT_DIM
+        );
 
         let features = [0.5f32, 0.25, 0.5, 0.25];
         let output = net.forward(&features);

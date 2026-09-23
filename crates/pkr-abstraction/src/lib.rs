@@ -1,4 +1,4 @@
-#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+#![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 pub mod ehs;
 pub use ehs::calculate_ehs;
@@ -279,9 +279,14 @@ impl AbstractionBuilder for KMeansAbstraction {
                 // The precomputed board bucket (if any) is mixed in.
                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
                 let hand_bucket = hand_rank >> 6;
-                let board_bucket = if let Some(table) = self.tables.get(&3u8).and_then(|l| l.get()) {
+                let board_bucket = if let Some(table) = self.tables.get(&3u8).and_then(|l| l.get())
+                {
                     let idx = Self::flat_index_river_board(board);
-                    if idx < table.len() { table[idx] as u64 } else { 0 }
+                    if idx < table.len() {
+                        table[idx] as u64
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 };

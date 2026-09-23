@@ -71,9 +71,7 @@ const EXPECTED_DEFEND_THRESHOLD: f32 = 0.50;
 /// Validate a preflop strategy lookup. The `lookup` function takes
 /// hole card ranks (high first) and suitedness, and returns the
 /// probability of opening (from the SB/button perspective).
-pub fn validate_preflop_opening(
-    lookup: &dyn Fn(Rank, Rank, bool) -> f32,
-) -> ValidationResult {
+pub fn validate_preflop_opening(lookup: &dyn Fn(Rank, Rank, bool) -> f32) -> ValidationResult {
     let mut issues = Vec::new();
     let mut total_weight = 0.0f32;
     let mut weighted_freq = 0.0f32;
@@ -96,17 +94,26 @@ pub fn validate_preflop_opening(
     // Check specific hands
     let aces = lookup(Rank::Ace, Rank::Ace, false);
     if aces < 0.99 {
-        issues.push(format!("AA should open 100% but opens {:.1}%", aces * 100.0));
+        issues.push(format!(
+            "AA should open 100% but opens {:.1}%",
+            aces * 100.0
+        ));
     }
 
     let seven_two = lookup(Rank::Seven, Rank::Two, false);
     if seven_two > 0.15 {
-        issues.push(format!("72o should open rarely but opens {:.1}%", seven_two * 100.0));
+        issues.push(format!(
+            "72o should open rarely but opens {:.1}%",
+            seven_two * 100.0
+        ));
     }
 
     let suited_ace_six = lookup(Rank::Ace, Rank::Six, true);
     if suited_ace_six < 0.20 {
-        issues.push(format!("A6s should open at least 20% but opens {:.1}%", suited_ace_six * 100.0));
+        issues.push(format!(
+            "A6s should open at least 20% but opens {:.1}%",
+            suited_ace_six * 100.0
+        ));
     }
 
     ValidationResult {
@@ -144,7 +151,9 @@ pub fn validate_bb_3bet(lookup: &dyn Fn(Rank, Rank, bool) -> f32) -> ValidationR
         if freq < expected * 0.5 {
             issues.push(format!(
                 "{:?}{:?}{} should 3-bet at least {:.0}% but 3-bets {:.1}%",
-                r1, r2, if suited { "s" } else { "o" },
+                r1,
+                r2,
+                if suited { "s" } else { "o" },
                 expected * 100.0,
                 freq * 100.0
             ));
@@ -194,7 +203,9 @@ pub fn validate_bb_defend(lookup: &dyn Fn(Rank, Rank, bool) -> f32) -> Validatio
         if freq < 0.10 {
             issues.push(format!(
                 "{:?}{:?}{} should defend at least 10% but defends {:.1}%",
-                r1, r2, if suited { "s" } else { "o" },
+                r1,
+                r2,
+                if suited { "s" } else { "o" },
                 freq * 100.0
             ));
         }

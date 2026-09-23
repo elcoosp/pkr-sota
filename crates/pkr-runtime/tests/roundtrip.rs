@@ -6,11 +6,7 @@ const FORMAT_VERSION_V2: u32 = 2;
 const HASH_ALGO_FNV1A64_INFOSET: u8 = 2;
 const K: usize = 6;
 
-fn write_synthetic_blueprint(
-    path: &std::path::Path,
-    keys: &[u64],
-    cdfs: &[[u8; K]],
-) {
+fn write_synthetic_blueprint(path: &std::path::Path, keys: &[u64], cdfs: &[[u8; K]]) {
     assert_eq!(keys.len(), cdfs.len(), "keys and cdfs must match");
     let n = keys.len();
 
@@ -88,7 +84,10 @@ fn roundtrip_lookup_hits_and_misses() {
         );
     }
 
-    assert!(handle.get_advice_fast(0).is_none(), "miss expected for key 0");
+    assert!(
+        handle.get_advice_fast(0).is_none(),
+        "miss expected for key 0"
+    );
     assert!(
         handle.get_advice_fast(0xFFFF_FFFF_FFFF_FFFF).is_none(),
         "miss expected for key 0xFFFF_FFFF_FFFF_FFFF"

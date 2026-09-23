@@ -1,22 +1,27 @@
 #![allow(clippy::manual_hash_one)]
-#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+#![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 pub mod fmph;
 pub mod header;
 pub mod translate;
 pub mod writer;
 
-
 #[cfg(test)]
 mod header_tests {
     use crate::header::*;
 
     #[test]
-    fn test_file_header_size() { assert_eq!(std::mem::size_of::<FileHeader>(), 32); }
+    fn test_file_header_size() {
+        assert_eq!(std::mem::size_of::<FileHeader>(), 32);
+    }
     #[test]
-    fn test_fmph_header_size() { assert_eq!(std::mem::size_of::<FmphHeader>(), 40); }
+    fn test_fmph_header_size() {
+        assert_eq!(std::mem::size_of::<FmphHeader>(), 40);
+    }
     #[test]
-    fn test_translation_header_size() { assert_eq!(std::mem::size_of::<TranslationTableHeader>(), 16); }
+    fn test_translation_header_size() {
+        assert_eq!(std::mem::size_of::<TranslationTableHeader>(), 16);
+    }
 
     #[test]
     fn test_file_header_pod() {

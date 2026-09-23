@@ -1,4 +1,4 @@
-#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+#![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 pub mod lookup;
 pub mod slow;

@@ -1,4 +1,4 @@
-#![allow(clippy::needless_range_loop)]  // numerics: indexed loops are idiomatic here
+#![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 pub mod dcfr;
 pub mod gpu;
@@ -69,57 +69,78 @@ impl Trainer {
 
         let t_wall = Instant::now();
         let t0 = Instant::now();
-        let thread_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>, LocalMetrics)> =
-            (0..n_chunks)
-                .into_par_iter()
-                .map(|chunk_idx| {
-                    let start = chunk_idx * CHUNK_ITERS;
-                    let end = ((chunk_idx + 1) * CHUNK_ITERS).min(n);
-                    let pairs = end - start;
-                    let mut batch: Vec<BatchItem> = Vec::with_capacity(pairs * 20);
-                    let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 20);
-                    let mut metrics = LocalMetrics::default();
+        let thread_results: Vec<(Vec<BatchItem>, Vec<StrategyOp>, LocalMetrics)> = (0..n_chunks)
+            .into_par_iter()
+            .map(|chunk_idx| {
+                let start = chunk_idx * CHUNK_ITERS;
+                let end = ((chunk_idx + 1) * CHUNK_ITERS).min(n);
+                let pairs = end - start;
+                let mut batch: Vec<BatchItem> = Vec::with_capacity(pairs * 20);
+                let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 20);
+                let mut metrics = LocalMetrics::default();
 
-                    let mut rng = SmallRng::seed_from_u64(rand::random::<u64>());
-                    let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
+                let mut rng = SmallRng::seed_from_u64(rand::random::<u64>());
+                let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
 
-                    let base_iter = start_iter + start as u32;
-                    for local_i in 0..pairs {
-                        let global_iter = base_iter + local_i as u32;
+                let base_iter = start_iter + start as u32;
+                for local_i in 0..pairs {
+                    let global_iter = base_iter + local_i as u32;
 
-                        let mut deck = initial_deck;
-                        for i in 0..9usize {
-                            let j = i + rng.random_range(0..(52 - i));
-                            deck.swap(i, j);
-                        }
-                        let hero = [deck[0], deck[1]];
-                        let villain = [deck[2], deck[3]];
-                        let deck_slice = &deck[4..9];
-
-                        let mut state = GameState::new(200.0, 1.0, 2.0);
-                        state.set_hole_cards(hero, villain);
-                        let mut deck_idx = 0usize;
-                        traverse(
-                            &mut state, &table, &*abstraction, &*evaluator, &mut rng,
-                            global_iter, 0, 1.0, deck_slice, &mut deck_idx, 0,
-                            &mut batch, &mut strategy_batch, &mut metrics,
-                        );
-
-                        let mut state2 = GameState::new(200.0, 1.0, 2.0);
-                        state2.set_hole_cards(hero, villain);
-                        let mut deck_idx2 = 0usize;
-                        traverse(
-                            &mut state2, &table, &*abstraction, &*evaluator, &mut rng,
-                            global_iter, 1, 1.0, deck_slice, &mut deck_idx2, 0,
-                            &mut batch, &mut strategy_batch, &mut metrics,
-                        );
+                    let mut deck = initial_deck;
+                    for i in 0..9usize {
+                        let j = i + rng.random_range(0..(52 - i));
+                        deck.swap(i, j);
                     }
+                    let hero = [deck[0], deck[1]];
+                    let villain = [deck[2], deck[3]];
+                    let deck_slice = &deck[4..9];
 
-                    metrics.regret_pushed = batch.len() as u64;
-                    metrics.strategy_pushed = strategy_batch.len() as u64;
-                    (batch, strategy_batch, metrics)
-                })
-                .collect();
+                    let mut state = GameState::new(200.0, 1.0, 2.0);
+                    state.set_hole_cards(hero, villain);
+                    let mut deck_idx = 0usize;
+                    traverse(
+                        &mut state,
+                        &table,
+                        &*abstraction,
+                        &*evaluator,
+                        &mut rng,
+                        global_iter,
+                        0,
+                        1.0,
+                        deck_slice,
+                        &mut deck_idx,
+                        0,
+                        &mut batch,
+                        &mut strategy_batch,
+                        &mut metrics,
+                    );
+
+                    let mut state2 = GameState::new(200.0, 1.0, 2.0);
+                    state2.set_hole_cards(hero, villain);
+                    let mut deck_idx2 = 0usize;
+                    traverse(
+                        &mut state2,
+                        &table,
+                        &*abstraction,
+                        &*evaluator,
+                        &mut rng,
+                        global_iter,
+                        1,
+                        1.0,
+                        deck_slice,
+                        &mut deck_idx2,
+                        0,
+                        &mut batch,
+                        &mut strategy_batch,
+                        &mut metrics,
+                    );
+                }
+
+                metrics.regret_pushed = batch.len() as u64;
+                metrics.strategy_pushed = strategy_batch.len() as u64;
+                (batch, strategy_batch, metrics)
+            })
+            .collect();
         let t_traverse = t0.elapsed();
 
         let t1 = Instant::now();
