@@ -106,7 +106,9 @@ impl ReferenceState {
             actions.push(ActionKind::Call);
         }
 
-        if self.stacks[self.actor] > 0.0 {
+        // C5b: mirrors GameState::legal_actions_into — no bets when
+        // the opponent cannot respond (they are all-in).
+        if self.stacks[self.actor] > 0.0 && self.stacks[1 - self.actor] > 0.0 {
             actions.push(ActionKind::Bet(
                 self.stacks[self.actor] + self.street_bets[self.actor],
             ));

@@ -169,14 +169,14 @@ impl GameState {
             for &frac in &crate::abstraction::BET_SIZINGS {
                 let bet = base + pot * frac;
                 let chips_needed = bet - base;
-                if chips_needed <= self.stacks[self.actor] {
+                if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
                     actions.push(Action {
                         player: self.actor,
                         kind: ActionKind::Bet(bet),
                     });
                 }
             }
-            if self.stacks[self.actor] > 0.0 {
+            if self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
                 // C2: `Bet` is the actor's street-bet TOTAL, not the
                 // incremental chips. Preflop BB facing a limp has
                 // street_bets[BB] == 2 already posted; `Bet(stacks)`
@@ -205,14 +205,14 @@ impl GameState {
             for &frac in &crate::abstraction::BET_SIZINGS {
                 let raise = opp_bet + pot * frac;
                 let chips_needed = raise - self.street_bets[self.actor];
-                if chips_needed <= self.stacks[self.actor] {
+                if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
                     actions.push(Action {
                         player: self.actor,
                         kind: ActionKind::Bet(raise),
                     });
                 }
             }
-            if self.stacks[self.actor] > 0.0 {
+            if self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
                 actions.push(Action {
                     player: self.actor,
                     kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
@@ -256,7 +256,7 @@ impl GameState {
                     }
                     let bet = base + pot * frac; // C1.5
                     let chips_needed = bet - base;
-                    if chips_needed <= self.stacks[self.actor] {
+                    if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
                         out[n] = Action {
                             player: self.actor,
                             kind: ActionKind::Bet(bet),
@@ -264,7 +264,7 @@ impl GameState {
                         n += 1;
                     }
                 }
-                if n < 8 && self.stacks[self.actor] > 0.0 {
+                if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
                     // C2: see legal_actions — all-in total is
                     // stacks + street_bets, not stacks alone.
                     out[n] = Action {
@@ -296,7 +296,7 @@ impl GameState {
                     }
                     let raise = opp_bet + pot * frac; // C1.5
                     let chips_needed = raise - self.street_bets[self.actor];
-                    if chips_needed <= self.stacks[self.actor] {
+                    if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
                         out[n] = Action {
                             player: self.actor,
                             kind: ActionKind::Bet(raise),
@@ -304,7 +304,7 @@ impl GameState {
                         n += 1;
                     }
                 }
-                if n < 8 && self.stacks[self.actor] > 0.0 {
+                if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
                     out[n] = Action {
                         player: self.actor,
                         kind: ActionKind::Bet(
@@ -568,6 +568,20 @@ impl GameState {
 // `crate::abstraction::action_bucket` instead.
 
 impl GameState {
+    /// True if the opponent has chips behind and can therefore respond
+    /// to a Bet/Raise. When false, only Check/Call/Fold are legal for
+    /// the current actor — any Bet would be dead money that the all-in
+    /// player cannot call, and poker rules return it to the bettor at
+    /// showdown anyway.
+    ///
+    /// C5b: gating bets on this removes the dead-money subtree from
+    /// every all-in runout, saving ~2x nodes on those lines and
+    /// eliminating a class of nonsense eval-harness action sequences.
+    #[inline]
+    pub fn opp_can_respond(&self) -> bool {
+        self.stacks[1 - self.actor] > 0.0
+    }
+
     /// Coarse bucket of the fraction of pot represented by the bet
     /// currently being faced. Returns 0 when no bet is faced.
     ///
@@ -1321,5 +1335,90 @@ mod c5a_tests {
                 kind: ActionKind::Check,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod c5b_tests {
+    use super::*;
+
+    /// C5b: facing an all-in preflop, only fold/call are legal.
+    #[test]
+    fn preflop_facing_all_in_offers_only_fold_or_call() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // SB shoves for 200 total (= stack + street_bets).
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(200.0),
+        });
+        assert_eq!(s.actor, 1, "BB acts after SB shove");
+        assert_eq!(s.stacks[0], 0.0, "SB is all-in");
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        for a in buf.iter().take(n) {
+            assert!(
+                matches!(a.kind, ActionKind::Fold | ActionKind::Call),
+                "unexpected action {:?} when SB is all-in",
+                a.kind
+            );
+        }
+        assert!(buf[..n].iter().any(|a| matches!(a.kind, ActionKind::Fold)));
+        assert!(buf[..n].iter().any(|a| matches!(a.kind, ActionKind::Call)));
+    }
+
+    /// C5b: post-flop with opp all-in, only check is offered (no bets).
+    #[test]
+    fn postflop_opp_all_in_offers_only_check() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(200.0),
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Call,
+        });
+        s.advance_street_in_place(&[0, 1, 2]);
+        assert_eq!(s.stacks[0], 0.0, "SB remains all-in postflop");
+        assert_eq!(s.street_bets[0], 0.0, "street bets reset");
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        for a in buf.iter().take(n) {
+            assert!(
+                matches!(
+                    a.kind,
+                    ActionKind::Check | ActionKind::Fold | ActionKind::Call
+                ),
+                "unexpected action {:?} postflop when SB is all-in",
+                a.kind
+            );
+        }
+        // Specifically no Bet.
+        assert!(
+            !buf[..n]
+                .iter()
+                .any(|a| matches!(a.kind, ActionKind::Bet(_))),
+            "no Bet should be offered postflop vs all-in"
+        );
+    }
+
+    /// C5b: `opp_can_respond` flips correctly.
+    #[test]
+    fn opp_can_respond_flips() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        assert!(s.opp_can_respond(), "BB has chips, SB (actor 0) can raise");
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(200.0),
+        });
+        assert!(!s.opp_can_respond(), "SB all-in, BB (actor 1) cannot raise");
     }
 }
