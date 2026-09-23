@@ -330,12 +330,51 @@ impl GameState {
                 self.street_bets[actor] += chips;
             }
             ActionKind::Bet(total) => {
+                // C1: `street_bets` is DERIVED from actual chips moved,
+                // never trusted from the caller. Two divergence modes
+                // are fixed:
+                //
+                //   1. total > current + stacks (overbet): old code wrote
+                //      `street_bets = total`, recording more chips in the
+                //      street bet than actually moved into the pot. From
+                //      then on, pot/stacks/street_bets were mutually
+                //      inconsistent.
+                //   2. total < current (illegal under-bet, producible by
+                //      bots/harness): old code wrote a smaller
+                //      `street_bets` without refunding chips — money
+                //      vanished.
+                //
+                // For every legal action this is bit-identical to the
+                // old behaviour, because all legal `total` satisfy
+                // `total == current + chips`.
                 let current = self.street_bets[actor];
+                // NOTE (C1.5 follow-up): `legal_actions_into` currently
+                // produces `Bet(total)` values that can be BELOW the
+                // actor's current street bet, because its raise formula
+                // is `to_call + pot * frac` instead of
+                // `street_bets[opp] + pot * frac`. This is invisible
+                // postflop (actor has street_bets == 0) but breaks
+                // preflop lines. The correct fix is in `legal_actions*`
+                // (tracked separately); here we only ensure that any
+                // such under-bet is a strict no-op rather than the
+                // pre-C1 behaviour of silently reducing street_bets.
+                //
+                // Diagnostic: set PKR_STRICT_BETS=1 to make this an
+                // assertion during development.
+                #[cfg(debug_assertions)]
+                if total < current
+                    && std::env::var("PKR_STRICT_BETS").as_deref() == Ok("1")
+                {
+                    panic!(
+                        "Bet({total}) below current street bet {current} \
+                         (PKR_STRICT_BETS=1)"
+                    );
+                }
                 let chips = (total - current).max(0.0).min(self.stacks[actor]);
                 self.stacks[actor] -= chips;
                 self.pot += chips;
                 self.total_invested[actor] += chips;
-                self.street_bets[actor] = total;
+                self.street_bets[actor] = current + chips;
                 self.raises_this_street = self.raises_this_street.saturating_add(1);
             }
         }
@@ -459,5 +498,77 @@ fn abstract_action_index_static(kind: &ActionKind, state: &GameState) -> u8 {
                 4
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod c1_tests {
+    use super::*;
+
+    /// C1: illegal under-bet (total < current) is a benign no-op —
+    /// no chips move, street_bets unchanged, pot unchanged.
+    #[test]
+    fn bet_below_current_is_benign_noop() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // SB limps: chips 1, street_bets[0] = 2
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        // Now BB acts. street_bets[1] = 2, stacks[1] = 198.
+        let pot_before = s.pot;
+        let sb_before = s.street_bets[1];
+        let stack_before = s.stacks[1];
+        // Illegal: ask to "bet" 0.5, less than current street bet of 2.0
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(0.5),
+        });
+        assert_eq!(s.street_bets[1], sb_before, "street_bets unchanged");
+        assert_eq!(s.pot, pot_before, "pot unchanged");
+        assert_eq!(s.stacks[1], stack_before, "stacks unchanged");
+    }
+
+    /// C1: overbet clamps to all-in exactly — stacks zeroed,
+    /// street_bets equals starting_stack.
+    #[test]
+    fn bet_overbet_clamps_to_all_in_exactly() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        // BB asks for Bet(10_000) but has 198 chips behind after posting.
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(10_000.0),
+        });
+        assert_eq!(s.stacks[1], 0.0, "all-in leaves zero behind");
+        assert_eq!(
+            s.street_bets[1], 200.0,
+            "street_bet total equals start_stack when all-in"
+        );
+    }
+
+    /// C1: a legal bet produces street_bets == current + chips (the
+    /// invariant the fix restores). This is what training relies on.
+    #[test]
+    fn legal_bet_satisfies_street_bets_invariant() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        let current = s.street_bets[1];
+        let pot = s.pot;
+        // Legal: bet 2x pot = 8 chips on top of the 2 already in.
+        let total = current + 8.0;
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(total),
+        });
+        assert_eq!(s.street_bets[1], total);
+        assert_eq!(s.stacks[1], 200.0 - 2.0 - 8.0);
+        assert_eq!(s.pot, pot + 8.0);
     }
 }
