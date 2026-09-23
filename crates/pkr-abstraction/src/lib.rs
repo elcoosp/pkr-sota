@@ -10,7 +10,58 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+
+// ---------------------------------------------------------------------------
+// C5c: silent-EHS-fallback accounting
+// ---------------------------------------------------------------------------
+//
+// `get_infoset_hash` falls back to on-the-fly Monte-Carlo EHS clustering
+// whenever a table lookup misses (missing table, out-of-range flat index,
+// or an unexpected board length). That path is ~100x slower and produces
+// a *different* cluster id than the table would have, so any run that
+// mixes table hits with MC fallbacks is training on a silently corrupted
+// abstraction.
+//
+// Before C5c the only signal was a single warning line printed once per
+// process — easy to miss in a long training log. Now the counter is
+// exact and the trainer aborts on any nonzero delta.
+//
+// `PKR_ALLOW_EHS_FALLBACK=1` disables the trainer-side abort (tests and
+// the tiny-table smoke run need this).
+static FALLBACK_COUNTS: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+/// Total EHS fallbacks across all streets since process start.
+pub fn fallback_count() -> u64 {
+    FALLBACK_COUNTS
+        .iter()
+        .map(|c| c.load(Ordering::Relaxed))
+        .sum()
+}
+
+/// Per-street EHS fallbacks: `[preflop, flop, turn, river]`.
+pub fn fallback_breakdown() -> [u64; 4] {
+    [
+        FALLBACK_COUNTS[0].load(Ordering::Relaxed),
+        FALLBACK_COUNTS[1].load(Ordering::Relaxed),
+        FALLBACK_COUNTS[2].load(Ordering::Relaxed),
+        FALLBACK_COUNTS[3].load(Ordering::Relaxed),
+    ]
+}
+
+/// Zero the counters. Useful for tests and for the trainer to reset
+/// after an explicit acknowledgement.
+pub fn reset_fallback_counts() {
+    for c in FALLBACK_COUNTS.iter() {
+        c.store(0, Ordering::Relaxed);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CentroidStore {
@@ -229,7 +280,9 @@ impl AbstractionBuilder for KMeansAbstraction {
             hole.iter().all(|h| !board.contains(h)),
             "abstraction hash called with hole and board sharing a card: \
              hole={:?} board={:?} street={}",
-            hole, board, street,
+            hole,
+            board,
+            street,
         );
         let centroids = self
             .centroids
@@ -237,6 +290,8 @@ impl AbstractionBuilder for KMeansAbstraction {
             .unwrap_or(&self.default_centroids);
 
         let ehs_fallback = || {
+            // C5c: count this fallback so the trainer can abort.
+            FALLBACK_COUNTS[(street as usize) & 3].fetch_add(1, Ordering::Relaxed);
             warn_mc_fallback_once();
             let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
             nearest_centroid(ehs, ehs_sq, centroids)

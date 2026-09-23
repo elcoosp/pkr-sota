@@ -1,9 +1,9 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 use clap::Parser;
-use pkr_contracts;
 use pkr_abstraction::{load_centroids, KMeansAbstraction};
 use pkr_cfr::Trainer;
+use pkr_contracts;
 use pkr_eval::TableEvaluator;
 use pkr_export::writer::write_blueprint;
 use rayon::ThreadPoolBuilder;
@@ -167,9 +167,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             pkr_eval::Fast7Evaluator::new(&cli.rank_table)
                 .expect("Failed to load hand_ranks.bin (Fast7Evaluator)"),
         ),
-        "table" => Arc::new(
-            TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin"),
-        ),
+        "table" => {
+            Arc::new(TableEvaluator::new(&cli.rank_table).expect("Failed to load hand_ranks.bin"))
+        }
         other => {
             eprintln!(
                 "FATAL: unknown --evaluator '{}'. Expected 'table' or 'fast7'.",
@@ -190,7 +190,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
              This is the smoke-test config that caused the v9-v13 incident. \
              Regenerate with run.sh (CENTROID_K=200), or set PKR_ALLOW_SMALL_K=1 \
              to explicitly acknowledge the small-k config."
-        ).into());
+        )
+        .into());
     }
     let mut abstraction = KMeansAbstraction::from_store(store, evaluator.clone());
 
@@ -321,6 +322,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut done = start_iter;
     let mut prev_metrics_snapshot = pkr_cfr::metrics::global().snapshot();
+    // C5c: track EHS-fallback count across the run.
+    let mut prev_fallbacks = pkr_abstraction::fallback_count();
 
     while done < max_iters {
         if let Some(d) = bench_deadline {
@@ -333,6 +336,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let batch = cli.iters_per_sync.min(max_iters - done);
         trainer.run_iterations_parallel(batch as usize);
         done += batch;
+
+        // C5c: abort if the abstraction silently fell back to
+        // Monte-Carlo EHS during this batch. Any fallback means at
+        // least one infoset hashed through a *different* cluster id
+        // than the table would have produced — silent corruption.
+        // `PKR_ALLOW_EHS_FALLBACK=1` disables (tests, small-table smoke).
+        let cur_fallbacks = pkr_abstraction::fallback_count();
+        if cur_fallbacks > prev_fallbacks
+            && std::env::var("PKR_ALLOW_EHS_FALLBACK").as_deref() != Ok("1")
+        {
+            let breakdown = pkr_abstraction::fallback_breakdown();
+            eprintln!(
+                "FATAL: {} EHS fallback(s) in batch ending at iter {}; \
+                 per-street (preflop/flop/turn/river) = {:?}. \
+                 Aborting to prevent silent mixed-abstraction training. \
+                 Set PKR_ALLOW_EHS_FALLBACK=1 to override.",
+                cur_fallbacks - prev_fallbacks,
+                done,
+                breakdown,
+            );
+            return Err("abstraction fell back to Monte-Carlo EHS".into());
+        }
+        prev_fallbacks = cur_fallbacks;
 
         let should_report =
             done.saturating_sub(last_report_iter) >= cli.report_every || done == max_iters;

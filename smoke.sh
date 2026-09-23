@@ -5,6 +5,9 @@ cd "$(dirname "$0")"
 # The smoke test intentionally uses k=8 to keep the run fast.
 # The trainer refuses k < 100 unless this is set explicitly.
 export PKR_ALLOW_SMALL_K=1
+# The k=8 smoke tables have holes that trigger MC fallbacks.
+# This is the exact situation C5c guards against in production.
+export PKR_ALLOW_EHS_FALLBACK=1
 
 SMOKE_DIR="${SMOKE_DIR:-./outputs/v0-smoke}"
 [ "${SMOKE_FRESH:-0}" = "1" ] && { echo "wiping $SMOKE_DIR"; rm -rf "$SMOKE_DIR"; }
