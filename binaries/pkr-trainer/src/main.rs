@@ -78,6 +78,12 @@ struct Cli {
     #[arg(long, default_value_t = 10000)]
     report_every: u32,
 
+    /// After training, run preflop chart sanity checks against the
+    /// trained strategy and print the results. Validates BU open
+    /// frequency against published ranges.
+    #[arg(long, default_value_t = false)]
+    preflop_check: bool,
+
     /// Sampled best-response exploitability check every N iterations
     /// (0 = off). Reports in milli-big-blinds per game.
     #[arg(long, default_value_t = 0)]
@@ -504,6 +510,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => eprintln!("WARNING: failed to serialize stats JSON: {}", e),
         }
+    }
+
+    if cli.preflop_check {
+        eprintln!();
+        eprintln!("=== preflop chart validation ===");
+        let lookup = pkr_cfr::preflop_validate::lookup_from_table(
+            trainer.get_table(),
+            abstraction_for_eval.as_ref(),
+        );
+        let r = pkr_cfr::preflop_validate::validate_preflop_opening(&lookup);
+        eprintln!("  category: {}", r.category);
+        eprintln!("  passed:   {}", r.passed);
+        eprintln!("  score:    {:.3}", r.score);
+        for issue in &r.issues {
+            eprintln!("  issue:    {}", issue);
+        }
+        eprintln!();
     }
 
     let mut keys = trainer.get_table().get_keys();
