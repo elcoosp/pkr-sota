@@ -324,6 +324,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut prev_metrics_snapshot = pkr_cfr::metrics::global().snapshot();
     // C5c: track EHS-fallback count across the run.
     let mut prev_fallbacks = pkr_abstraction::fallback_count();
+    // C5d: track depth/deck overflows across the run.
+    let mut prev_depth_overflows: u64 = 0;
+    let mut prev_deck_overflows: u64 = 0;
 
     while done < max_iters {
         if let Some(d) = bench_deadline {
@@ -359,6 +362,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("abstraction fell back to Monte-Carlo EHS".into());
         }
         prev_fallbacks = cur_fallbacks;
+
+        // C5d: any depth or deck overflow silently corrupts regret
+        // math via a spurious 0.0 return. Abort on first occurrence.
+        let cur_metrics = pkr_cfr::metrics::global().snapshot();
+        let cur_depth = cur_metrics.depth_overflows;
+        let cur_deck = cur_metrics.deck_overflows;
+        if cur_depth > prev_depth_overflows || cur_deck > prev_deck_overflows {
+            eprintln!(
+                "FATAL: traversal overflow at iter {} — depth_overflows={} (+{}), \
+                 deck_overflows={} (+{}). Training would silently corrupt \
+                 regrets. Aborting.",
+                done,
+                cur_depth,
+                cur_depth - prev_depth_overflows,
+                cur_deck,
+                cur_deck - prev_deck_overflows,
+            );
+            return Err("traversal depth/deck overflow".into());
+        }
+        prev_depth_overflows = cur_depth;
+        prev_deck_overflows = cur_deck;
 
         let should_report =
             done.saturating_sub(last_report_iter) >= cli.report_every || done == max_iters;

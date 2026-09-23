@@ -28,6 +28,13 @@ pub struct LocalMetrics {
     pub infosets_created: u64,
     pub strategy_pushed: u64,
     pub regret_pushed: u64,
+    /// C5d: incremented in `traverse` when `depth > MAX_DEPTH`. Any
+    /// nonzero value means a hand ran deeper than the traverser can
+    /// handle and the returned 0.0 corrupted the regret math.
+    pub depth_overflows: u64,
+    /// C5d: incremented when `*deck_idx > deck.len()` mid-runout.
+    /// Same class of silent-0.0 bug as depth_overflows.
+    pub deck_overflows: u64,
     pub depth_hist: [u32; 32],
 }
 
@@ -52,6 +59,8 @@ impl LocalMetrics {
         self.infosets_created += other.infosets_created;
         self.strategy_pushed += other.strategy_pushed;
         self.regret_pushed += other.regret_pushed;
+        self.depth_overflows += other.depth_overflows;
+        self.deck_overflows += other.deck_overflows;
         for i in 0..32 {
             self.depth_hist[i] = self.depth_hist[i].saturating_add(other.depth_hist[i]);
         }
@@ -69,6 +78,8 @@ pub struct GlobalMetrics {
     pub infosets_created: AtomicU64,
     pub strategy_pushed: AtomicU64,
     pub regret_pushed: AtomicU64,
+    pub depth_overflows: AtomicU64,
+    pub deck_overflows: AtomicU64,
     pub strategy_applied: AtomicU64,
     pub regret_input: AtomicU64,
     pub regret_unique: AtomicU64,
@@ -92,6 +103,8 @@ impl GlobalMetrics {
             infosets_created: AtomicU64::new(0),
             strategy_pushed: AtomicU64::new(0),
             regret_pushed: AtomicU64::new(0),
+            depth_overflows: AtomicU64::new(0),
+            deck_overflows: AtomicU64::new(0),
             strategy_applied: AtomicU64::new(0),
             regret_input: AtomicU64::new(0),
             regret_unique: AtomicU64::new(0),
@@ -133,6 +146,10 @@ impl GlobalMetrics {
             .fetch_add(m.strategy_pushed, Ordering::Relaxed);
         self.regret_pushed
             .fetch_add(m.regret_pushed, Ordering::Relaxed);
+        self.depth_overflows
+            .fetch_add(m.depth_overflows, Ordering::Relaxed);
+        self.deck_overflows
+            .fetch_add(m.deck_overflows, Ordering::Relaxed);
         self.strategy_applied
             .fetch_add(strategy_in, Ordering::Relaxed);
         self.regret_input.fetch_add(regret_in, Ordering::Relaxed);
@@ -158,6 +175,8 @@ impl GlobalMetrics {
             infosets_created: self.infosets_created.load(Ordering::Relaxed),
             strategy_pushed: self.strategy_pushed.load(Ordering::Relaxed),
             regret_pushed: self.regret_pushed.load(Ordering::Relaxed),
+            depth_overflows: self.depth_overflows.load(Ordering::Relaxed),
+            deck_overflows: self.deck_overflows.load(Ordering::Relaxed),
             strategy_applied: self.strategy_applied.load(Ordering::Relaxed),
             regret_input: self.regret_input.load(Ordering::Relaxed),
             regret_unique: self.regret_unique.load(Ordering::Relaxed),
@@ -182,6 +201,8 @@ pub struct Snapshot {
     pub infosets_created: u64,
     pub strategy_pushed: u64,
     pub regret_pushed: u64,
+    pub depth_overflows: u64,
+    pub deck_overflows: u64,
     pub strategy_applied: u64,
     pub regret_input: u64,
     pub regret_unique: u64,
@@ -207,6 +228,8 @@ impl Snapshot {
             infosets_created: self.infosets_created.saturating_sub(prev.infosets_created),
             strategy_pushed: self.strategy_pushed.saturating_sub(prev.strategy_pushed),
             regret_pushed: self.regret_pushed.saturating_sub(prev.regret_pushed),
+            depth_overflows: self.depth_overflows.saturating_sub(prev.depth_overflows),
+            deck_overflows: self.deck_overflows.saturating_sub(prev.deck_overflows),
             strategy_applied: self.strategy_applied.saturating_sub(prev.strategy_applied),
             regret_input: self.regret_input.saturating_sub(prev.regret_input),
             regret_unique: self.regret_unique.saturating_sub(prev.regret_unique),

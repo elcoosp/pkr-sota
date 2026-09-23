@@ -144,6 +144,8 @@ pub fn traverse(
 ) -> f32 {
     metrics.record_node(depth);
     if depth > MAX_DEPTH {
+        // C5d: count this silent-0.0 return so training aborts.
+        metrics.depth_overflows += 1;
         return 0.0;
     }
 
@@ -164,6 +166,8 @@ pub fn traverse(
             deck.len(),
         );
         if *deck_idx > deck.len() {
+            // C5d: count silent deck exhaustion.
+            metrics.deck_overflows += 1;
             *deck_idx = saved_deck_idx;
             return 0.0;
         }
