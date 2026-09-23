@@ -39,6 +39,9 @@ struct ReferenceState {
     actions_this_street: u8,
     folded: [bool; 2],
     history: Vec<Action>,
+    /// E2: community cards as they are dealt. Needed for showdown
+    /// payoff comparison in the harness.
+    board: Vec<u8>,
 }
 
 impl ReferenceState {
@@ -53,6 +56,7 @@ impl ReferenceState {
             actions_this_street: 0,
             folded: [false, false],
             history: Vec::new(),
+            board: Vec::new(),
         }
     }
 
@@ -154,11 +158,14 @@ impl ReferenceState {
         if self.street == 3 {
             return;
         }
+        // E2: record the community cards for showdown evaluation.
+        for c in cards {
+            self.board.push(c);
+        }
         self.street += 1;
         self.actions_this_street = 0;
         self.street_bets = [0.0, 0.0];
         self.actor = 1 - self.dealer();
-        let _ = cards;
     }
 
     fn dealer(&self) -> usize {
@@ -705,21 +712,293 @@ pub struct OpponentResult {
     pub actions_per_street: [[u32; 32]; 4],
 }
 
+// =============================================================================
+// E2: seeded differential fuzz harness
+// =============================================================================
+//
+// Differences from `run_fuzz` (kept for backward compat):
+//   1. Deterministic: takes a `seed: u64`.
+//   2. Shared deck: 7 unique cards pre-dealt from a Fisher-Yates shuffle.
+//      Both GameState and ReferenceState receive the same board cards.
+//      The old harness drew board cards with `random_range(0..52)`,
+//      which could produce duplicates or reuse hole cards — every
+//      showdown was therefore garbage.
+//   3. Showdown payoff comparison: previously only fold endings were
+//      compared. Now the harness computes terminal payoffs for both
+//      implementations using the same evaluator and compares them,
+//      including ties.
+//   4. Action multiset comparison: previously only `len()` was checked.
+//      Now the filtered action sets are compared element-wise (tolerance
+//      1e-4 on Bet amounts), which catches the C2-style bucket bugs.
+
+/// Discriminant-like ordering key for canonical sorting of action kinds.
+fn kind_key(k: &ActionKind) -> u8 {
+    match k {
+        ActionKind::Fold => 0,
+        ActionKind::Check => 1,
+        ActionKind::Call => 2,
+        ActionKind::Bet(_) => 3,
+    }
+}
+
+/// Compare two multisets of action kinds. Bet amounts are compared
+/// with 1e-4 tolerance.
+fn actions_match_multiset(a: &[ActionKind], b: &[ActionKind]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut ca: Vec<ActionKind> = a.to_vec();
+    let mut cb: Vec<ActionKind> = b.to_vec();
+    let cmp = |x: &ActionKind, y: &ActionKind| {
+        kind_key(x).cmp(&kind_key(y)).then_with(|| {
+            if let (ActionKind::Bet(m), ActionKind::Bet(n)) = (x, y) {
+                m.partial_cmp(n).unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+    };
+    ca.sort_by(cmp);
+    cb.sort_by(cmp);
+    for (x, y) in ca.iter().zip(cb.iter()) {
+        match (x, y) {
+            (ActionKind::Bet(m), ActionKind::Bet(n)) => {
+                if (m - n).abs() > 1e-4 {
+                    return false;
+                }
+            }
+            _ => {
+                if std::mem::discriminant(x) != std::mem::discriminant(y) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Terminal payoff in the reference implementation, using the same
+/// evaluator and the same (hole, board) that GameState uses.
+/// This mirrors `GameState::terminal_payoff` exactly, but computes
+/// from the reference's own `pot`/`total_invested` fields.
+fn ref_terminal_payoff(
+    r: &ReferenceState,
+    player: usize,
+    hero: &[u8; 2],
+    villain: &[u8; 2],
+    evaluator: &dyn pkr_contracts::Evaluator,
+) -> f32 {
+    if r.folded[player] {
+        return -r.total_invested[player];
+    }
+    let other = 1 - player;
+    if r.folded[other] {
+        return r.pot - r.total_invested[player];
+    }
+    let hero_rank = evaluator.evaluate_hand(hero, &r.board);
+    let vill_rank = evaluator.evaluate_hand(villain, &r.board);
+    let win = hero_rank < vill_rank;
+    let tie = hero_rank == vill_rank;
+    if tie {
+        (r.pot / 2.0) - r.total_invested[player]
+    } else if (player == 0 && win) || (player == 1 && !win) {
+        r.pot - r.total_invested[player]
+    } else {
+        -r.total_invested[player]
+    }
+}
+
+/// Run the differential fuzz harness with a fixed seed. Acceptance:
+/// `mismatches == 0` over >= 2000 hands after C1+C2+C1.5+C5b semantics.
+pub fn run_fuzz_seeded(num_hands: u32, seed: u64) -> FuzzingResult {
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let evaluator = NlheEvaluator;
+
+    let mut mismatches = 0u32;
+    let mut hands_completed = 0u32;
+    let mut hands_run = 0u32;
+
+    for hand_no in 0..num_hands {
+        hands_run += 1;
+        let mut state = GameState::new(200.0, 1.0, 2.0);
+        let mut ref_state = ReferenceState::new(200.0, 1.0, 2.0);
+
+        // Fisher-Yates shuffle the first 9 slots; 4 for holes, 5 for runout.
+        let mut deck: [u8; 52] = std::array::from_fn(|i| i as u8);
+        for i in 0..9 {
+            let j = i + rng.random_range(0..(52 - i));
+            deck.swap(i, j);
+        }
+        let hero: [u8; 2] = [deck[0], deck[1]];
+        let villain: [u8; 2] = [deck[2], deck[3]];
+        let runout: [u8; 5] = [deck[4], deck[5], deck[6], deck[7], deck[8]];
+        let mut runout_idx = 0usize;
+
+        state.set_hole_cards(hero, villain);
+
+        let mut steps = 0u32;
+        let max_steps = 60;
+        let mut mismatch = false;
+
+        while !state.is_terminal() && steps < max_steps {
+            steps += 1;
+
+            // Filter GameState's actions down to what the reference also
+            // produces: {Fold, Check, Call, All-in}. The frac bets are
+            // tested through the trainer; here we validate the core
+            // arithmetic and the all-in path.
+            let gs_actions_raw = state.legal_actions();
+            let gs_kinds: Vec<ActionKind> = gs_actions_raw
+                .iter()
+                .filter(|a| match a.kind {
+                    ActionKind::Fold | ActionKind::Check | ActionKind::Call => true,
+                    ActionKind::Bet(amt) => {
+                        let stack = state.stacks[a.player];
+                        let street_bets = state.street_bets[a.player];
+                        amt >= (stack + street_bets - 0.01) || amt >= (stack - 0.01)
+                    }
+                })
+                .map(|a| a.kind)
+                .collect();
+            let ref_kinds = ref_state.legal_actions();
+
+            if !actions_match_multiset(&gs_kinds, &ref_kinds) {
+                mismatches += 1;
+                mismatch = true;
+                eprintln!(
+                    "MISMATCH seed={} hand={} step={}: action-set divergence",
+                    seed, hand_no, steps
+                );
+                eprintln!("  GS  legal_actions (filtered): {:?}", gs_kinds);
+                eprintln!("  REF legal_actions          : {:?}", ref_kinds);
+                eprintln!(
+                    "  GS raw: {:?}",
+                    gs_actions_raw.iter().map(|a| a.kind).collect::<Vec<_>>()
+                );
+                break;
+            }
+
+            if gs_kinds.is_empty() {
+                break;
+            }
+
+            // Pick a concrete action from GS's raw set whose kind is in
+            // the filtered set.
+            let candidates: Vec<Action> = gs_actions_raw
+                .iter()
+                .filter(|a| {
+                    gs_kinds.iter().any(|k| {
+                        std::mem::discriminant(k) == std::mem::discriminant(&a.kind)
+                            && match (k, &a.kind) {
+                                (ActionKind::Bet(m), ActionKind::Bet(n)) => (m - n).abs() < 1e-4,
+                                _ => true,
+                            }
+                    })
+                })
+                .copied()
+                .collect();
+            let pick_idx = rng.random_range(0..candidates.len());
+            let action = candidates[pick_idx];
+
+            state.apply_action_in_place(&action);
+            ref_state.apply(&action);
+
+            // Advance street if complete.
+            if state.is_street_complete() && state.street != Street::River {
+                let need = match state.street {
+                    Street::Preflop => 3,
+                    Street::Flop => 1,
+                    Street::Turn => 1,
+                    Street::River => 0,
+                };
+                if runout_idx + need > runout.len() {
+                    break;
+                }
+                let cards = &runout[runout_idx..runout_idx + need];
+                state.advance_street_in_place(cards);
+                ref_state.advance_street(cards.to_vec());
+                runout_idx += need;
+            }
+
+            // Compare pot, stacks, actor after every step.
+            if (state.pot - ref_state.pot).abs() > 0.01
+                || (state.stacks[0] - ref_state.stacks[0]).abs() > 0.01
+                || (state.stacks[1] - ref_state.stacks[1]).abs() > 0.01
+                || state.actor != ref_state.actor
+            {
+                mismatches += 1;
+                mismatch = true;
+                eprintln!(
+                    "MISMATCH seed={} hand={} step={}: state divergence",
+                    seed, hand_no, steps
+                );
+                eprintln!(
+                    "  GS : pot={} stacks={:?} street_bets={:?} actor={}",
+                    state.pot, state.stacks, state.street_bets, state.actor
+                );
+                eprintln!(
+                    "  REF: pot={} stacks={:?} street_bets={:?} actor={}",
+                    ref_state.pot, ref_state.stacks, ref_state.street_bets, ref_state.actor
+                );
+                break;
+            }
+        }
+
+        if !mismatch && state.is_terminal() {
+            hands_completed += 1;
+
+            // Terminal payoff comparison, including showdowns.
+            let gs_p0 = state.terminal_payoff(0, &evaluator);
+            let ref_p0 = ref_terminal_payoff(&ref_state, 0, &hero, &villain, &evaluator);
+            if (gs_p0 - ref_p0).abs() > 0.5 {
+                mismatches += 1;
+                eprintln!(
+                    "MISMATCH seed={} hand={}: terminal payoff (p0)",
+                    seed, hand_no
+                );
+                eprintln!("  GS  p0={:.4}", gs_p0);
+                eprintln!("  REF p0={:.4}", ref_p0);
+                eprintln!(
+                    "  hero={:?} villain={:?} board={:?}",
+                    hero, villain, ref_state.board
+                );
+                eprintln!(
+                    "  GS folded={:?} REF folded={:?}",
+                    state.folded, ref_state.folded
+                );
+            }
+        }
+    }
+
+    FuzzingResult {
+        hands_run,
+        hands_completed,
+        mismatches,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_fuzz_small_batch() {
-        let result = run_fuzz(100);
-        assert_eq!(result.hands_run, 100);
-        println!(
-            "Fuzz: {} hands completed, {} mismatches",
-            result.hands_completed, result.mismatches
+        // E2: after C1+C2+C1.5+C5b semantics, mismatches must be zero
+        // on a seeded differential run. The old harness tolerated <50%
+        // because it dealt board cards with replacement and never
+        // compared showdown payoffs; both defects are fixed here.
+        let result = run_fuzz_seeded(2000, 42);
+        assert_eq!(result.hands_run, 2000);
+        eprintln!(
+            "Fuzz (seed=42): {}/{} hands completed, {} mismatches",
+            result.hands_completed, result.hands_run, result.mismatches
         );
-        assert!(
-            result.mismatches < 50,
-            "too many mismatches: {}",
+        assert_eq!(
+            result.mismatches, 0,
+            "differential fuzz found {} mismatches; see stderr for details",
             result.mismatches
         );
     }
