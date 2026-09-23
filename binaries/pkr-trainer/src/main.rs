@@ -227,7 +227,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cli.iterations
     };
 
-    const ITERS_PER_SYNC: u32 = 256;
+    // Larger batches amortize the serial merge + flush further. Measured
+// at 256 vs 512 in the earlier bench: same throughput per wall-second,
+// but 512 reduces per-dispatch overhead on the merge side. DCFR
+// tolerates the staleness (Brown & Sandholm).
+const ITERS_PER_SYNC: u32 = 512;
 
     let mut done = start_iter;
     let mut prev_metrics_snapshot = pkr_cfr::metrics::global().snapshot();
