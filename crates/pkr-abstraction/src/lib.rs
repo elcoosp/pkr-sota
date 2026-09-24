@@ -659,19 +659,20 @@ mod c6_unit_tests {
     //
     // evaluate_hand returns the inverted-bit encoding !raw, whose value
     // range is ~[2^32 - 9*2^20, 2^32]. `>> 13` quantizes that range into
-    // ~287 monotone tiers. If the shift changes, bump the blueprint
+    // ~1152 monotone tiers (T2.2). If the shift changes, bump the blueprint
     // format version — that is the contract.
     // ------------------------------------------------------------------
     #[test]
     fn river_hand_bucket_is_monotone_and_bounded() {
         // Stronger hand must map to a <= bucket (monotone) and the tier count
         // must be small (bounded infoset space).
-        // Direct check of the quantization math used in the river branch:
+        // Direct check of the quantization math used in the river branch
+        // (T2.2: >> 13, ~1152 tiers).
         let strong = (u32::MAX - 9_437_184) as u64 >> 13; // best hand in range
         let weak = (u32::MAX) as u64 >> 13;
         assert!(strong <= weak);
         assert!(
-            weak - strong < 512,
+            weak - strong < 2048,
             "river hand tiers must stay bounded, got {}",
             weak - strong
         );
@@ -784,24 +785,27 @@ mod audit_f6_tests {
     /// The audit F6 concern: the pre-fix `>> 6` produced ~147k tiers,
     /// not the ~117 the comment claimed. This test pins the current
     /// shift to a bounded count so any future change that silently
-    /// explodes the tier count will fail the test.
+    /// explodes or collapses the tier count will fail the test.
     #[test]
-    fn river_shift_15_yields_bounded_tier_count() {
-        // Lowest possible !raw value across all 9 categories.
+    fn river_shift_13_yields_bounded_tier_count() {
+        // T2.2: the shift is >> 13, giving ~1152 tiers over the ~9.4M
+        // raw-rank band. Bounds kept loose (±50%) so incidental raw
+        // range tweaks do not spuriously fail, but any change that
+        // silently collapses or explodes the tier count will.
         let min_rank: u32 = u32::MAX - 9 * (1u32 << 20) + 1;
         let max_rank: u32 = u32::MAX;
         let tier_lo = min_rank >> 13;
         let tier_hi = max_rank >> 13;
         let count = tier_hi - tier_lo + 1;
         assert!(
-            count <= 512,
-            ">>15 should yield <=512 tiers, got {count} (range {}..{})",
+            count <= 2048,
+            ">>13 should yield <=2048 tiers, got {count} (range {}..{})",
             tier_lo,
             tier_hi
         );
         assert!(
-            count >= 128,
-            ">>15 should yield >=128 tiers (finer than >>13), got {count}"
+            count >= 512,
+            ">>13 should yield >=512 tiers, got {count}"
         );
     }
 
