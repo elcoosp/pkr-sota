@@ -88,8 +88,10 @@ impl Evaluator for Fast7Evaluator {
         let mut rank_counts = [0u8; 13];
         for i in 0..n {
             let c = cards[i];
-            suit_counts[(c & 3) as usize] += 1;
-            rank_counts[(c >> 2) as usize] += 1;
+            // Card encoding matches the rest of the crate (slow.rs,
+            // hand_ranks.bin, precompute): suit = c / 13, rank = c % 13.
+            suit_counts[(c / 13) as usize] += 1;
+            rank_counts[(c % 13) as usize] += 1;
         }
 
         let key = rank_key(&rank_counts);
@@ -104,7 +106,7 @@ impl Evaluator for Fast7Evaluator {
             let mut flush_cards = [0u8; 7];
             let mut m = 0usize;
             for i in 0..n {
-                if (cards[i] & 3) == s {
+                if (cards[i] / 13) == s {
                     flush_cards[m] = cards[i];
                     m += 1;
                 }
@@ -210,8 +212,12 @@ fn choose_5(
 #[inline]
 fn eval_5_avoid_flush(sel: &[u8; 5], mmap: &Mmap) -> u32 {
     let mut cards = [0u8; 5];
+    // Build cards under the crate's canonical encoding: suit * 13 + rank.
+    // Suit assignment cycles through {0,1,2,3,0}; this guarantees at most
+    // two cards share any suit, so the resulting hand cannot form a flush.
     for i in 0..5 {
-        cards[i] = (sel[i] << 2) | (i as u8 & 3);
+        let suit = (i as u8) & 3;
+        cards[i] = sel[i] * 13 + suit;
     }
     cards.sort_unstable_by(|a, b| b.cmp(a));
     let idx = combinadic_rank(&cards) as usize;
@@ -233,11 +239,27 @@ mod tests {
     use crate::NlheEvaluator;
 
     fn find_rank_table() -> Option<String> {
-        for cand in &[
+        // Resolve relative to the workspace root so the test runs from
+        // any CWD (nextest uses the crate dir). Checks the current and
+        // historical output locations.
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crate is two levels deep");
+        let candidates = [
+            "outputs/v23/hand_ranks.bin",
+            "outputs/v0-smoke/hand_ranks.bin",
             "outputs/v9/hand_ranks.bin",
             "outputs/v8/hand_ranks.bin",
-            "outputs/v0-smoke/hand_ranks.bin",
-        ] {
+        ];
+        for cand in &candidates {
+            let p = workspace_root.join(cand);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+        // Also try the manifest-relative location as a fallback.
+        for cand in &candidates {
             if std::path::Path::new(cand).exists() {
                 return Some((*cand).to_string());
             }

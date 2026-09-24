@@ -231,11 +231,24 @@ mod t13_tests {
     use pkr_contracts::Evaluator;
 
     fn find_rank_table() -> Option<String> {
-        for cand in &[
+        // Resolve against the workspace root (nextest runs from the crate dir).
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crate is two levels deep");
+        let candidates = [
+            "outputs/v23/hand_ranks.bin",
+            "outputs/v0-smoke/hand_ranks.bin",
             "outputs/v9/hand_ranks.bin",
             "outputs/v8/hand_ranks.bin",
-            "outputs/v0-smoke/hand_ranks.bin",
-        ] {
+        ];
+        for cand in &candidates {
+            let p = workspace_root.join(cand);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+        for cand in &candidates {
             if std::path::Path::new(cand).exists() {
                 return Some((*cand).to_string());
             }
