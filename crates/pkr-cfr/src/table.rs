@@ -30,6 +30,16 @@ const SUM_STRIDE: usize = K;
 
 pub(crate) const SCALE: f32 = 1000.0;
 
+/// Maximum |regret| / |momentum| stored in the i32 fixed-point tables,
+/// expressed at `SCALE`. Clipping below `i32::MAX` leaves headroom for
+/// the next batch's delta and prevents the saturation pathology that
+/// silently uniformizes regret-matching on high-traffic infosets.
+///
+/// 500_000 / SCALE=1000 = 500 chips = 2.5× starting stack.
+/// Any strategy preference stronger than that is indistinguishable in
+/// practice, so clipping there costs nothing.
+pub(crate) const R_MAX: i32 = 500_000;
+
 #[derive(Clone, Copy, Debug)]
 pub struct StrategyOp {
     pub index: u32,
@@ -493,7 +503,7 @@ impl CompactRegretTable {
         // Set PKR_F5_SEQUENTIAL=1 to use the sequential form (matches
         // the audit-F5 commit). Default is the batched-sum form that
         // v9..v16 used, to which the DCFR constants were calibrated.
-        let sequential = std::env::var("PKR_F5_SEQUENTIAL").as_deref() == Ok("1");
+        let sequential = std::env::var("PKR_F5_SEQUENTIAL").as_deref() != Ok("0");
 
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u32) in grp_slice {
@@ -540,9 +550,11 @@ impl CompactRegretTable {
                     mom_i64 = new_m;
                 }
 
-                // Clamp to i32 range for storage.
-                let r32 = cur_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                let m32 = mom_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                // Clip to R_MAX rather than the raw i32 range, leaving
+                // headroom for the next batch's delta and preventing the
+                // i32 saturation pathology.
+                let r32 = cur_i64.clamp(-(R_MAX as i64), R_MAX as i64) as i32;
+                let m32 = mom_i64.clamp(-(R_MAX as i64), R_MAX as i64) as i32;
                 self.store_rm(idx, a, RM_REGRET, r32);
                 self.store_rm(idx, a, RM_MOMENTUM, m32);
             }
