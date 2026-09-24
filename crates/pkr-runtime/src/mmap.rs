@@ -1,7 +1,8 @@
 use bytemuck;
 use memmap2::Mmap;
 use pkr_export::header::{
-    FileHeader, FORMAT_VERSION_V2, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
+    FileHeader, FORMAT_VERSION_V2, FORMAT_VERSION_V3, FORMAT_VERSION_V4,
+    HASH_ALGO_FNV1A64_INFOSET,
 };
 use std::fs::File;
 use std::path::Path;
@@ -262,5 +263,67 @@ mod tests {
             MmapError::InvalidHashAlgo(1, _) => {}
             other => panic!("expected InvalidHashAlgo, got {:?}", other),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // B6 regression tests (audit: "version > 4 accepted as v4; cdf length
+    // not validated; max_actions_k range unchecked").
+    // ------------------------------------------------------------------
+
+    fn create_test_blueprint_with(version: u32, k: u8, cdf_len_override: Option<u32>) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let fh = FileHeader {
+            magic: *MAGIC,
+            version,
+            variant_id: 0,
+            infoset_count: 10,
+            max_actions_k: k,
+            hash_algo: HASH_ALGO_FNV1A64_INFOSET,
+            _padding: [0; 6],
+        };
+        buf.write_all(bytemuck::bytes_of(&fh)).unwrap();
+        if version >= FORMAT_VERSION_V3 {
+            buf.extend(std::iter::repeat_n(0u8, 48));
+        }
+        if version >= FORMAT_VERSION_V4 {
+            buf.extend(std::iter::repeat_n(0u8, 40));
+        }
+        let kc: u32 = 10;
+        let cdf_len: u32 = cdf_len_override.unwrap_or(kc * k as u32);
+        buf.write_all(&kc.to_le_bytes()).unwrap();
+        buf.write_all(&cdf_len.to_le_bytes()).unwrap();
+        for _ in 0..kc {
+            buf.write_all(&[0u8; 8]).unwrap();
+        }
+        buf.extend(std::iter::repeat_n(0u8, cdf_len as usize));
+        buf
+    }
+
+    #[test]
+    fn b6_rejects_version_above_v4() {
+        let data = create_test_blueprint_with(FORMAT_VERSION_V4 + 1, 3, None);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &data).unwrap();
+        let r = MmapReader::new(tmp.path());
+        assert!(r.is_err(), "version above v4 must be rejected");
+    }
+
+    #[test]
+    fn b6_rejects_max_k_zero() {
+        let data = create_test_blueprint_with(FORMAT_VERSION_V2, 0, None);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &data).unwrap();
+        let r = MmapReader::new(tmp.path());
+        assert!(r.is_err(), "max_actions_k=0 must be rejected");
+    }
+
+    #[test]
+    fn b6_rejects_cdf_len_mismatch() {
+        // k=3, keys=10 => correct cdf_len is 30; advertise 29.
+        let data = create_test_blueprint_with(FORMAT_VERSION_V2, 3, Some(29));
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &data).unwrap();
+        let r = MmapReader::new(tmp.path());
+        assert!(r.is_err(), "cdf_len != key_count * k must be rejected");
     }
 }
