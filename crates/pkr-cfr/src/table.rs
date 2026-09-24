@@ -698,16 +698,18 @@ impl CompactRegretTable {
         guard.iter().map(|(k, _)| *k).collect()
     }
 
+    /// Normalized average strategy for the given infoset hash.
+    ///
+    /// B10: previously returned raw strategy-sum accumulators (unnormalized
+    /// f64 -> f32), which are not probability distributions. Now delegates
+    /// to `compute_export_strategy`, the same routine used by the exporter
+    /// and `get_average_strategy_into`, so all consumers see a consistent
+    /// probability vector.
     pub fn get_average_strategy_slice(&self, infoset_hash: u64) -> Option<[f32; K]> {
         let guard = self.hash_to_idx.pin();
-        guard.get(&infoset_hash).map(|idx| {
-            let idx = *idx;
-            let mut out = [0.0f32; K];
-            for i in 0..K {
-                out[i] = self.load_sum(idx, i) as f32;
-            }
-            out
-        })
+        guard
+            .get(&infoset_hash)
+            .map(|idx| self.compute_export_strategy(*idx))
     }
 
     pub fn snapshot(&self) -> TableSnapshot {
@@ -1296,6 +1298,26 @@ mod ckpt_v7_tests {
 #[cfg(test)]
 mod audit_regression_tests {
     use super::*;
+
+    /// B10: `get_average_strategy_slice` must return a normalized
+    /// probability vector, not raw strategy-sum accumulators.
+    #[test]
+    fn average_strategy_slice_is_normalized() {
+        let t = CompactRegretTable::with_capacity(64);
+        let hash = 0xB10_0001u64;
+        let idx = t.get_or_create_idx(hash);
+        // Accumulate arbitrary positive strategy sums.
+        t.add_strategy_sum_at(idx, 0, 3.0);
+        t.add_strategy_sum_at(idx, 1, 5.0);
+        t.add_strategy_sum_at(idx, 2, 2.0);
+
+        let s = t.get_average_strategy_slice(hash).expect("slice");
+        let sum: f32 = s.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "sum = {sum}");
+        assert!((s[0] - 0.3).abs() < 1e-5, "s[0] = {}", s[0]);
+        assert!((s[1] - 0.5).abs() < 1e-5, "s[1] = {}", s[1]);
+        assert!((s[2] - 0.2).abs() < 1e-5, "s[2] = {}", s[2]);
+    }
 
     /// B4: `allocated()` reflects slot consumption, not just map len().
     #[test]
