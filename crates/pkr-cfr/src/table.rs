@@ -9,7 +9,7 @@ use papaya::HashMap as PapayaMap;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
