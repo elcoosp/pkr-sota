@@ -39,3 +39,4 @@ benches/*/target/criterion
 # other-agent scratch file (not ours)
 worklog.md
 worklog.md
+.env

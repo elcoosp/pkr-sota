@@ -125,6 +125,16 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("river_buckets.bin");
             let k = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(256);
+            // River precompute cost is:
+            //   C(52,5) boards × 200 outer samples × EHS_SAMPLES inner evals
+            // The default EHS_SAMPLES=1000 (from ehs.rs) makes that ~520B evals
+            // = hours. 100 samples gives near-identical k-means centroids
+            // (the 10-dim histogram is smooth) at ~1/10 the cost.
+            // Respect an explicit EHS_SAMPLES env if the caller set one.
+            if std::env::var("EHS_SAMPLES").is_err() {
+                std::env::set_var("EHS_SAMPLES", "100");
+                println!("  (river default EHS_SAMPLES=100; override with env)");
+            }
             let _ = generate_river_buckets(k, rank_table_path, output);
             println!("Done.");
         }
