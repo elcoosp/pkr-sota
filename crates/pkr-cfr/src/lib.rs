@@ -82,8 +82,11 @@ impl Trainer {
                 let start = chunk_idx * CHUNK_ITERS;
                 let end = ((chunk_idx + 1) * CHUNK_ITERS).min(n);
                 let pairs = end - start;
-                let mut batch: Vec<BatchItem> = Vec::with_capacity(pairs * 20);
-                let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 20);
+                // Size hint: ~500 node visits per iteration, each pushing
+                // up to K=6 regrets/strategies; realistic peak is ~1500 per
+                // iter, so pairs*800 gives headroom without over-allocating.
+                let mut batch: Vec<BatchItem> = Vec::with_capacity(pairs * 800);
+                let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 800);
                 let mut metrics = LocalMetrics::default();
 
                 let base_iter = start_iter + start as u32;
@@ -159,11 +162,10 @@ impl Trainer {
         let total_strats: usize = thread_results.iter().map(|(_, s, _)| s.len()).sum();
         let mut merged_batch = Vec::with_capacity(total_items);
         let mut merged_strategy = Vec::with_capacity(total_strats);
-        let mut batch_metrics = LocalMetrics::default();
-        for entry in thread_results.iter() {
-            merged_batch.extend_from_slice(&entry.0);
-            merged_strategy.extend_from_slice(&entry.1);
-            batch_metrics.merge_from(&entry.2);
+        let mut batch_metrics = LocalMetrics::default();        for (mut b, mut s, m) in thread_results {
+            merged_batch.append(&mut b);
+            merged_strategy.append(&mut s);
+            batch_metrics.merge_from(&m);
         }
         let t_merge = t1.elapsed();
 
