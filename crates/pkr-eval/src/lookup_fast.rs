@@ -292,7 +292,10 @@ mod t13_tests {
         let qq229: [u8; 5] = [10, 23, 0, 13, 7];
         let a = t.evaluate_hand(&kk447, &[]);
         let b = t.evaluate_hand(&qq229, &[]);
-        assert!(a < b, "table must rank KK447 better than QQ229 (lower = better)");
+        assert!(
+            a < b,
+            "table must rank KK447 better than QQ229 (lower = better)"
+        );
     }
 
     #[test]
