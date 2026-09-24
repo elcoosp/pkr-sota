@@ -11,6 +11,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Global allocator: mimalloc. Under heavy parallel allocation
+/// (BatchItem/StrategyOp buffers, papaya map, large arrays) it
+/// substantially outperforms the system allocator and lowers RSS.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Fixed seed for the exploitability evaluator. Using a constant rather
 /// than `done` makes successive EVAL points directly comparable
 /// (common-random-numbers comparison). The training RNG is separate.
