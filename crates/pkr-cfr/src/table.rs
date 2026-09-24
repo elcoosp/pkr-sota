@@ -132,47 +132,78 @@ pub struct InfoSetDump {
     pub regrets: [f32; K],
 }
 
-const IDX_CACHE_INIT: usize = 1 << 18;
-const IDX_CACHE_MAX: usize = 1 << 20;
+// P1-d: direct-mapped per-thread idx cache. Replaces the HashMap that
+// had a hard clear-at-1M-entries cliff (hit rate collapsed above 1M
+// infosets). Direct mapping means colliding keys evict one slot; the
+// hash is uniform, so eviction is cheap. Memory: 2^19 * 16 B = 8 MB
+// per thread.
+const CACHE_BITS: u32 = 19;
+const CACHE_SIZE: usize = 1 << CACHE_BITS;
+
+#[derive(Clone, Copy)]
+struct CacheSlot {
+    key: u64,
+    idx: u32,
+}
 
 thread_local! {
-    static IDX_CACHE: RefCell<HashMap<u64, usize, FoldHasher>> =
-        RefCell::new(HashMap::with_capacity_and_hasher(
-            IDX_CACHE_INIT,
-            FoldHasher::default(),
-        ));
+    static IDX_CACHE: RefCell<Vec<CacheSlot>> = RefCell::new(vec![
+        CacheSlot { key: 0, idx: 0 };
+        CACHE_SIZE
+    ]);
 }
 
 // Generation counter for the thread-local IDX_CACHE (audit F14):
 // bumped on every checkpoint load so entries cached before the load
 // can never alias post-load indices on a worker thread that did not
-// observe the clear.
+// observe the clear. Folded into the key derivation, so old entries
+// simply miss.
 static CACHE_GEN: AtomicU64 = AtomicU64::new(0);
 
-#[inline]
-fn cache_lookup(hash: u64) -> Option<usize> {
-    IDX_CACHE.with(|c| c.borrow().get(&cache_key(hash)).copied())
-}
-
-#[inline]
+#[inline(always)]
 fn cache_key(hash: u64) -> u64 {
-    // Fold the process-wide generation into the key. Entries inserted
-    // under an older generation simply miss (they are never returned),
-    // which is exactly the invalidation we want without cross-thread
-    // coordination.
     hash ^ CACHE_GEN
         .load(Ordering::Relaxed)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
+#[inline(always)]
+fn cache_slot(key: u64) -> usize {
+    (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - CACHE_BITS)) as usize
+}
+
+#[inline]
+fn cache_lookup(hash: u64) -> Option<usize> {
+    let key = cache_key(hash);
+    // key==0 cannot be a valid entry (0 is the sentinel for an empty slot);
+    // the probability of a genuine FNV-1a-collide-with-sentinel is 2^-64,
+    // so we treat it as a miss.
+    if key == 0 {
+        return None;
+    }
+    IDX_CACHE.with(|c| {
+        let slots = c.borrow();
+        let s = &slots[cache_slot(key)];
+        if s.key == key {
+            Some(s.idx as usize)
+        } else {
+            None
+        }
+    })
+}
+
 #[inline]
 fn cache_insert(hash: u64, idx: usize) {
+    let key = cache_key(hash);
+    if key == 0 {
+        // Extremely rare: skip insert rather than clobber the empty sentinel.
+        return;
+    }
     IDX_CACHE.with(|c| {
-        let mut m = c.borrow_mut();
-        if m.len() >= IDX_CACHE_MAX {
-            m.clear();
-        }
-        m.insert(cache_key(hash), idx);
+        let mut slots = c.borrow_mut();
+        let s = &mut slots[cache_slot(key)];
+        s.key = key;
+        s.idx = idx as u32;
     });
 }
 
@@ -990,7 +1021,7 @@ impl CompactRegretTable {
             .par_iter()
             .for_each(|c| c.store(0, Ordering::Relaxed));
         self.next_idx.store(0, Ordering::Relaxed);
-        IDX_CACHE.with(|c| c.borrow_mut().clear());
+        IDX_CACHE.with(|c| *c.borrow_mut() = vec![CacheSlot { key: 0, idx: 0 }; CACHE_SIZE]);
         let guard = self.hash_to_idx.pin();
         guard.clear();
         for _ in 0..map_len {
@@ -1023,7 +1054,7 @@ impl CompactRegretTable {
         }
         self.next_idx.store(n, Ordering::Relaxed);
         CACHE_GEN.fetch_add(1, Ordering::Relaxed);
-        IDX_CACHE.with(|c| c.borrow_mut().clear());
+        IDX_CACHE.with(|c| *c.borrow_mut() = vec![CacheSlot { key: 0, idx: 0 }; CACHE_SIZE]);
         Ok(iteration)
     }
 }
