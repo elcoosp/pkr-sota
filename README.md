@@ -3,103 +3,102 @@
 
   # pkr-sota
 
-  *A No-Limit Texas Hold'em CFR solver that trains on a Mac Mini M1 and ships a memory-mapped blueprint for sub-millisecond lookup on a cheap VPS.*
+  *A Rust workspace that takes a poker game from raw `Card` enums to a queried strategy in production.*
 
-  [![Rust](https://img.shields.io/badge/Rust-2021-000000?style=flat-square&logo=rust)](https://www.rust-lang.org)
+  [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-000000?style=flat-square&logo=rust)](https://www.rust-lang.org)
   [![Crates](https://img.shields.io/badge/Crates-11-6F4E37?style=flat-square)](#workspace)
-  [![Algorithm](https://img.shields.io/badge/Algorithm-DCFR%20%2B%20PCFR%2B-4B32C3?style=flat-square)](#cfr-algorithm)
-  [![Throughput](https://img.shields.io/badge/Throughput-~27K%20it%2Fs%20%40%20M1-00BFFF?style=flat-square)](#performance)
-  [![Runtime](https://img.shields.io/badge/Runtime-Memory%20Mapped-228B22?style=flat-square)](#runtime-artifact)
-  [![Lookup p99](https://img.shields.io/badge/Lookup%20p99-%3C%201%20ms-333333?style=flat-square)](#performance)
-  [![Smoke Test](https://img.shields.io/badge/Smoke%20Test-end--to--end-brightgreen?style=flat-square)](#quickstart)
-  [![Tests](https://img.shields.io/badge/Tests-98%20passing-brightgreen?style=flat-square)](#project-status)
+  [![Parallelism](https://img.shields.io/badge-Parallelism-rayon-007ACC?style=flat-square)](#architecture)
+  [![Memory-Mapped](https://img.shields.io/badge-I/O-memmap2-228B22?style=flat-square)](#abstraction-subsystem)
+  [![Profile](https://img.shields.io/badge-Release-LTO%20fat%20%2B%20panic%3Dabort-9B59B6?style=flat-square)](#release-profile)
+  [![License](https://img.shields.io/badge/License-TBD-blue?style=flat-square)](#)
 
   ⭐ If you like this project, star it on GitHub — it helps a lot!
 
-  [Overview](#overview) • [Architecture](#architecture) • [Quickstart](#quickstart) • [Performance](#performance) • [Docs](#docs)
+  [Overview](#overview) • [Workspace](#workspace) • [Architecture](#architecture) • [Quickstart](#quickstart) • [CLI](#cli) • [Abstraction](#abstraction-subsystem) • [Status](#project-status)
 
 </div>
 
 ---
 
-A Rust workspace that takes a poker game from raw `Card` enums to a queried strategy in production. It implements external-sampling MCCFR with DCFR discounting and PCFR+ momentum, a k-means hand-strength abstraction, a compact `i32`/`i64` regret table, rayon-batched parallel training, atomic checkpoint rotation, and a runtime that `mmap`s the exported blueprint and binary-searches it on the hot path.
+A Cargo workspace of 11 crates that implements an end-to-end poker pipeline: precompute hand-rank and k-means abstraction tables, train a regret-based strategy, export a binary blueprint, and query it at runtime. This README describes what's **verifiable from the actual code in this repository** — for performance numbers, algorithm internals, and crate APIs that live in source files not yet in this snapshot, see [Roadmap & unverified claims](#roadmap--unverified-claims).
 
 > [!NOTE]
-> pkr-sota is a research-grade NLHE solver under active development. The end-to-end pipeline is functional today and verified by `./smoke.sh`: precompute → train → export → load → query. See [Project Status](#project-status) for what's wired up vs. scaffolded.
+> The end-to-end pipeline is functional today and verified by `./smoke.sh` — precompute → train → export → load → query. The script is referenced in `CHANGELOG.md` as the project's end-to-end proof-of-concept (10 training iterations, blueprint export, `pkr-runtime` load).
 
 ## Overview
 
-The pipeline is split in two: a **training side** that runs on a beefy machine (Mac Mini M1 in the reference setup), and a **runtime side** that loads the exported blueprint on a cheap VPS or inside another application. The two halves only communicate through a single memory-mapped binary file.
+`pkr-sota` is split in two halves that communicate through a single binary file:
 
-```
-   TRAINING (M1)                              RUNTIME (VPS or host app)
-   ─────────────                              ─────────────────────────
+- **Training** (`pkr-trainer` binary): orchestrates abstraction loading, regret-minimisation training, and blueprint export. CLI built with `clap`, parallelism via `rayon`, logging via `tracing`.
+- **Runtime** (`pkr-runtime` library, source not in this snapshot): loads the exported blueprint via `mmap` and exposes a query API.
 
-   pkr-trainer binary                         pkr-runtime library
-   ├── pkr-abstraction: load tables           ├── MmapReader
-   ├── pkr-eval: mmap hand ranks              ├── SolverHandle
-   ├── pkr-cfr: Trainer                       └── get_advice_fast(hash)
-   │   ├── CompactRegretTable                     ↓
-   │   │   ├── i32 regret + momentum           O(log n) binary search
-   │   │   ├── i64 strategy_sum                over sorted key array
-   │   │   └── thread-local idx cache
-   │   ├── traverse (batched, 256 iters/sync)
-   │   ├── flush_cpu_batch (sort + parallel)
-   │   └── metrics (nodes, depth, cache, dedup)
-   ├── pkr-export: write_blueprint
-   └── produces:
-       ├── blueprint.bin    (mmap'd key + CDF arrays)
-       ├── metrics.csv      (live training health)
-       └── stats.json       (post-training strategy analysis)
+The two halves share the `pkr-abstraction` crate for street-aware infoset hashing, `pkr-eval` for hand-rank lookup, and `pkr-contracts` for the trait boundaries between layers.
+
+### Release profile
+
+From the root `Cargo.toml` `[profile.release]`:
+
+```toml
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = true
+strip = "symbols"
 ```
 
-### Workspace
+The workspace edition is `2021`, version `0.1.0`, authors `["pkr-sota"]`, resolver `2`.
 
-| Crate | Status | Purpose |
+## Workspace
+
+The 11 crates declared in the root `Cargo.toml` `[workspace]`:
+
+| Crate | Source in this snapshot? | Role (per `Cargo.toml` members list) |
 |---|---|---|
-| `pkr-contracts` | current | Trait boundaries: `Evaluator`, `AbstractionBuilder`, `BlueprintProvider`, `GameRules` |
-| `pkr-core` | current | `Card`, `Deck`, `GameState`, `NlheRuleset`, stack-allocated `legal_actions_into` |
-| `pkr-eval` | current | `NlheEvaluator` (scalar) and `TableEvaluator` (mmap'd lookup). Combinadic unrank helpers. |
-| `pkr-abstraction` | current | `KMeansAbstraction`, `calculate_ehs`, `pkr-abstraction-precompute` binary |
-| `pkr-cfr` | current | `Trainer`, `CompactRegretTable`, `traverse`, `dcfr`, `metrics`. Batched parallel training. |
-| `pkr-export` | current | `write_blueprint`, `FileHeader`, `fmph`, `translate` |
-| `pkr-runtime` | current | `MmapReader`, `SolverHandle` — the VPS-side library |
-| `pkr-testgames` | current | Kuhn poker harness for measuring CFR variants |
-| `pkr-trainer` | current | CLI binary that orchestrates the whole pipeline |
-| `pkr-exploit` | unwired | Opponent modeling overlay; defined, not integrated |
-| `pkr-fuzz` | unwired | Rules fuzzing + eval harness; defined, not integrated |
+| `crates/pkr-contracts` | no | Trait boundaries referenced by `pkr-abstraction` (`Evaluator`, `AbstractionBuilder`, `fnv1a`, `FNV_OFFSET`) |
+| `crates/pkr-core` | no | Card/Deck/Game primitives |
+| `crates/pkr-cfr` | no | Trainer + regret table (`Trainer::with_capacity`, `run_iterations_parallel`, `load_checkpoint`, `save_checkpoint`, `iteration`, `get_table`, `is_near_capacity`) |
+| `crates/pkr-eval` | no | `NlheEvaluator` (scalar), `TableEvaluator::new(path)`, combinadic helpers (`choose`, `combinadic_unrank_{2,3,5,6,7}`) |
+| `crates/pkr-abstraction` | **yes** | `KMeansAbstraction`, `calculate_ehs`, `pkr-abstraction-precompute` binary |
+| `crates/pkr-export` | no | `write_blueprint(path, table, &keys)`, `FileHeader` |
+| `crates/pkr-runtime` | no | `SolverHandle` (re-exported at crate root per `CHANGELOG.md`), `debug_keys()` |
+| `crates/pkr-fuzz` | no | Scaffolded, not integrated |
+| `crates/pkr-exploit` | no | `best_response::sampled_exploitability(table, abstraction, evaluator, deals, seed)` — sampled exploitability in milli-big-blinds per game |
+| `crates/pkr-testgames` | no | Kuhn poker harness (per stale README — not in this snapshot) |
+| `binaries/pkr-trainer` | **yes** | CLI binary that orchestrates the whole pipeline |
+
+Crates whose source is **in this snapshot** are documented with verified API surfaces below. Crates whose source is **not in this snapshot** are documented with whatever API surface is *referenced* from the snapshot — claims marked "per `CHANGELOG.md`" or "referenced from `main.rs`" are not yet grounded in the implementation.
 
 ## Architecture
 
-The hot path is built around three deliberate choices:
+Verifiable from `binaries/pkr-trainer/src/main.rs`:
 
-- **Combinadic indexing everywhere.** Preflop uses `(52 choose 2)`, flop uses `(52 choose 5) × 10` hole-masks, turn uses `(52 choose 6) × 15` masks. Memory-dense, branch-light, no hashing on the lookup path.
-- **Packed regret table.** `i32` regret + `i64` strategy-sum per infoset, fixed-point at scale 1000. No per-cell bookkeeping, no `Vec` allocations. A thread-local `idx` cache means the `get_or_create_idx` CAS loop almost never hits after warm-up.
-- **256-iteration batching.** Each rayon dispatch runs 16 local iterations that buffer into thread-local arrays, then one sort + parallel merge + flush. This amortises the serial merge step and is what gave the project its first positive parallel scaling.
-
-### CFR Algorithm
-
-- **Regret update**: `r ← max(0, w·r⁺ + w·r⁻ + Δ)` where `w = t^p/(t^p+1)` for `t ≥ τ=1000`, else `w = 1` (canonical DCFR, Brown & Sandholm 2019).
-- **Momentum**: PCFR+ (Farina, Kroer, Sandholm 2021): `Δ` is a smoothing of the raw regret delta over iterations.
-- **Strategy accumulator**: unweighted own-reach sum, `i64` fixed-point at scale 1000.
-- **Batching**: 256 logical iterations per rayon dispatch. Each chunk runs 16 iterations locally, buffers accumulate, then one merge + flush at the end.
-
-> [!NOTE]
-> The canonical discount factor is bounded in `[0.5, 1)`. In `f32`, `t^p + 1` rounds to `t^p` once `t^p` exceeds ~8.4e6, so the factor saturates to exactly `1.0` and behaves like vanilla CFR for most of a real training run. An earlier `RatioPower` formula was removed after the Kuhn harness proved it overflows `f32` around `t=3000`. See `docs/status.md` for details.
-
-### Runtime Artifact
-
-`blueprint.bin` layout (see `crates/pkr-export/src/writer.rs`):
-
-```
-FileHeader          (32 bytes: magic, version, variant, count, k, hash_algo)
-key_count: u32
-cdf_size:  u32
-keys:      u64 × key_count         (sorted, for binary search)
-cdf:       u8  × cdf_size          (K bytes per key, monotonic CDF)
+```text
+pkr-trainer binary
+├── TableEvaluator::new(--rank-table)              ← pkr-eval, mmap'd hand-rank lookup
+├── load_centroids(--centroids) → CentroidStore    ← pkr-abstraction, bincode-deserialised
+├── KMeansAbstraction::from_store(store, evaluator)
+├── abstraction.load_street_centroids(street, path)  optional, streets 1..=3
+├── abstraction.init_table(street, path)             optional, streets 0..=3, mmap'd
+├── abstraction.load_flop_buckets(path)              optional
+├── Trainer::with_capacity(abstraction, evaluator, capacity)
+├── trainer.load_checkpoint(path)?                   if checkpoint file exists
+├── loop { trainer.run_iterations_parallel(256);     ← ITERS_PER_SYNC = 256
+│         report + CSV row every --report-every
+│         sampled exploitability every --eval-every
+│         save_checkpoint_rolling(path) every --checkpoint-every
+│         break if trainer.is_near_capacity() }
+├── trainer.get_table().get_keys() → sorted
+├── write_blueprint(output, trainer.get_table(), &keys)
+└── optional: stats JSON with strategy analysis + 200 sampled infosets
 ```
 
-`pkr-export` also builds an FMph (minimal perfect hash) structure but the runtime currently uses binary search over the sorted key array. Both layouts are correct; only one is on the hot path.
+Key implementation facts verified from the source:
+
+- **`ITERS_PER_SYNC: u32 = 256`** — the per-rayon-dispatch iteration batch size (`binaries/pkr-trainer/src/main.rs`).
+- **32 MiB rayon worker stack** — `ThreadPoolBuilder::new().num_threads(n).stack_size(32 * 1024 * 1024).build_global()`.
+- **Atomic checkpoint rotation** — `save_checkpoint_rolling` writes to `.tmp`, rotates the existing checkpoint to `.prev`, then renames `.tmp` to the final path. A crash mid-write can never corrupt the main checkpoint file.
+- **Resumable training** — if `--checkpoint <path>` is set and the file exists at startup, the trainer calls `trainer.load_checkpoint(path)` and resumes from `trainer.iteration()`. A failure prints a warning and starts fresh.
 
 ## Quickstart
 
@@ -109,104 +108,197 @@ cdf:       u8  × cdf_size          (K bytes per key, monotonic CDF)
 ./smoke.sh
 ```
 
-Builds tiny precompute artifacts, trains 10 iterations, exports a blueprint, loads it through `pkr-runtime`, and queries it. Verifies the whole chain works in ~2–5 minutes (cold) or seconds (warm).
-
-### Production-scale profile
-
-```bash
-./proftest.sh
-```
-
-Generates realistic abstraction tables (k=64, flop table 26M entries), trains 100K iterations, and writes:
-
-- `.proftest/metrics.csv` — time series of CFR health + timing
-- `.proftest/stats.json` — end-of-run snapshot + strategy analysis + 200 sampled infosets
-- `.proftest/blueprint.bin` — the actual artifact
+Per `CHANGELOG.md`: end-to-end proof-of-concept — precompute, train 10 iters, export blueprint, load via `pkr-runtime`. The script uses absolute paths and cleans `.smoke/` before each run (also per `CHANGELOG.md`). Both `.smoke/` and `.proftest/` are gitignored.
 
 ### Throughput benchmark
 
 ```bash
-./bench.sh   # THREADS_LIST="1 2 4 8" SECONDS_PER_RUN=15 by default
+./bench.sh
 ```
 
-Iterates thread counts, prints `BENCH` lines you can diff. `it/s × 86400 = iterations per day`. Level-A arena-playable is roughly `1e6–1e7` iterations.
+Verifiable from `bench.sh`:
 
-> [!TIP]
-> Ctrl-C is safe at any point during training. Rerunning `./run.sh` resumes from `train.ckpt` if it exists — checkpoints use atomic `.tmp → .prev → final` rotation so a crash mid-write can never corrupt the main checkpoint file.
+- Default `THREADS_LIST="1 2 4 8"`, default `SECONDS_PER_RUN=15`.
+- Requires `.smoke/turn_abstraction.bin` to exist (run `./smoke.sh` first).
+- Builds `pkr-trainer` in release mode, sets `PKR_PHASE_PROFILE=1`, and invokes the trainer with `--bench-seconds`, `--threads`, `--capacity 10000000`, and the abstraction-table paths under `.smoke/`.
+- Grep filter on stdout: `(Running with|BENCH|iter .*infosets|\[phase\])`.
+- The script's own closing note: "level-A arena-playable is roughly 1e6-1e7 iterations."
 
 ### Real training run
 
 ```bash
-# Edit run.sh: set ITERATIONS=10000000
-./run.sh
+./run.sh    # referenced from CHANGELOG.md (ITERATIONS variable)
 ```
 
-### CLI flags
+`run.sh` and the `justfile` are referenced in `CHANGELOG.md` as updated with checkpoint flags and a clippy gate. Neither file is in this snapshot.
 
-The `pkr-trainer` binary exposes the whole pipeline through `clap`. The flags that matter:
+## CLI
+
+The `pkr-trainer` binary exposes a `clap::Parser` CLI. Verified from `Cli` struct in `binaries/pkr-trainer/src/main.rs`:
 
 | Flag | Default | Purpose |
 |---|---|---|
 | `--iterations <N>` | `100000` | Total iterations before auto-export. |
+| `--output <path>` | `blueprint.bin` | Blueprint output path. |
+| `--centroids <path>` | `centroids.bin` | Default centroids file (bincode-serialised `CentroidStore`). |
+| `--flop_centroids <path>` | none | Optional per-street centroids. |
+| `--turn_centroids <path>` | none | Optional per-street centroids. |
+| `--river_centroids <path>` | none | Optional per-street centroids. |
+| `--preflop_table <path>` | none | Optional mmap'd preflop abstraction table. |
+| `--flop_table <path>` | none | Optional mmap'd flop abstraction table. |
+| `--turn_table <path>` | none | Optional mmap'd turn abstraction table. |
+| `--river_table <path>` | none | Optional mmap'd river abstraction table. |
+| `--flop_buckets <path>` | none | Optional flop-bucket array (raw `u8`). |
+| `--rank_table <path>` | `hand_ranks.bin` | `TableEvaluator` hand-rank lookup table. |
 | `--threads <N>` | autodetect | Rayon pool size. 32 MiB stack per worker. |
-| `--capacity <N>` | `5_000_000` | Initial `CompactRegretTable` slot count. |
-| `--checkpoint <path>` | off | Enables rolling checkpoint save. |
+| `--checkpoint <path>` | none | Enables rolling checkpoint save. |
 | `--checkpoint-every <N>` | `10000` | Iterations between checkpoint writes. |
-| `--metrics-csv <path>` | off | Per-interval row: regret, dedup, cache, depth, timing. |
-| `--stats-json <path>` | off | End-of-run summary: snapshot + cumulative metrics + strategy analysis + sampled infosets. |
+| `--capacity <N>` | `5_000_000` | Initial `CompactRegretTable` slot count. |
+| `--bench-seconds <N>` | `0` (off) | Time-bounded benchmark mode. |
+| `--metrics-csv <path>` | none | Per-interval CSV row. |
+| `--stats-json <path>` | none | End-of-run JSON summary. |
 | `--report-every <N>` | `10000` | Iterations between progress + CSV rows. |
-| `--eval-every <N>` | `0` (off) | Sampled best-response exploitability in milli-big-blinds per game. |
-| `--eval-deals <N>` | `2000` | Deals sampled per exploitability check. Accuracy ~ `1/sqrt(deals)`. |
-| `--bench-seconds <N>` | `0` (off) | Time-bounded benchmark mode (max iters in `bench_seconds` window). |
+| `--eval-every <N>` | `0` (off) | Sampled exploitability check interval. |
+| `--eval-deals <N>` | `2000` | Deals sampled per exploitability check. |
 
-`pkr-abstraction-precompute` ships subcommands: `hand_ranks`, `centroids`, `preflop`, `flop`, `turn`, `river`, `flow`, `all7`, plus `abs5`/`abs6`/`all4`/`all6`/`all8` (variants of the abstraction-table generator).
+### Metrics CSV columns
 
-## Performance
-
-Measured on Mac Mini M1, 8 threads, k=64 centroids:
+Verified from the `writeln!` call in `main.rs`:
 
 ```
-iter 5120/100000  | infosets: 110091  | 15196.1 it/s | cache_hit=0.584
-iter 51200/100000 | infosets: 374078  | 21159.3 it/s | cache_hit=0.873
-iter 100000/100000| infosets: 472881  | 27772.9 it/s | cache_hit=0.919
+iter,wall_s,it_per_s,infosets,cap_pct,max_abs_regret,mean_abs_regret,
+nonfinite,strat_mass,nodes,nodes_per_iter,avg_depth,max_depth,cache_hit_rate,
+regret_in,regret_out,regret_dedup,strategy_applied,
+traverse_ms,merge_ms,flush_ms,wall_ms
 ```
 
-| Metric | Value |
-|---|---|
-| Training throughput (8 threads, k=64) | ~27,000 it/s steady state |
-| Iterations per day | ~2.3 billion |
-| Iterations for arena-playable (roadmap target) | ~10 million |
-| Wall time for 10M iterations | ~6 minutes |
-| Init time (load tables, allocate table) | 0.7 s |
-| Runtime lookup (p99) | < 1 ms |
-| Runtime memory (blueprint mmap'd) | file size + ~10 MB |
+### Stats JSON shape
 
-At `10⁷` iterations and 5M infosets, working set is ~600 MB. At `10⁸` iterations and 50M infosets, working set exceeds 3 GB and throughput degrades to roughly 15–20K it/s as the `papaya` map and regret arrays stop fitting in cache.
+Verified from the `serde_json::json!` block in `main.rs`:
+
+- `config`: `iterations`, `threads`, `capacity`, `iters_per_sync`, `report_every`, `start_iter`, `end_iter`, `stopped_early`.
+- `wall_seconds`.
+- `snapshot`: `infosets`, `capacity`, `capacity_pct`, `max_abs_regret`, `mean_abs_regret`, `nonfinite_count`, `strategy_sum_mass`.
+- `cumulative_metrics`: `nodes`, `nodes_per_iteration`, `avg_depth`, `max_depth`, `cache_hit_rate`, `infosets_created`, `strategy_ops_pushed`, `strategy_ops_applied`, `regret_ops_input`, `regret_ops_unique`, `regret_dedup_ratio`, `batches`, `total_traverse_s`, `total_merge_s`, `total_flush_s`, `total_wall_s`, `depth_histogram`.
+- `strategy_analysis`: `total`, `empty`, `pure`, `mixed`, `mean_entropy_bits`, `entropy_histogram_0p25bit`, `dominant_action_counts`, `nonzero_strategy_sum_cells`, `uniform_fallback`.
+- `sample_infosets`: 200 entries, each `{ hash: "0x..", strategy: [f32], regrets: [f32] }`.
+
+### `pkr-abstraction-precompute` subcommands
+
+Verified from the `match args[1]` in `crates/pkr-abstraction/src/bin/precompute.rs`:
+
+| Command | Args | What it does |
+|---|---|---|
+| `hand_ranks` | `[output]` (default `hand_ranks.bin`) | Evaluates all `(52 choose 5)` 5-card combinations with `NlheEvaluator` and writes `u32` ranks little-endian. |
+| `centroids` | `[num_samples] [k] [rank_table_path] [output]` (defaults `1000`, `200`, `hand_ranks.bin`, `centroids.bin`) | Computes EHS/EHS² for all `(52 choose 2)` hole-cards, runs `simple_kmeans` (2D, 50 iters), serialises a `CentroidStore` via bincode. |
+| `preflop` | `[centroids_path] [rank_table_path] [output]` | Per-hole-card nearest-centroid id → `u8` table. |
+| `flop` | `[rank_table_path] [output] [k]` (default `k=64`) | 10-dim EHS histogram per flop, `kmeans_10d` clusters them, writes `u8` bucket per flop. |
+| `turn` | `[centroids_path] [rank_table_path] [output] [num_samples]` | Per `(hole, board)` pair, 15 hole-masks × `(52 choose 6)` combos, nearest centroid → `u8`. |
+| `river` | `[rank_table_path] [output] [k]` (default `k=256`) | 10-dim EHS histogram per 5-card board, `kmeans_10d`, `u8` bucket per board. |
+| `flow` | `[centroids_path] [rank_table_path] [output]` | Abstraction table over `(52 choose 5) × 10` hole-masks → `u8`. |
+| `all7` | `[rank_table_path] [output]` | EHS × 255 → `u8` for every `(52 choose 7)` combo. |
+| `abs5` `abs6` `all4` `all6` `all8` | same as `flow` | Aliases for `flow` (variants of the abstraction-table generator). |
+
+> [!NOTE]
+- All abstraction tables use `u8` bucket ids; centroid count must be `<= 255` (asserted in `precompute.rs`).
+- Flop and river buckets are derived from 10-dim EHS histograms (500 sampled deals per flop, 200 per river board).
+- EHS sampling defaults to 1000 deals per call, configurable via the `EHS_SAMPLES` env var (read once via `OnceLock` in `ehs.rs`).
+
+## Abstraction subsystem
+
+This is the only crate with full source in the snapshot, so it's documented in detail.
+
+### `ehs.rs` — Expected Hand Strength
+
+```rust
+pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f32, f32)
+```
+
+- Returns `(ehs, ehs_sq)` — mean equity and mean equity squared over `num_samples()` Monte-Carlo deals.
+- Zero heap allocations on the hot path: stack arrays `remaining[50]` and `full_board_buf[5]`, plus `partial_shuffle` from `rand`.
+- Equity per deal: `1.0` win, `0.5` tie, `0.0` loss.
+- Sample count: `EHS_SAMPLES` env var, default `1000`, cached in a `OnceLock<usize>`.
+
+### `lib.rs` — `KMeansAbstraction`
+
+```rust
+pub struct KMeansAbstraction {
+    centroids: HashMap<u8, Vec<(f32, f32)>>,   // per-street
+    default_centroids: Vec<(f32, f32)>,
+    tables: HashMap<u8, OnceLock<Mmap>>,         // street 0..=3, mmap'd
+    flop_buckets: OnceLock<Vec<u8>>,
+    evaluator: Arc<dyn Evaluator>,
+}
+```
+
+Implements `AbstractionBuilder` (from `pkr-contracts`). The `get_infoset_hash(hole, board, history, street) -> u64` method:
+
+1. Picks centroids for the street (falls back to `default_centroids`).
+2. Computes `cluster_id` based on `board.len()`:
+   - `0` (preflop): `flat_index_preflop(hole)` into the preflop table.
+   - `3` (flop): `flat_index_flop(hole, board)` into the flop table — `combinadic_rank(5 sorted cards) × 10` + hole-mask index.
+   - `4` (turn): `flat_index_turn(hole, board)` — `combinadic_rank_6(6 sorted cards) × 15` + hole-mask index.
+   - `5` (river): `(hand_rank >> 6) << 8 | board_bucket` — `hand_rank >> 6` gives ~116 tiers from the 7462-cardinality raw rank; `board_bucket` comes from the river table.
+3. Looks up `flop_bucket(board)` from the flop-buckets array.
+4. Folds all of `street`, `history.len()`, `history`, `cluster_id`, `flop_bucket` into a `u64` via `fnv1a` starting from `FNV_OFFSET`.
+
+The 10 hole-masks for flop and 15 for turn are statically tabulated inside `flat_index_*`. If a precomputed table isn't loaded (or the index falls outside its range), the abstraction falls back to `calculate_ehs` + `nearest_centroid` and emits a one-shot `eprintln!` warning via `warn_mc_fallback_once` — this path is ~100× slower per infoset than the table path.
+
+### Combinadic helpers used
+
+From `pkr_eval::lookup` and `pkr_eval::lookup_fast` (referenced but not in this snapshot):
+
+- `choose(n, k) -> u32` — binomial coefficient.
+- `combinadic_rank(cards) -> u32` — rank a sorted card slice.
+- `combinadic_unrank_{2,3,5,6,7}(idx) -> [u8; N]` — unrank to a card array.
+- A local `combinadic_rank_6([u8; 6]) -> u64` is defined in `pkr-abstraction/src/lib.rs`.
 
 ## Project Status
 
-| Layer | State | Notes |
+Verified from `CHANGELOG.md` (Unreleased section) and the actual code:
+
+| Layer | State | Source |
 |---|---|---|
-| Precompute (`hand_ranks`, `centroids`, `flop`/`turn`/`river` buckets, abstraction tables) | working | All subcommands wired up. `flow` is the main entry; `run.sh` calls the rest. |
-| Training (`pkr-cfr`) | working | DCFR + PCFR+, batched parallel, cache-hit > 0.9 at steady state. |
-| Checkpointing | working | Atomic `.tmp → .prev → final` rotation; resume on next launch. |
-| Live metrics | working | CSV row + `eprintln!` summary per `--report-every`. Includes dedup ratio, depth histogram, cache hit. |
-| Strategy analysis | working | End-of-run JSON: pure/mixed count, entropy histogram, dominant-action counts, 200 sampled infosets with raw regret + strategy vectors. |
-| Sampled exploitability | working | `--eval-every` triggers `pkr_exploit::best_response::sampled_exploitability` — milli-big-blinds per game. |
-| Export (`write_blueprint`) | working | Defensively sorts keys, normalises CDF via `get_average_strategy_into`. |
-| Runtime lookup | working | `SolverHandle` re-exported from `pkr-runtime` crate root. Binary search over sorted keys. |
-| `pkr-exploit` (full opponent modeling) | partial | Sampled exploitability works; full overlay not integrated into the trainer loop. |
-| `pkr-fuzz` (rules fuzzing) | scaffolded | Defined, not integrated. |
-| DCFR discount stability at `t > 8.4e6` | known issue | `f32` saturates `t^p + 1` → `t^p`; behaves as vanilla CFR past that point. Documented in `docs/status.md`. |
+| Workspace compiles with 11 crates | working | root `Cargo.toml` |
+| `pkr-trainer` CLI orchestrates precompute → train → export | working | `binaries/pkr-trainer/src/main.rs` |
+| `pkr-abstraction-precompute` binary with 12 subcommands | working | `crates/pkr-abstraction/src/bin/precompute.rs` |
+| `KMeansAbstraction` with combinadic flat-indexing for all 4 streets | working | `crates/pkr-abstraction/src/lib.rs` |
+| `calculate_ehs` Monte-Carlo equity with `EHS_SAMPLES` env override | working | `crates/pkr-abstraction/src/ehs.rs` |
+| Atomic rolling checkpoint save (`.tmp → .prev → final`) | working | `save_checkpoint_rolling` in `main.rs` |
+| `Trainer::with_capacity`, `load_checkpoint`, `save_checkpoint`, `iteration`, `get_table`, `run_iterations_parallel`, `is_near_capacity` | working | referenced from `main.rs` |
+| `CompactRegretTable::with_capacity(n)` | working | `CHANGELOG.md` "Added" |
+| `SolverHandle::debug_keys()` | working | `CHANGELOG.md` "Added" |
+| `pkr-runtime` re-exports `SolverHandle` at crate root | working | `CHANGELOG.md` "Fixed" |
+| `precompute` `hand_ranks` and `centroids` subcommands | working | `CHANGELOG.md` "Fixed" |
+| `write_blueprint` sorts keys defensively and normalises CDF via `get_average_strategy_into` | working | `CHANGELOG.md` "Fixed" |
+| `get_or_create_idx` CAS loop, clamp on save | working | `CHANGELOG.md` "Fixed" |
+| `load_external_blueprint` ignored test in `pkr-trainer` | working | `CHANGELOG.md` "Added" |
+| `pkr-exploit::best_response::sampled_exploitability` callable from CLI | working | referenced from `main.rs` |
+| `pkr-fuzz` | scaffolded | root `Cargo.toml` members list (no source in snapshot) |
+
+## Roadmap & unverified claims
+
+The following claims appear in the project's existing `README.md` but are **not verifiable from the code in this snapshot** — the relevant source files (`pkr-cfr`, `pkr-export`, `pkr-runtime`, `pkr-eval`, `pkr-core`, `pkr-contracts`, `pkr-testgames`) were not included in the dump. They're listed here so a maintainer can either re-add them once the source is reviewed or update them if they've drifted.
+
+- **Throughput numbers** — `~27,000 it/s` steady state, `15196 / 21159 / 27772 it/s` at iter 5120 / 51200 / 100000, `~2.3 billion iterations/day`. Verifiable by running `./bench.sh` on M1, not by reading code.
+- **CFR variant** — "external-sampling MCCFR with DCFR discounting and PCFR+ momentum." The `pkr-cfr` crate source is not in this snapshot; only `Trainer::run_iterations_parallel(batch)` is callable from `main.rs`.
+- **Regret table internals** — `i32 regret + i64 strategy_sum at fixed-point scale 1000`, thread-local idx cache, "16 local iterations then merge + flush" inside the 256-iter batch. The `CompactRegretTable` source is not in this snapshot.
+- **`blueprint.bin` layout** — `FileHeader` (32 bytes: magic, version, variant, count, k, hash_algo), `key_count: u32`, `cdf_size: u32`, `keys: u64 × key_count` (sorted), `cdf: u8 × cdf_size`. The `pkr-export/src/writer.rs` source is not in this snapshot.
+- **Runtime API** — `MmapReader`, `SolverHandle`, `get_advice_fast(hash)`, "O(log n) binary search over sorted key array", "p99 < 1 ms". The `pkr-runtime` source is not in this snapshot (only `SolverHandle::debug_keys()` and the crate-root re-export are mentioned in `CHANGELOG.md`).
+- **Working-set numbers** — `~600 MB` at 5M infosets, `>3 GB` at 50M, throughput degrades to `15-20K it/s` past that. Verifiable by running, not by reading code.
+- **f32 saturation note** — `t^p + 1` rounds to `t^p` once `t^p` exceeds ~8.4e6, so the DCFR discount saturates to `1.0` and behaves like vanilla CFR. The `RatioPower` formula overflow around `t=3000` is also claimed. Both are attributed to `docs/status.md` in the existing README — `docs/` is not in this snapshot.
+- **Test count** — `98 tests pass across 11 binaries, 1 ignored.` No test files in this snapshot; verifiable by running `cargo test`.
+- **Kuhn poker harness** — `pkr-testgames` source not in this snapshot.
 
 ## Docs
 
-See `docs/INDEX.md` for the full list with current/historical status.
+Referenced from the existing `README.md` (the `docs/` directory is not in this snapshot, so these paths are unverified):
 
+- `docs/INDEX.md` — full list with current/historical status
 - `docs/status.md` — current state of the codebase and known issues
 - `docs/arch-overview.md` — architecture and design decisions
 - `docs/spec/architecture.md` — Level 3 architectural specification
 - `docs/spec/bst.md` — Level 4 behavioral specifications and test plan
-- `docs/pkr-sota-winning-roadmap.md` — roadmap (some items done, some pending)
+- `docs/pkr-sota-winning-roadmap.md` — roadmap
 - `docs/tasks/` — machine-readable task definitions (historical)
 - `docs/archive/` — superseded docs, kept for reference
