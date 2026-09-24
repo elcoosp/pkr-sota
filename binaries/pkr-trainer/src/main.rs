@@ -3,7 +3,6 @@
 use clap::Parser;
 use pkr_abstraction::{load_centroids, KMeansAbstraction};
 use pkr_cfr::Trainer;
-use pkr_contracts;
 use pkr_eval::TableEvaluator;
 use pkr_export::writer::write_blueprint;
 use rayon::ThreadPoolBuilder;
@@ -171,6 +170,29 @@ fn save_checkpoint_rolling(
     std::fs::rename(&tmp, ckpt)?;
     Ok(())
 }
+fn export_blueprint(
+    trainer: &pkr_cfr::Trainer,
+    output: &std::path::Path,
+    min_visits: f32,
+    fingerprint: &pkr_core::abstraction::AbstractionFingerprint,
+) -> std::io::Result<usize> {
+    let table = trainer.get_table();
+    let mut keys = table.get_keys();
+    keys.sort_unstable();
+    if min_visits > 0.0 {
+        keys.retain(|k| {
+            table
+                .get_average_strategy_slice(*k)
+                .map_or(false, |s| s.iter().sum::<f32>() >= min_visits)
+        });
+    }
+    let path_str = output.to_str().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid output path")
+    })?;
+    write_blueprint(path_str, table, &keys, fingerprint)?;
+    Ok(keys.len())
+}
+
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -604,32 +626,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 } else {
                     // Export the current table as the promoted blueprint.
-                    let mut keys = trainer.get_table().get_keys();
-                    keys.sort_unstable();
-                    if cli.min_visits > 0.0 {
-                        keys.retain(
-                            |k| match trainer.get_table().get_average_strategy_slice(*k) {
-                                Some(strat) => {
-                                    let mass: f32 = strat.iter().sum();
-                                    mass >= cli.min_visits
-                                }
-                                None => false,
-                            },
-                        );
+                    match export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint) {
+                        Ok(n) => {
+                            eprintln!(
+                                "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
+                                done,
+                                br.exploitability_mbb,
+                                best_expl_mbb,
+                                cli.output.display(),
+                                n,
+                            );
+                            best_expl_mbb = Some(br.exploitability_mbb);
+                            promoted = true;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "WARNING: blueprint export failed at iter {done}: {e}"
+                            );
+                        }
                     }
-                    let output_path = cli.output.to_str().expect("invalid output path");
-                    write_blueprint(output_path, trainer.get_table(), &keys, &fingerprint)
-                        .expect("blueprint write failed");
-                    eprintln!(
-                        "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
-                        done,
-                        br.exploitability_mbb,
-                        best_expl_mbb,
-                        cli.output.display(),
-                        keys.len(),
-                    );
-                    best_expl_mbb = Some(br.exploitability_mbb);
-                    promoted = true;
                 }
 
                 last_eval_iter = done;
@@ -815,39 +830,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // already the best checkpoint; do not overwrite it here.
     if !promoted {
         // Fallback: --eval-every == 0 (no gate) or no eval fired.
-        let mut keys = trainer.get_table().get_keys();
-        keys.sort_unstable();
-
-        // T2.4: filter infosets whose accumulated reach-weighted strategy
-        // mass is below min_visits. These are the ones that would export as
-        // uniform fallback (never reached with meaningful probability) and
-        // contribute nothing but size to the blueprint. The runtime's
-        // host-app fallback handles them at inference time.
-        if cli.min_visits > 0.0 {
-            let before = keys.len();
-            keys.retain(
-                |k| match trainer.get_table().get_average_strategy_slice(*k) {
-                    Some(strat) => {
-                        let mass: f32 = strat.iter().sum();
-                        mass >= cli.min_visits
-                    }
-                    None => false,
-                },
-            );
-            eprintln!(
-                "min-visits filter ({:.1}): {} -> {} infosets",
-                cli.min_visits,
-                before,
-                keys.len()
-            );
-        }
-
-        eprintln!("Exporting {} infosets...", keys.len());
-
-        let output_path = cli.output.to_str().expect("invalid output path");
-        write_blueprint(output_path, trainer.get_table(), &keys, &fingerprint)
-            .expect("blueprint write failed");
-        eprintln!("Blueprint written to {}", output_path);
+        // T2.4: min-visits filter applied inside export_blueprint.
+        let n = export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint)?;
+        eprintln!("Blueprint written to {} ({} infosets)", cli.output.display(), n);
     }
 
     Ok(())
