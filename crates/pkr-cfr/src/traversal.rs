@@ -19,7 +19,7 @@ const MAX_DEPTH: u32 = 50;
 ///     r < -t * π_-i(I) * Δ; the absolute threshold is the conservative
 ///     common approximation.
 const PRUNE_WARMUP: u32 = 1_000_000;
-const PRUNE_THRESHOLD: i32 = -400_000; // -400 chips at SCALE=1000
+const PRUNE_THRESHOLD: i64 = -400_000; // -400 chips at SCALE=1000
 const PRUNE_SKIP_PROB: f32 = 0.95;
 
 /// Exploration floor at opponent nodes during MCCFR sampling.

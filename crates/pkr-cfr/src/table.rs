@@ -9,7 +9,7 @@ use papaya::HashMap as PapayaMap;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
@@ -38,7 +38,7 @@ pub(crate) const SCALE: f32 = 1000.0;
 /// 500_000 / SCALE=1000 = 500 chips = 2.5× starting stack.
 /// Any strategy preference stronger than that is indistinguishable in
 /// practice, so clipping there costs nothing.
-pub(crate) const R_MAX: i32 = 500_000;
+pub(crate) const R_MAX: i64 = i64::MAX / 4;
 
 #[derive(Clone, Copy, Debug)]
 pub struct StrategyOp {
@@ -151,7 +151,7 @@ fn warn_nonfinite_regret_once(iteration: u32) {
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
     /// Interleaved regret+momentum, i32 fixed-point at scale 1000.
-    data: Vec<AtomicI32>,
+    data: Vec<AtomicI64>,
     /// f64 strategy sums stored as u64 bits. Independent array to avoid
     /// false sharing with the interleaved regret/momentum data.
     strategy_sum: Vec<AtomicU64>,
@@ -172,8 +172,8 @@ impl CompactRegretTable {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut data: Vec<AtomicI32> = Vec::with_capacity(capacity * RM_STRIDE);
-        data.resize_with(capacity * RM_STRIDE, || AtomicI32::new(0));
+        let mut data: Vec<AtomicI64> = Vec::with_capacity(capacity * RM_STRIDE);
+        data.resize_with(capacity * RM_STRIDE, || AtomicI64::new(0));
         let mut strategy_sum: Vec<AtomicU64> = Vec::with_capacity(capacity * SUM_STRIDE);
         strategy_sum.resize_with(capacity * SUM_STRIDE, || AtomicU64::new(0));
         let map = PapayaMap::with_hasher(FoldHasher::default());
@@ -199,12 +199,12 @@ impl CompactRegretTable {
     }
 
     #[inline(always)]
-    fn load_rm(&self, idx: usize, action: usize, field: usize) -> i32 {
+    fn load_rm(&self, idx: usize, action: usize, field: usize) -> i64 {
         self.data[Self::off_rm(idx, action, field)].load(Ordering::Relaxed)
     }
 
     #[inline(always)]
-    fn store_rm(&self, idx: usize, action: usize, field: usize, v: i32) {
+    fn store_rm(&self, idx: usize, action: usize, field: usize, v: i64) {
         self.data[Self::off_rm(idx, action, field)].store(v, Ordering::Relaxed);
     }
 
@@ -553,10 +553,10 @@ impl CompactRegretTable {
                 // Clip to R_MAX rather than the raw i32 range, leaving
                 // headroom for the next batch's delta and preventing the
                 // i32 saturation pathology.
-                let r32 = cur_i64.clamp(-(R_MAX as i64), R_MAX as i64) as i32;
-                let m32 = mom_i64.clamp(-(R_MAX as i64), R_MAX as i64) as i32;
-                self.store_rm(idx, a, RM_REGRET, r32);
-                self.store_rm(idx, a, RM_MOMENTUM, m32);
+                let r64 = cur_i64.clamp(-R_MAX, R_MAX);
+                let m64 = mom_i64.clamp(-R_MAX, R_MAX);
+                self.store_rm(idx, a, RM_REGRET, r64);
+                self.store_rm(idx, a, RM_MOMENTUM, m64);
             }
         });
         (input_len, unique_len)
@@ -589,8 +589,8 @@ impl CompactRegretTable {
             for (item, result) in chunk.iter().zip(results.iter()) {
                 let idx = item.index as usize;
                 let a = item.action as usize;
-                self.store_rm(idx, a, RM_REGRET, result.regret);
-                self.store_rm(idx, a, RM_MOMENTUM, result.momentum);
+                self.store_rm(idx, a, RM_REGRET, result.regret as i64);
+                self.store_rm(idx, a, RM_MOMENTUM, result.momentum as i64);
             }
         }
     }
@@ -599,7 +599,7 @@ impl CompactRegretTable {
     /// (Brown & Sandholm, NeurIPS 2015) to decide when to skip exploring
     /// a hopeless action. Cheap inline read.
     #[inline(always)]
-    pub fn regret_scaled(&self, idx: usize, action: usize) -> i32 {
+    pub fn regret_scaled(&self, idx: usize, action: usize) -> i64 {
         self.load_rm(idx, action, RM_REGRET)
     }
 
@@ -817,8 +817,8 @@ impl CompactRegretTable {
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
-        w.write_all(b"PKRCKPT5")?;
-        w.write_all(&5u32.to_le_bytes())?;
+        w.write_all(b"PKRCKPT6")?;
+        w.write_all(&6u32.to_le_bytes())?;
         w.write_all(bytemuck::bytes_of(fingerprint))?;
         w.write_all(&(K as u32).to_le_bytes())?;
         w.write_all(&iteration.to_le_bytes())?;
@@ -864,14 +864,14 @@ impl CompactRegretTable {
             Ok(s)
         };
         let magic = read(&mut p, 8)?;
-        if magic != b"PKRCKPT5" {
+        if magic != b"PKRCKPT6" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "bad checkpoint magic (expected v5 format)",
             ));
         }
         let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        if version != 5 {
+        if version != 6 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported checkpoint version",
@@ -927,7 +927,7 @@ impl CompactRegretTable {
         }
         let rm_entries = n * RM_STRIDE;
         for i in 0..rm_entries {
-            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+            let v = i64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
             self.data[i].store(v, Ordering::Relaxed);
         }
         let sum_entries = n * SUM_STRIDE;
