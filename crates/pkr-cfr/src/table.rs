@@ -469,7 +469,8 @@ impl CompactRegretTable {
         if ops.is_empty() {
             return 0;
         }
-        ops.par_sort_unstable_by_key(|op| (op.index, op.action));
+        // E4b: bit-identical grouping key, single u64 compare (audit E4).
+        ops.par_sort_unstable_by_key(|op| ((op.index as u64) << 8) | op.action as u64);
 
         let mut groups: Vec<(usize, usize, u32, u8)> = Vec::with_capacity(ops.len() / 4 + 16);
         let mut i = 0usize;
@@ -486,7 +487,8 @@ impl CompactRegretTable {
         let applied = groups.len() as u64;
         let ops_ref: &[StrategyOp] = ops.as_slice();
         let n_threads = rayon::current_num_threads().max(1);
-        let chunk_size = (groups.len() / n_threads).max(1);
+        // E4a: match flush_cpu_batch's chunking (audit section E4).
+        let chunk_size = (groups.len() / (n_threads * 8)).max(64);
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u8) in grp_slice {
                 let mut prob = 0.0f64;
@@ -501,7 +503,19 @@ impl CompactRegretTable {
 
     /// Apply a batch of deferred regret updates. Returns (input_len,
     /// unique_count).
+    /// Apply a batch of deferred regret updates. Returns (input_len, unique_count).
+    /// Uses `FlushMode::production()` (env read once).
     pub fn flush_cpu_batch(&self, batch: &mut Vec<BatchItem>) -> (u64, u64) {
+        self.flush_cpu_batch_with(batch, FlushMode::production())
+    }
+
+    /// Same as `flush_cpu_batch` but with explicit mode. Tests should use
+    /// this; production goes through `flush_cpu_batch` -> `FlushMode::production`.
+    pub fn flush_cpu_batch_with(
+        &self,
+        batch: &mut Vec<BatchItem>,
+        mode: FlushMode,
+    ) -> (u64, u64) {
         let input_len = batch.len() as u64;
         if batch.is_empty() {
             return (0, 0);
@@ -523,61 +537,62 @@ impl CompactRegretTable {
         let unique_len = groups.len() as u64;
         let batch_ref: &[BatchItem] = batch.as_slice();
         let n_threads = rayon::current_num_threads().max(1);
-        let chunk_size = (groups.len() / n_threads).max(1);
-        // Fold mode: batched-sum (default) or sequential per-iteration.
-        // Set PKR_F5_SEQUENTIAL=1 to use the sequential form (matches
-        // the audit-F5 commit). Default is the batched-sum form that
-        // v9..v16 used, to which the DCFR constants were calibrated.
-        let sequential = std::env::var("PKR_F5_SEQUENTIAL").as_deref() != Ok("0");
+        // B3 audit: smaller chunks -> more parallel groups -> better work
+        // stealing on skewed group-size distributions.
+        let chunk_size = (groups.len() / (n_threads * 8)).max(64);
 
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u32) in grp_slice {
                 let idx = idx_u32 as usize;
                 let a = act_u32 as usize;
-                let mut cur_i64 = self.load_rm(idx, a, RM_REGRET) as i64;
-                let mut mom_i64 = self.load_rm(idx, a, RM_MOMENTUM) as i64;
+                let mut cur_i64 = self.load_rm(idx, a, RM_REGRET);
+                let mut mom_i64 = self.load_rm(idx, a, RM_MOMENTUM);
 
-                if sequential {
-                    // Sequential per-iteration fold: each delta applied
-                    // with its own iteration number and clamp between.
+                if mode.sequential {
                     for k in start..end {
                         let delta_i64 = to_fixed(batch_ref[k].delta as f64);
-                        let (new_r, new_m) = crate::dcfr::update_regret_i64(
+                        let (new_r, new_m) = crate::dcfr::update_regret_i64_mode(
                             cur_i64,
                             mom_i64,
                             batch_ref[k].iteration,
                             delta_i64,
+                            mode.momentum,
                         );
-                        if new_r == i64::MAX || new_r == i64::MIN {
+                        if new_r == i64::MAX {
                             warn_nonfinite_regret_once(batch_ref[k].iteration);
                         }
                         cur_i64 = new_r;
                         mom_i64 = new_m;
                     }
                 } else {
-                    // Batched-sum fold: sum deltas within the group, apply
-                    // one update with the group's iteration number.
+                    // Batched-sum fold: non-finite deltas skipped (B1/B3).
                     let mut delta_sum: f64 = 0.0;
                     let mut max_iter: u32 = batch_ref[start].iteration;
                     for k in start..end {
-                        delta_sum += batch_ref[k].delta as f64;
+                        let d = batch_ref[k].delta;
+                        if d.is_finite() {
+                            delta_sum += d as f64;
+                        }
                         if batch_ref[k].iteration > max_iter {
                             max_iter = batch_ref[k].iteration;
                         }
                     }
-                    let delta_i64 = (delta_sum * SCALE as f64).round() as i64;
-                    let (new_r, new_m) =
-                        crate::dcfr::update_regret_i64(cur_i64, mom_i64, max_iter, delta_i64);
-                    if new_r == i64::MAX || new_r == i64::MIN {
+                    let delta_i64 = to_fixed(delta_sum);
+                    let (new_r, new_m) = crate::dcfr::update_regret_i64_mode(
+                        cur_i64,
+                        mom_i64,
+                        max_iter,
+                        delta_i64,
+                        mode.momentum,
+                    );
+                    if new_r == i64::MAX {
                         warn_nonfinite_regret_once(max_iter);
                     }
                     cur_i64 = new_r;
                     mom_i64 = new_m;
                 }
 
-                // Clip to R_MAX rather than the raw i32 range, leaving
-                // headroom for the next batch's delta and preventing the
-                // i32 saturation pathology.
+                // Clip to R_MAX for arithmetic headroom; not a CFR clip.
                 let r64 = cur_i64.clamp(-R_MAX, R_MAX);
                 let m64 = mom_i64.clamp(-R_MAX, R_MAX);
                 self.store_rm(idx, a, RM_REGRET, r64);

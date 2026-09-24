@@ -231,8 +231,7 @@ pub fn update_regret_i64_mode(
     if t == 0 {
         return (delta_i64, delta_i64);
     }
-    let use_momentum = momentum_on && crate::dcfr::momentum_on();
-    let predicted_i64 = if use_momentum {
+    let predicted_i64 = if momentum_on {
         let gamma = 1.0 / ((t as f64) + 1.0).sqrt();
         ((1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64)).round() as i64
     } else {
