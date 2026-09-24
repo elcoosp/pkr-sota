@@ -175,6 +175,19 @@ pub fn discount_num_den(t: u32, p: u32) -> (i128, i128) {
     (tp, tp + 1)
 }
 
+/// PKR_MOMENTUM=0|off|false disables the PCFR+ momentum term,
+/// falling back to plain CFR+/DCFR: r' = max(0, disc(r) + delta).
+fn momentum_on() -> bool {
+    use std::sync::OnceLock;
+    static M: OnceLock<bool> = OnceLock::new();
+    *M.get_or_init(|| {
+        !matches!(
+            std::env::var("PKR_MOMENTUM").as_deref(),
+            Ok("0") | Ok("off") | Ok("false")
+        )
+    })
+}
+
 /// Exact `floor(r * t^2 / (t^2 + 1))` for `r >= 0`, `t >= TAU`; identity for warmup.
 #[inline(always)]
 fn discount_pos_i64(r: i64, t: u32) -> i64 {
@@ -218,7 +231,8 @@ pub fn update_regret_i64_mode(
     if t == 0 {
         return (delta_i64, delta_i64);
     }
-    let predicted_i64 = if momentum_on {
+    let use_momentum = momentum_on && crate::dcfr::momentum_on();
+    let predicted_i64 = if use_momentum {
         let gamma = 1.0 / ((t as f64) + 1.0).sqrt();
         ((1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64)).round() as i64
     } else {
