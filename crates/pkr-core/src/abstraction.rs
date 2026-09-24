@@ -37,8 +37,9 @@ pub const BET_SIZINGS: [f32; 3] = [0.5, 1.0, 2.0];
 /// river infoset key, so the fingerprint must reflect it or a checkpoint
 /// could silently load into a binary that computes different hashes.
 ///
-/// History: 6 -> 15 (audit F6) -> 13 (T2.2, 4x finer resolution).
-pub const RIVER_TIER_SHIFT: u8 = 13;
+/// History: 6 -> 15 (audit F6) -> 13 (T2.2, reverted 2026-09-24 -- T2.2
+/// increased infoset count ~2.5x without measurable quality improvement).
+pub const RIVER_TIER_SHIFT: u8 = 15;
 
 /// Bucket 2: raise size fraction < BUCKET_THRESHOLD_SMALL.
 pub const BUCKET_THRESHOLD_SMALL: f32 = 0.6;
