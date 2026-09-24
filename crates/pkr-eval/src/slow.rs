@@ -130,17 +130,25 @@ fn eval_5(hand: &[u8; 5]) -> u32 {
             | ((kickers[1] as u32) << 8);
         return !raw;
     }
-    let pairs: Vec<usize> = rank_counts
-        .iter()
-        .enumerate()
-        .filter(|&(_, &c)| c == 2)
-        .map(|(i, _)| i)
-        .collect();
-    if pairs.len() >= 2 {
+    // T8: fixed-size stack array instead of Vec<usize>. A 5-card hand
+    // can have at most 2 pairs, so 3 slots is generous. Removes a
+    // heap allocation per eval_5 call (21 calls per evaluate_hand on a
+    // 7-card river hand).
+    let mut pairs = [0usize; 3];
+    let mut npairs = 0usize;
+    for (i, &c) in rank_counts.iter().enumerate() {
+        if c == 2 {
+            if npairs < 3 {
+                pairs[npairs] = i;
+            }
+            npairs += 1;
+        }
+    }
+    if npairs >= 2 {
         // pairs[] is ascending by rank index; the HIGH pair must occupy the
         // high bits so that hands compare on the top pair first (audit F3).
-        let p_high = pairs[pairs.len() - 1] as u8;
-        let p_low = pairs[pairs.len() - 2] as u8;
+        let p_high = pairs[npairs - 1] as u8;
+        let p_low = pairs[npairs - 2] as u8;
         let kicker = ranks
             .iter()
             .find(|&&r| r != p_high && r != p_low)
@@ -152,7 +160,8 @@ fn eval_5(hand: &[u8; 5]) -> u32 {
             | ((kicker as u32) << 8);
         return !raw;
     }
-    if let Some(&p) = pairs.first() {
+    if npairs == 1 {
+        let p = pairs[0];
         let mut kickers = [0u8; 3];
         let mut ki = 0;
         for &r in ranks.iter() {
