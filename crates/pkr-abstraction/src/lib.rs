@@ -123,21 +123,35 @@ mod sortnets {
         ce2(a, 0, 1);
     }
     pub fn sort3_desc(a: &mut [u8; 3]) {
-        ce3(a, 0, 1); ce3(a, 1, 2); ce3(a, 0, 1);
+        ce3(a, 0, 1);
+        ce3(a, 1, 2);
+        ce3(a, 0, 1);
     }
     /// Optimal 5-element network (9 compare-exchanges).
     pub fn sort5_desc(a: &mut [u8; 5]) {
-        ce5(a, 0, 1); ce5(a, 3, 4); ce5(a, 2, 4);
-        ce5(a, 2, 3); ce5(a, 0, 3); ce5(a, 0, 2);
-        ce5(a, 1, 4); ce5(a, 1, 3); ce5(a, 1, 2);
+        ce5(a, 0, 1);
+        ce5(a, 3, 4);
+        ce5(a, 2, 4);
+        ce5(a, 2, 3);
+        ce5(a, 0, 3);
+        ce5(a, 0, 2);
+        ce5(a, 1, 4);
+        ce5(a, 1, 3);
+        ce5(a, 1, 2);
     }
     /// 6-element network (12 compare-exchanges).
     pub fn sort6_desc(a: &mut [u8; 6]) {
-        ce6(a, 1, 2); ce6(a, 4, 5);
-        ce6(a, 0, 2); ce6(a, 3, 5);
-        ce6(a, 0, 1); ce6(a, 3, 4); ce6(a, 2, 5);
-        ce6(a, 0, 3); ce6(a, 1, 4);
-        ce6(a, 2, 4); ce6(a, 1, 3);
+        ce6(a, 1, 2);
+        ce6(a, 4, 5);
+        ce6(a, 0, 2);
+        ce6(a, 3, 5);
+        ce6(a, 0, 1);
+        ce6(a, 3, 4);
+        ce6(a, 2, 5);
+        ce6(a, 0, 3);
+        ce6(a, 1, 4);
+        ce6(a, 2, 4);
+        ce6(a, 1, 3);
         ce6(a, 2, 3);
     }
 }
@@ -803,10 +817,7 @@ mod audit_f6_tests {
             tier_lo,
             tier_hi
         );
-        assert!(
-            count >= 512,
-            ">>13 should yield >=512 tiers, got {count}"
-        );
+        assert!(count >= 512, ">>13 should yield >=512 tiers, got {count}");
     }
 
     /// Monotonicity: a stronger hand (smaller `!raw`) must never map to
@@ -847,8 +858,6 @@ mod b10_fallback_tests {
         // exercised in integration; this only guards the counter API.
     }
 }
-
-
 
 #[cfg(test)]
 mod sortnet_tests {

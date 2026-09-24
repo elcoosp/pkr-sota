@@ -13,8 +13,7 @@ use pkr_eval::TableEvaluator;
 use std::env;
 
 fn make_evaluator() -> TableEvaluator {
-    let path =
-        env::var("PKR_HAND_RANKS").expect("PKR_HAND_RANKS must point at hand_ranks.bin");
+    let path = env::var("PKR_HAND_RANKS").expect("PKR_HAND_RANKS must point at hand_ranks.bin");
     TableEvaluator::new(&path).expect("failed to load hand_ranks.bin")
 }
 

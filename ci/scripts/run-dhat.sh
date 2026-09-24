@@ -11,9 +11,17 @@ cargo build --release -p pkr-trainer --features dhat-profiling
 # Note: dhat disables LTO by overriding the profile; we accept this
 # because the goal is to measure memory, not throughput.
 
-PROF_DIR="$PROF_DIR" \
-ITERATIONS=5000 THREADS=2 CAPACITY=1000000 \
-    ./proftest.sh
+    PROF_DIR="$PROF_DIR" \
+    ITERATIONS=5000 THREADS=2 CAPACITY=1000000 \
+        ./proftest.sh
+
+    # dhat::Profiler writes ./dhat-heap.json to the trainer's CWD
+    # (repo root) on drop; relocate it under the profiling dir.
+    # NOTE (worklog B18): the plan draft had the trainer write
+    # $PROF_DIR/dhat-out/dhat-heap.json directly, but the trainer does
+    # not know PROF_DIR, so the script moves the file instead.
+    mkdir -p "$PROF_DIR/dhat-out"
+    mv ./dhat-heap.json "$PROF_DIR/dhat-out/dhat-heap.json"
 
 python3 - "$PROF_DIR/dhat-out/dhat-heap.json" <<'PY'
 import datetime, json, sys

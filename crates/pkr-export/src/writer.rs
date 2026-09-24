@@ -1,7 +1,7 @@
+use crate::fmph::build_fmph;
 use crate::header::{
     AnchorsSection, FileHeader, ANCHORS, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
 };
-use crate::fmph::build_fmph;
 use pkr_cfr::table::CompactRegretTable;
 use pkr_core::abstraction::AbstractionFingerprint;
 use std::fs::File;
@@ -230,7 +230,6 @@ mod cdf_tests {
         assert_eq!(c[2], 255);
     }
 }
-
 
 /// B5: write_blueprint must be atomic — a partial `.tmp` must never be
 /// visible under the final path, and a failed write must leave the

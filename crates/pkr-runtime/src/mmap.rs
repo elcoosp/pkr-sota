@@ -1,10 +1,10 @@
 use bytemuck;
 use memmap2::Mmap;
+#[cfg(test)]
+use pkr_export::header::FORMAT_VERSION_V3;
 use pkr_export::header::{
     FileHeader, FORMAT_VERSION_V2, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
 };
-#[cfg(test)]
-use pkr_export::header::FORMAT_VERSION_V3;
 use std::fs::File;
 use std::path::Path;
 use thiserror::Error;
@@ -114,7 +114,9 @@ impl MmapReader {
         let fingerprint = if fp_size > 0 {
             let base = after_file_header + anchors_size;
             let raw = &mmap[base..base + fp_size];
-            Some(bytemuck::pod_read_unaligned::<pkr_core::abstraction::AbstractionFingerprint>(raw))
+            Some(bytemuck::pod_read_unaligned::<
+                pkr_core::abstraction::AbstractionFingerprint,
+            >(raw))
         } else {
             // v2/v3: no fingerprint. Emit a one-time warning.
             use std::sync::OnceLock;
@@ -155,7 +157,7 @@ impl MmapReader {
             return Err(MmapError::InvalidOffset("data truncated"));
         }
 
-                // P3-b: try to parse an optional FMph tail (after the CDF).
+        // P3-b: try to parse an optional FMph tail (after the CDF).
         // Layout: [FmphHeader:40][displacements: u32 * bucket_count].
         // Absent in pre-P3-b files; runtime falls back to branchless search.
         let fmph = {
@@ -196,7 +198,7 @@ impl MmapReader {
             }
         };
 
-Ok(MmapReader {
+        Ok(MmapReader {
             mmap,
             file_header,
             offset_keys,
@@ -204,7 +206,8 @@ Ok(MmapReader {
             offset_cdf,
             len_cdf: cdf_bytes_len,
             fingerprint,
-            fmph,})
+            fmph,
+        })
     }
 
     /// F2c: enforcement helper. Callers that want to refuse a

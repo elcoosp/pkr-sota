@@ -22,14 +22,8 @@ use std::time::{Duration, Instant};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(feature = "dhat-profiling")]
-use dhat::{Dhat, DhatAlloc};
-
-#[cfg(feature = "dhat-profiling")]
 #[global_allocator]
-static ALLOC: DhatAlloc = DhatAlloc;
-
-#[cfg(feature = "dhat-profiling")]
-static DHAT: Dhat = Dhat::new_heap();
+static ALLOC: dhat::Alloc = dhat::Alloc;
 
 /// Fixed seed for the exploitability evaluator. Using a constant rather
 /// than `done` makes successive EVAL points directly comparable
@@ -213,7 +207,6 @@ fn export_blueprint(
     Ok(keys.len())
 }
 
-
 /// True when the eval should fire at the current iteration.
 ///
 /// Fires on the regular schedule (done advanced by >= eval_every since
@@ -225,12 +218,17 @@ fn export_blueprint(
 /// run with eval_every=2.5M only produced the 2.5M row).
 #[inline]
 fn should_eval(done: u32, last_eval_iter: u32, eval_every: u32, max_iters: u32) -> bool {
-    eval_every > 0
-        && (done >= last_eval_iter.saturating_add(eval_every) || done == max_iters)
+    eval_every > 0 && (done >= last_eval_iter.saturating_add(eval_every) || done == max_iters)
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+    // B18: dhat heap profiling (opt-in via --features dhat-profiling).
+    // The guard spans the whole run; dhat writes `dhat-heap.json` to the
+    // process CWD when it drops. ci/scripts/run-dhat.sh moves it into
+    // $PROF_DIR/dhat-out/ afterwards.
+    #[cfg(feature = "dhat-profiling")]
+    let _dhat_profiler = dhat::Profiler::new_heap();
     let cli = Cli::parse();
 
     let num_threads = cli.threads.unwrap_or_else(|| {
@@ -675,9 +673,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             promoted = true;
                         }
                         Err(e) => {
-                            eprintln!(
-                                "WARNING: blueprint export failed at iter {done}: {e}"
-                            );
+                            eprintln!("WARNING: blueprint export failed at iter {done}: {e}");
                         }
                     }
                 }
@@ -867,16 +863,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Fallback: --eval-every == 0 (no gate) or no eval fired.
         // T2.4: min-visits filter applied inside export_blueprint.
         let n = export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint)?;
-        eprintln!("Blueprint written to {} ({} infosets)", cli.output.display(), n);
+        eprintln!(
+            "Blueprint written to {} ({} infosets)",
+            cli.output.display(),
+            n
+        );
     }
 
-    // B18: dump the dhat heap profile (opt-in via --features dhat-profiling).
-    #[cfg(feature = "dhat-profiling")]
-    {
-        let _ = std::fs::create_dir("dhat-out");
-        dhat::to_file(&DHAT, "dhat-out/dhat-heap.json", None)
-            .expect("failed to write dhat output");
-    }
+    // B18: the `_dhat_profiler` guard (declared at the top of run())
+    // writes dhat-heap.json on drop. See the NOTE there for the API
+    // deviation from the plan draft.
 
     Ok(())
 }

@@ -123,10 +123,27 @@ impl Evaluator for Fast7Evaluator {
 
             // 5-card-subsets of m by index; reused pattern from slow.rs.
             const COMBOS_7_5: [[u8; 5]; 21] = [
-                [0,1,2,3,4],[0,1,2,3,5],[0,1,2,3,6],[0,1,2,4,5],[0,1,2,4,6],[0,1,2,5,6],
-                [0,1,3,4,5],[0,1,3,4,6],[0,1,3,5,6],[0,1,4,5,6],[0,2,3,4,5],[0,2,3,4,6],
-                [0,2,3,5,6],[0,2,4,5,6],[0,3,4,5,6],[1,2,3,4,5],[1,2,3,4,6],[1,2,3,5,6],
-                [1,2,4,5,6],[1,3,4,5,6],[2,3,4,5,6],
+                [0, 1, 2, 3, 4],
+                [0, 1, 2, 3, 5],
+                [0, 1, 2, 3, 6],
+                [0, 1, 2, 4, 5],
+                [0, 1, 2, 4, 6],
+                [0, 1, 2, 5, 6],
+                [0, 1, 3, 4, 5],
+                [0, 1, 3, 4, 6],
+                [0, 1, 3, 5, 6],
+                [0, 1, 4, 5, 6],
+                [0, 2, 3, 4, 5],
+                [0, 2, 3, 4, 6],
+                [0, 2, 3, 5, 6],
+                [0, 2, 4, 5, 6],
+                [0, 3, 4, 5, 6],
+                [1, 2, 3, 4, 5],
+                [1, 2, 3, 4, 6],
+                [1, 2, 3, 5, 6],
+                [1, 2, 4, 5, 6],
+                [1, 3, 4, 5, 6],
+                [2, 3, 4, 5, 6],
             ];
             // COMBOS_7_5 assumes 7 slots. For m=6, entries referencing
             // index 6 must be skipped (they would read zero-initialized
@@ -386,7 +403,6 @@ mod tests {
     }
 }
 
-
 /// Targeted regression tests for the three fast7 bugs that landed in
 /// the initial P1-a wiring (pre-fix):
 ///   1. card encoding (rank*4+suit vs suit*13+rank)
@@ -428,7 +444,10 @@ mod fast7_bug_regressions {
     fn wheel_straight_flush_beats_ace_high_flush() {
         let path = match find_rank_table() {
             Some(p) => p,
-            None => { eprintln!("SKIP: no rank table"); return; }
+            None => {
+                eprintln!("SKIP: no rank table");
+                return;
+            }
         };
         let fast = Fast7Evaluator::new(&path).unwrap();
         let slow = NlheEvaluator;
@@ -449,7 +468,10 @@ mod fast7_bug_regressions {
     fn ace_high_flush_not_upgraded_to_straight_flush() {
         let path = match find_rank_table() {
             Some(p) => p,
-            None => { eprintln!("SKIP: no rank table"); return; }
+            None => {
+                eprintln!("SKIP: no rank table");
+                return;
+            }
         };
         let fast = Fast7Evaluator::new(&path).unwrap();
         let slow = NlheEvaluator;
@@ -471,7 +493,10 @@ mod fast7_bug_regressions {
     fn six_suited_cards_do_not_read_out_of_bounds() {
         let path = match find_rank_table() {
             Some(p) => p,
-            None => { eprintln!("SKIP: no rank table"); return; }
+            None => {
+                eprintln!("SKIP: no rank table");
+                return;
+            }
         };
         let fast = Fast7Evaluator::new(&path).unwrap();
         let slow = NlheEvaluator;
@@ -492,7 +517,10 @@ mod fast7_bug_regressions {
     fn card_encoding_suit_major() {
         let path = match find_rank_table() {
             Some(p) => p,
-            None => { eprintln!("SKIP: no rank table"); return; }
+            None => {
+                eprintln!("SKIP: no rank table");
+                return;
+            }
         };
         let fast = Fast7Evaluator::new(&path).unwrap();
         let slow = NlheEvaluator;

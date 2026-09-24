@@ -556,11 +556,7 @@ impl CompactRegretTable {
 
     /// Same as `flush_cpu_batch` but with explicit mode. Tests should use
     /// this; production goes through `flush_cpu_batch` -> `FlushMode::production`.
-    pub fn flush_cpu_batch_with(
-        &self,
-        batch: &mut Vec<BatchItem>,
-        mode: FlushMode,
-    ) -> (u64, u64) {
+    pub fn flush_cpu_batch_with(&self, batch: &mut Vec<BatchItem>, mode: FlushMode) -> (u64, u64) {
         let input_len = batch.len() as u64;
         if batch.is_empty() {
             return (0, 0);
@@ -929,21 +925,18 @@ impl CompactRegretTable {
         // every bit pattern is valid; we only take a shared view and
         // elements are never mutated through it.
         let rm_entries = n * RM_STRIDE;
-        let rm: &[i64] = unsafe {
-            std::slice::from_raw_parts(self.data.as_ptr() as *const i64, rm_entries)
-        };
-        let rm_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(rm.as_ptr() as *const u8, rm_entries * 8)
-        };
+        let rm: &[i64] =
+            unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const i64, rm_entries) };
+        let rm_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(rm.as_ptr() as *const u8, rm_entries * 8) };
         w.write_all(rm_bytes)?;
 
         let sum_entries = n * SUM_STRIDE;
         let sums: &[u64] = unsafe {
             std::slice::from_raw_parts(self.strategy_sum.as_ptr() as *const u64, sum_entries)
         };
-        let sum_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(sums.as_ptr() as *const u8, sum_entries * 8)
-        };
+        let sum_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(sums.as_ptr() as *const u8, sum_entries * 8) };
         w.write_all(sum_bytes)?;
         w.flush()?;
         Ok(())
@@ -1343,13 +1336,31 @@ mod audit_regression_tests {
         let t = CompactRegretTable::with_capacity(64);
         let idx = t.get_or_create_idx(0xB2_0000);
         let mut b = vec![
-            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: -1.0e6 },
-            BatchItem { index: idx as u32, action: 1, iteration: 1, delta: -1.0e9 },
-            BatchItem { index: idx as u32, action: 2, iteration: 1, delta: 5.0 },
+            BatchItem {
+                index: idx as u32,
+                action: 0,
+                iteration: 1,
+                delta: -1.0e6,
+            },
+            BatchItem {
+                index: idx as u32,
+                action: 1,
+                iteration: 1,
+                delta: -1.0e9,
+            },
+            BatchItem {
+                index: idx as u32,
+                action: 2,
+                iteration: 1,
+                delta: 5.0,
+            },
         ];
         t.flush_cpu_batch_with(
             &mut b,
-            FlushMode { sequential: true, momentum: false },
+            FlushMode {
+                sequential: true,
+                momentum: false,
+            },
         );
         for a in 0..K {
             let r = t.load_rm(idx, a, RM_REGRET);
@@ -1365,12 +1376,25 @@ mod audit_regression_tests {
         let t = CompactRegretTable::with_capacity(16);
         let idx = t.get_or_create_idx(0xB1_0000);
         let mut b = vec![
-            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 1.0 },
-            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: f32::NAN },
+            BatchItem {
+                index: idx as u32,
+                action: 0,
+                iteration: 1,
+                delta: 1.0,
+            },
+            BatchItem {
+                index: idx as u32,
+                action: 0,
+                iteration: 1,
+                delta: f32::NAN,
+            },
         ];
         t.flush_cpu_batch_with(
             &mut b,
-            FlushMode { sequential: true, momentum: false },
+            FlushMode {
+                sequential: true,
+                momentum: false,
+            },
         );
         let r = t.load_rm(idx, 0, RM_REGRET);
         assert!(!(r as f32).is_nan());
@@ -1385,8 +1409,18 @@ mod audit_regression_tests {
     fn sequential_and_batched_agree_when_iterations_match() {
         let mk_batch = |idx: usize| {
             vec![
-                BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 3.0 },
-                BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 4.0 },
+                BatchItem {
+                    index: idx as u32,
+                    action: 0,
+                    iteration: 1,
+                    delta: 3.0,
+                },
+                BatchItem {
+                    index: idx as u32,
+                    action: 0,
+                    iteration: 1,
+                    delta: 4.0,
+                },
             ]
         };
 
@@ -1395,7 +1429,10 @@ mod audit_regression_tests {
         let mut b1 = mk_batch(i1);
         t1.flush_cpu_batch_with(
             &mut b1,
-            FlushMode { sequential: true, momentum: false },
+            FlushMode {
+                sequential: true,
+                momentum: false,
+            },
         );
 
         let t2 = CompactRegretTable::with_capacity(16);
@@ -1403,7 +1440,10 @@ mod audit_regression_tests {
         let mut b2 = mk_batch(i2);
         t2.flush_cpu_batch_with(
             &mut b2,
-            FlushMode { sequential: false, momentum: false },
+            FlushMode {
+                sequential: false,
+                momentum: false,
+            },
         );
 
         let r1 = t1.load_rm(i1, 0, RM_REGRET);
@@ -1420,17 +1460,39 @@ mod audit_regression_tests {
         let t = CompactRegretTable::with_capacity(16);
         let idx = t.get_or_create_idx(0xE4_B000);
         let mut ops = vec![
-            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
-            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
-            StrategyOp { index: idx as u32, action: 1, prob: 0.50 },
-            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
+            StrategyOp {
+                index: idx as u32,
+                action: 0,
+                prob: 0.25,
+            },
+            StrategyOp {
+                index: idx as u32,
+                action: 0,
+                prob: 0.25,
+            },
+            StrategyOp {
+                index: idx as u32,
+                action: 1,
+                prob: 0.50,
+            },
+            StrategyOp {
+                index: idx as u32,
+                action: 0,
+                prob: 0.25,
+            },
         ];
         let applied = t.apply_strategy_batch(&mut ops);
         assert_eq!(applied, 2, "two distinct (index, action) groups expected");
-        assert!((t.load_sum(idx, 0) - 0.75).abs() < 1e-9,
-            "action 0 sum = {}", t.load_sum(idx, 0));
-        assert!((t.load_sum(idx, 1) - 0.50).abs() < 1e-9,
-            "action 1 sum = {}", t.load_sum(idx, 1));
+        assert!(
+            (t.load_sum(idx, 0) - 0.75).abs() < 1e-9,
+            "action 0 sum = {}",
+            t.load_sum(idx, 0)
+        );
+        assert!(
+            (t.load_sum(idx, 1) - 0.50).abs() < 1e-9,
+            "action 1 sum = {}",
+            t.load_sum(idx, 1)
+        );
     }
 
     /// A5: the snapshot's `max_abs_regret` is regret-only. Writing a huge
@@ -1444,7 +1506,10 @@ mod audit_regression_tests {
         t.store_rm(idx, 0, RM_MOMENTUM, 100_000_000); // 100k chips
         let snap = t.snapshot();
         // max_abs_regret is reported in CHIPS (units / SCALE), so 1.0.
-        assert!(snap.max_abs_regret <= 1.5,
-            "max_abs_regret = {} (momentum leaked in?)", snap.max_abs_regret);
+        assert!(
+            snap.max_abs_regret <= 1.5,
+            "max_abs_regret = {} (momentum leaked in?)",
+            snap.max_abs_regret
+        );
     }
 }

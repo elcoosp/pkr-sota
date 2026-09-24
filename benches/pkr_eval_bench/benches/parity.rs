@@ -24,8 +24,8 @@
 //! 6-card case is kept as an ignored regression marker.
 
 use pkr_contracts::Evaluator;
-use pkr_eval::TableEvaluator;
 use pkr_eval::slow::NlheEvaluator;
+use pkr_eval::TableEvaluator;
 
 /// Deterministic 7-unique-card deals: 2 hole + 5 board.
 fn sample_cases() -> Vec<(Vec<u8>, Vec<u8>)> {

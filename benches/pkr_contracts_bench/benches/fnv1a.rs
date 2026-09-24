@@ -22,12 +22,7 @@ fn bench_fnv1a_small(c: &mut Criterion) {
 fn bench_fnv1a_varying(c: &mut Criterion) {
     // Real infoset hashes mix: 2-byte hole + 5-byte board + N-byte history.
     // Sizes: preflop = 2+0+~8, flop = 2+3+~8, turn = 2+4+~8, river = 2+5+~8.
-    let sizes: &[(usize, &str)] = &[
-        (10, "preflop"),
-        (13, "flop"),
-        (14, "turn"),
-        (15, "river"),
-    ];
+    let sizes: &[(usize, &str)] = &[(10, "preflop"), (13, "flop"), (14, "turn"), (15, "river")];
     let mut group = c.benchmark_group("fnv1a/by_street");
     for &(n, label) in sizes {
         let input: Vec<u8> = (0..n).map(|i| i as u8).collect();

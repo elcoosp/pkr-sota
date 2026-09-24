@@ -29,15 +29,12 @@ fn bench_discount_all_modes(c: &mut Criterion) {
         b.iter(|| {
             let a = discount_factor(black_box(1_000_000.0), black_box(ALPHA));
             let g = discount_factor(black_box(1_000_000.0), black_box(GAMMA));
-            let n = discount_factor_mode(black_box(1_000_000.0), black_box(BETA), DiscountMode::None);
+            let n =
+                discount_factor_mode(black_box(1_000_000.0), black_box(BETA), DiscountMode::None);
             black_box((a, g, n))
         })
     });
 }
 
-criterion_group!(
-    benches,
-    bench_discount_canonical,
-    bench_discount_all_modes
-);
+criterion_group!(benches, bench_discount_canonical, bench_discount_all_modes);
 criterion_main!(benches);

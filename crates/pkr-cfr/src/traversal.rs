@@ -273,7 +273,11 @@ pub fn traverse(
         if n_legal_buckets == 1 {
             let a = (0..K).find(|&a| action_counts[a] > 0).unwrap();
             let count = action_counts[a];
-            let ordinal = if count > 1 { rng.random_range(0..count) } else { 0 };
+            let ordinal = if count > 1 {
+                rng.random_range(0..count)
+            } else {
+                0
+            };
             current.apply_action_in_place(&num_actions[pick_in_bucket(a as u8, ordinal)]);
             let child_deck_idx = *deck_idx;
             let v = traverse(
@@ -737,7 +741,6 @@ mod tests {
         assert_eq!(hit[5], 0);
     }
 
-
     // ---- E3: forced-move node helper ----
     #[test]
     fn skip_forced_nodes_reads_env_off_by_default() {
@@ -753,5 +756,4 @@ mod tests {
         // (OnceLock means we can't call this twice with different env.)
         assert!(!skip_forced_nodes(), "default must be false");
     }
-
 }

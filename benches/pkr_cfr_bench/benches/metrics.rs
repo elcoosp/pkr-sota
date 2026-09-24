@@ -34,7 +34,9 @@ fn bench_record_batch(c: &mut Criterion) {
 fn bench_snapshot_delta(c: &mut Criterion) {
     let g = global();
     let lm = LocalMetrics::default();
-    g.record_batch(&lm, 256, 1_000_000, 900_000, 50_000, 50_000, 1_000, 500, 2_000);
+    g.record_batch(
+        &lm, 256, 1_000_000, 900_000, 50_000, 50_000, 1_000, 500, 2_000,
+    );
     let prev = g.snapshot();
     c.bench_function("metrics/snapshot+delta", |b| {
         b.iter(|| {

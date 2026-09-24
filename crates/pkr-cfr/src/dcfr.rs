@@ -465,26 +465,14 @@ mod saturation_tests {
     fn update_regret_saturates_at_i64_max() {
         // discount_pos(i64::MAX, 1e6) is just under i64::MAX, so adding
         // ~i64::MAX/2 necessarily exceeds i64::MAX; the add must saturate.
-        let (r, _) = update_regret_i64_mode(
-            i64::MAX,
-            0,
-            1_000_000,
-            i64::MAX / 2 + 1,
-            false,
-        );
+        let (r, _) = update_regret_i64_mode(i64::MAX, 0, 1_000_000, i64::MAX / 2 + 1, false);
         assert_eq!(r, i64::MAX);
     }
 
     /// A3: negative extreme clamps at 0 (regret floors at 0, not i64::MIN).
     #[test]
     fn update_regret_floors_at_zero() {
-        let (r, _) = update_regret_i64_mode(
-            0,
-            0,
-            1_000_000,
-            i64::MIN / 2,
-            false,
-        );
+        let (r, _) = update_regret_i64_mode(0, 0, 1_000_000, i64::MIN / 2, false);
         assert_eq!(r, 0);
     }
 

@@ -212,8 +212,7 @@ impl GameState {
                 if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
                     // C2: see legal_actions — all-in total is
                     // stacks + street_bets, not stacks alone.
-                    let all_in_amount =
-                        self.stacks[self.actor] + self.street_bets[self.actor];
+                    let all_in_amount = self.stacks[self.actor] + self.street_bets[self.actor];
                     // Dedup: skip the all-in push when a pot-fraction sizing
                     // already offers (numerically) the same total.
                     let already_offered = (0..n).any(|i| {
@@ -257,8 +256,7 @@ impl GameState {
                     }
                 }
                 if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                    let all_in_amount =
-                        self.stacks[self.actor] + self.street_bets[self.actor];
+                    let all_in_amount = self.stacks[self.actor] + self.street_bets[self.actor];
                     let already_offered = (0..n).any(|i| {
                         matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
                     });
@@ -689,7 +687,8 @@ mod c1_tests {
     /// C1: a legal bet produces street_bets == current + chips (the
     /// invariant the fix restores). This is what training relies on.
     #[test]
-    fn legal_bet_satisfies_street_bets_invariant() {        let mut s = GameState::new(200.0, 1.0, 2.0);
+    fn legal_bet_satisfies_street_bets_invariant() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
         s.apply_action_in_place(&Action {
             player: 0,
             kind: ActionKind::Call,
@@ -1679,7 +1678,10 @@ mod b7_single_source_tests {
     fn legal_actions_matches_legal_actions_into_at_start() {
         let s = fresh_state();
         let a = s.legal_actions();
-        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = s.legal_actions_into(&mut buf);
         assert_eq!(a.len(), n, "counts differ: alloc={} into={}", a.len(), n);
         for i in 0..n {
@@ -1695,7 +1697,10 @@ mod b7_single_source_tests {
             if s.is_terminal() {
                 break;
             }
-            let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let mut buf = [Action {
+                player: 0,
+                kind: ActionKind::Fold,
+            }; 8];
             let n = s.legal_actions_into(&mut buf);
             if n == 0 {
                 break;
@@ -1709,7 +1714,10 @@ mod b7_single_source_tests {
             }
             s.apply_action_in_place(&buf[pick]);
             let a = s.legal_actions();
-            let mut buf2 = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let mut buf2 = [Action {
+                player: 0,
+                kind: ActionKind::Fold,
+            }; 8];
             let n2 = s.legal_actions_into(&mut buf2);
             assert_eq!(a.len(), n2);
             for i in 0..n2 {
@@ -1724,7 +1732,10 @@ mod b7_single_source_tests {
         let mut s = fresh_state();
         let mut raises = 0u32;
         while raises < 3 && !s.is_terminal() {
-            let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let mut buf = [Action {
+                player: 0,
+                kind: ActionKind::Fold,
+            }; 8];
             let n = s.legal_actions_into(&mut buf);
             let mut bet_idx: Option<usize> = None;
             for (i, a) in buf[..n].iter().enumerate() {
@@ -1743,15 +1754,18 @@ mod b7_single_source_tests {
         }
         // Now the current street should have zero Bet actions in the offered set.
         let a = s.legal_actions();
-        let bets = a.iter().filter(|x| matches!(x.kind, ActionKind::Bet(_))).count();
+        let bets = a
+            .iter()
+            .filter(|x| matches!(x.kind, ActionKind::Bet(_)))
+            .count();
         assert_eq!(
-            bets, 0,
+            bets,
+            0,
             "raise cap not honored by legal_actions: {:?}",
             a.iter().map(|x| x.kind).collect::<Vec<_>>()
         );
     }
 }
-
 
 #[cfg(test)]
 mod p2_undo_size_tests {
