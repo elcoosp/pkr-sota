@@ -253,6 +253,23 @@ fn hs_progress(iteration: u32) -> f64 {
     (iteration as f64 / total).clamp(0.0, 1.0)
 }
 
+/// Runtime-configurable α (DCFR positive-regret exponent).
+/// Defaults to the compile-time constant `ALPHA` (1.5). Env override:
+/// `PKR_DCFR_ALPHA=1.0` (Linear CFR) or `=2.0` (old integer-path behaviour).
+/// Values outside [0.5, 3.0] are ignored.
+#[inline]
+fn configured_alpha() -> f64 {
+    use std::sync::OnceLock;
+    static A: OnceLock<f64> = OnceLock::new();
+    *A.get_or_init(|| {
+        std::env::var("PKR_DCFR_ALPHA")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|&v| (0.5..=3.0).contains(&v))
+            .unwrap_or(ALPHA as f64)
+    })
+}
+
 #[inline]
 pub fn dcfr_step(iteration: u32) -> DcfrStep {
     // Only t == 0 is the identity case (matches the original
@@ -271,7 +288,7 @@ pub fn dcfr_step(iteration: u32) -> DcfrStep {
     }
     let t = iteration as f64;
     let p = hs_progress(iteration);
-    let alpha = schedule_alpha(p);
+    let alpha = if hs_dcfr_enabled() { schedule_alpha(p) } else { configured_alpha() };
     let tp = t.powf(alpha);
     let tn = t.powf(BETA as f64);
     let w_pos = tp / (tp + 1.0);
