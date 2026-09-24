@@ -21,6 +21,15 @@ use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+/// Feature flag: PKR_ALT_UPDATES=1 selects alternating player updates
+/// (CFR+ semantics). Default off. See docs/experiments/sota-ab-plan.md.
+#[inline]
+fn alt_updates_enabled() -> bool {
+    use std::sync::OnceLock;
+    static E: OnceLock<bool> = OnceLock::new();
+    *E.get_or_init(|| std::env::var("PKR_ALT_UPDATES").as_deref() == Ok("1"))
+}
+
 pub struct Trainer {
     abstraction: Arc<dyn AbstractionBuilder>,
     evaluator: Arc<dyn Evaluator>,
@@ -66,13 +75,33 @@ impl Trainer {
     /// dispatch, amortizing serial work by `n`.
     #[allow(clippy::type_complexity)]
     pub fn run_iterations_parallel(&mut self, n: usize) {
+        let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
+        if alt_updates_enabled() {
+            // Alternating player updates (CFR+ semantics, research-cited
+            // 10-100x exploitability difference vs simultaneous).
+            //   Pass A: only player 0 traversers; flush.
+            //   Pass B: only player 1 traversers; flush.
+            // Pass B sees the regret state after pass A's flush.
+            self.run_iterations_parallel_impl(n, start_iter, &[0]);
+            self.run_iterations_parallel_impl(n, start_iter, &[1]);
+        } else {
+            // Simultaneous (production default): both players on the same
+            // deal, batched and flushed together.
+            self.run_iterations_parallel_impl(n, start_iter, &[0, 1]);
+        }
+    }
+
+    fn run_iterations_parallel_impl(
+        &mut self,
+        n: usize,
+        start_iter: u32,
+        traversers: &[usize],
+    ) {
         use crate::metrics::global;
         use std::sync::OnceLock;
         use std::time::Instant;
         static PROFILE: OnceLock<bool> = OnceLock::new();
         let profile = *PROFILE.get_or_init(|| std::env::var("PKR_PHASE_PROFILE").is_ok());
-
-        let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
 
         let table = Arc::clone(&self.table);
         let abstraction = Arc::clone(&self.abstraction);
@@ -117,45 +146,27 @@ impl Trainer {
                     let villain = [deck[2], deck[3]];
                     let deck_slice = &deck[4..9];
 
-                    let mut state = GameState::new(200.0, 1.0, 2.0);
-                    state.set_hole_cards(hero, villain);
-                    let mut deck_idx = 0usize;
-                    traverse(
-                        &mut state,
-                        &table,
-                        &*abstraction,
-                        &*evaluator,
-                        &mut rng,
-                        global_iter,
-                        0,
-                        1.0,
-                        deck_slice,
-                        &mut deck_idx,
-                        0,
-                        &mut batch,
-                        &mut strategy_batch,
-                        &mut metrics,
-                    );
-
-                    let mut state2 = GameState::new(200.0, 1.0, 2.0);
-                    state2.set_hole_cards(hero, villain);
-                    let mut deck_idx2 = 0usize;
-                    traverse(
-                        &mut state2,
-                        &table,
-                        &*abstraction,
-                        &*evaluator,
-                        &mut rng,
-                        global_iter,
-                        1,
-                        1.0,
-                        deck_slice,
-                        &mut deck_idx2,
-                        0,
-                        &mut batch,
-                        &mut strategy_batch,
-                        &mut metrics,
-                    );
+                    for &t in traversers {
+                        let mut state = GameState::new(200.0, 1.0, 2.0);
+                        state.set_hole_cards(hero, villain);
+                        let mut deck_idx = 0usize;
+                        traverse(
+                            &mut state,
+                            &table,
+                            &*abstraction,
+                            &*evaluator,
+                            &mut rng,
+                            global_iter,
+                            t,
+                            1.0,
+                            deck_slice,
+                            &mut deck_idx,
+                            0,
+                            &mut batch,
+                            &mut strategy_batch,
+                            &mut metrics,
+                        );
+                    }
                 }
 
                 metrics.regret_pushed = batch.len() as u64;
