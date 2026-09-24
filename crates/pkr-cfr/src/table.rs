@@ -275,6 +275,12 @@ impl CompactRegretTable {
     }
 
     #[inline]
+    /// Number of slots handed out (>= distinct infosets: lost races leak slots).
+    #[inline]
+    pub fn allocated(&self) -> usize {
+        self.next_idx.load(Ordering::Relaxed).min(self.capacity)
+    }
+
     fn alloc_idx(&self) -> usize {
         loop {
             let cur = self.next_idx.load(Ordering::Relaxed);
@@ -667,37 +673,42 @@ impl CompactRegretTable {
     }
 
     pub fn snapshot(&self) -> TableSnapshot {
-        let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
+        // A5/B8: regret-only snapshot. Previously this loop also walked
+        // the momentum cells, conflating "regret magnitude" with the
+        // PCFR+ prediction EMA.
+        let n = self.allocated();
         let mut max_abs = 0.0f32;
         let mut sum_abs = 0.0f64;
         let mut nonfinite = 0usize;
-        let mut strat_mass = 0.0f64;
-        let entries_rm = n * RM_STRIDE;
-        for i in 0..entries_rm {
-            let v = self.data[i].load(Ordering::Relaxed) as f32 / SCALE;
-            if !v.is_finite() {
-                nonfinite += 1;
-                continue;
+        for idx in 0..n {
+            for a in 0..K {
+                let v = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
+                if !v.is_finite() {
+                    nonfinite += 1;
+                    continue;
+                }
+                let av = v.abs();
+                if av > max_abs {
+                    max_abs = av;
+                }
+                sum_abs += av as f64;
             }
-            let a = v.abs();
-            if a > max_abs {
-                max_abs = a;
-            }
-            sum_abs += a as f64;
         }
+        let mut strat_mass = 0.0f64;
         let entries_sum = n * SUM_STRIDE;
         for i in 0..entries_sum {
             strat_mass += f64::from_bits(self.strategy_sum[i].load(Ordering::Relaxed));
         }
-        let guard = self.hash_to_idx.pin();
-        let infosets = guard.len();
-        drop(guard);
+        let infosets = {
+            let guard = self.hash_to_idx.pin();
+            guard.len()
+        };
         TableSnapshot {
             infosets,
             capacity: self.capacity,
             max_abs_regret: max_abs,
-            mean_abs_regret: if entries_rm > 0 {
-                (sum_abs / entries_rm as f64) as f32
+            mean_abs_regret: if n > 0 {
+                (sum_abs / (n * K) as f64) as f32
             } else {
                 0.0
             },
@@ -981,10 +992,10 @@ impl CompactRegretTable {
 }
 
 #[cfg(test)]
-#[cfg(feature = "gpu")]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn flush_writes_back_only_touched_entries_and_is_idempotent_for_untouched() {
         let table = CompactRegretTable::with_capacity(4096);
