@@ -1,6 +1,10 @@
 // T1.1: flush_cpu_batch now uses the integer path
 // (crate::dcfr::update_regret_i64). The f32 wrapper is kept for A/B
 // comparison and tests.
+//
+// GPU path (feature = "gpu") is i32-only and unmaintained; it does NOT
+// mirror the i64 table. `flush_gpu_batch` is feature-gated and its tests
+// only run under `--features gpu`. Production never calls it.
 
 use crate::gpu::BatchItem;
 #[cfg(feature = "gpu")]
