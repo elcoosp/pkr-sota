@@ -171,6 +171,7 @@ impl GameState {
     /// allocation per node visit — the allocator is the dominant
     /// multithread bottleneck otherwise. Callers must provide a buffer of
     /// at least 8 slots; the current action space tops out at 6.
+    #[inline]
     pub fn legal_actions_into(&self, out: &mut [Action; 8]) -> usize {
         if self.folded[self.actor] {
             return 0;

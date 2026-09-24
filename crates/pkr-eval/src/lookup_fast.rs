@@ -148,6 +148,7 @@ impl TableEvaluator {
 }
 
 impl Evaluator for TableEvaluator {
+    #[inline]
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
         // P1-a: single-pass fast7 evaluation, replacing the 21-subset min.
         // Bit-identical to the previous path (fast7's own differential
