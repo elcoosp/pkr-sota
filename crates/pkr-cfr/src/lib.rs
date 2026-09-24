@@ -27,6 +27,12 @@ pub struct Trainer {
     table: Arc<CompactRegretTable>,
     iteration: AtomicU32,
     run_seed: u64,
+    /// P-reuse: merged buffers reused across dispatches. Avoids two
+    /// large per-call allocations (~48K entries each) in
+    /// run_iterations_parallel. Capacity grows to the observed peak
+    /// once and stays there.
+    merged_batch: Vec<BatchItem>,
+    merged_strategy: Vec<StrategyOp>,
 }
 
 impl Trainer {
@@ -45,6 +51,8 @@ impl Trainer {
             table: Arc::new(CompactRegretTable::with_capacity(capacity)),
             iteration: AtomicU32::new(0),
             run_seed: 0x5EED_1F70,
+            merged_batch: Vec::new(),
+            merged_strategy: Vec::new(),
         }
     }
 
@@ -160,18 +168,24 @@ impl Trainer {
         let t1 = Instant::now();
         let total_items: usize = thread_results.iter().map(|(b, _, _)| b.len()).sum();
         let total_strats: usize = thread_results.iter().map(|(_, s, _)| s.len()).sum();
-        let mut merged_batch = Vec::with_capacity(total_items);
-        let mut merged_strategy = Vec::with_capacity(total_strats);
-        let mut batch_metrics = LocalMetrics::default();        for (mut b, mut s, m) in thread_results {
-            merged_batch.append(&mut b);
-            merged_strategy.append(&mut s);
+        // P-reuse: reuse Trainer-owned buffers. `clear` keeps capacity;
+        // `reserve` grows only to the observed peak once, then is a no-op.
+        self.merged_batch.clear();
+        self.merged_batch.reserve(total_items);
+        self.merged_strategy.clear();
+        self.merged_strategy.reserve(total_strats);
+
+        let mut batch_metrics = LocalMetrics::default();
+        for (mut b, mut s, m) in thread_results {
+            self.merged_batch.append(&mut b);
+            self.merged_strategy.append(&mut s);
             batch_metrics.merge_from(&m);
         }
         let t_merge = t1.elapsed();
 
         let t2 = Instant::now();
-        let strategy_applied = table.apply_strategy_batch(&mut merged_strategy);
-        let (regret_in, regret_out) = table.flush_cpu_batch(&mut merged_batch);
+        let strategy_applied = table.apply_strategy_batch(&mut self.merged_strategy);
+        let (regret_in, regret_out) = table.flush_cpu_batch(&mut self.merged_batch);
         let t_flush = t2.elapsed();
 
         global().record_batch(
