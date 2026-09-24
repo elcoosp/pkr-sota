@@ -403,6 +403,7 @@ impl CompactRegretTable {
         }
     }
 
+    #[inline]
     pub fn get_strategy_and_idx(
         &self,
         infoset_hash: u64,
@@ -425,6 +426,7 @@ impl CompactRegretTable {
         idx
     }
 
+    #[inline]
     pub fn get_strategy_into(&self, infoset_hash: u64, out: &mut [f32; K]) {
         let idx_opt = match cache_lookup(infoset_hash) {
             Some(i) => Some(i),
