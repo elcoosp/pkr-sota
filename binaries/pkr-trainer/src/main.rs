@@ -12,6 +12,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Fixed seed for the exploitability evaluator. Using a constant rather
+/// than `done` makes successive EVAL points directly comparable
+/// (common-random-numbers comparison). The training RNG is separate.
+const EVAL_SEED: u64 = 0xE7A1_0000_0000_0001;
+
 #[derive(Parser)]
 #[command(name = "pkr-trainer")]
 struct Cli {
@@ -346,7 +351,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             abstraction_for_eval.as_ref(),
             evaluator_for_eval.as_ref(),
             cli.eval_deals,
-            start_iter as u64,
+            EVAL_SEED ^ (start_iter as u64),
         );
         eprintln!(
             "EVAL iter={} expl_mbb={:.2}±{:.2} br0={:.4} br1={:.4} deals={}",
