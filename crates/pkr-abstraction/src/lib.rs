@@ -413,13 +413,15 @@ impl AbstractionBuilder for KMeansAbstraction {
                 //
                 // evaluate_hand returns the inverted-bit encoding !raw =
                 // ~(category << 20 | rank_bits) — NOT a 7462-scale rank. Its value
-                // range is ~[2^32 - 9*2^20, 2^32] (audit F6). `>> 15` is a monotone
-                // quantization of that range into ~287 tiers where lower tier =
-                // stronger hand. (The old `>> 6` produced ~147k tiers and blew up the
-                // river infoset count; a true 7462-scale dense rank is the M1-playbook
-                // fast7 follow-up.)
+                // range is ~[2^32 - 9*2^20, 2^32] (audit F6). `>> 13` is a monotone
+                // quantization of that range into ~1152 tiers where lower tier =
+                // stronger hand. (Original `>> 6` gave ~147k tiers, `>> 13` gave ~287;
+                // T2.2 uses >> 13 for 4x finer river hand resolution.)
                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
-                let hand_bucket = hand_rank >> 15; // ~0..=287, monotone
+                // T2.2: >> 13 -> ~1152 tiers (4x finer than >> 13).
+                // Combined with RIVER_BUCKETS=128, net river keyspace
+                // grows ~2.5x current.
+                let hand_bucket = hand_rank >> 13;
                 let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
                     Some(table) => {
                         let idx = Self::flat_index_river_board(board);
@@ -656,7 +658,7 @@ mod c6_unit_tests {
     // River tier coverage (audit F6)
     //
     // evaluate_hand returns the inverted-bit encoding !raw, whose value
-    // range is ~[2^32 - 9*2^20, 2^32]. `>> 15` quantizes that range into
+    // range is ~[2^32 - 9*2^20, 2^32]. `>> 13` quantizes that range into
     // ~287 monotone tiers. If the shift changes, bump the blueprint
     // format version — that is the contract.
     // ------------------------------------------------------------------
@@ -665,8 +667,8 @@ mod c6_unit_tests {
         // Stronger hand must map to a <= bucket (monotone) and the tier count
         // must be small (bounded infoset space).
         // Direct check of the quantization math used in the river branch:
-        let strong = (u32::MAX - 9_437_184) as u64 >> 15; // best hand in range
-        let weak = (u32::MAX) as u64 >> 15;
+        let strong = (u32::MAX - 9_437_184) as u64 >> 13; // best hand in range
+        let weak = (u32::MAX) as u64 >> 13;
         assert!(strong <= weak);
         assert!(
             weak - strong < 512,
@@ -776,7 +778,7 @@ mod audit_f6_tests {
     /// The `!raw` encoding produced by both evaluators has its usable
     /// range bounded above by `u32::MAX` and below by
     /// `u32::MAX - 9 * 2^20 + 1` (9 hand categories, each with 2^20
-    /// rank-bit combinations). `hand_rank >> 15` quantizes that range
+    /// rank-bit combinations). `hand_rank >> 13` quantizes that range
     /// into a bounded number of ordered tiers.
     ///
     /// The audit F6 concern: the pre-fix `>> 6` produced ~147k tiers,
@@ -788,8 +790,8 @@ mod audit_f6_tests {
         // Lowest possible !raw value across all 9 categories.
         let min_rank: u32 = u32::MAX - 9 * (1u32 << 20) + 1;
         let max_rank: u32 = u32::MAX;
-        let tier_lo = min_rank >> 15;
-        let tier_hi = max_rank >> 15;
+        let tier_lo = min_rank >> 13;
+        let tier_hi = max_rank >> 13;
         let count = tier_hi - tier_lo + 1;
         assert!(
             count <= 512,
@@ -816,7 +818,7 @@ mod audit_f6_tests {
             let weak = u32::MAX;
             let strong = u32::MAX.saturating_sub(k);
             assert!(
-                (strong >> 15) <= (weak >> 15),
+                (strong >> 13) <= (weak >> 13),
                 "stronger hand (raw={strong}) mapped to a larger tier than weak (raw={weak})",
             );
         }
