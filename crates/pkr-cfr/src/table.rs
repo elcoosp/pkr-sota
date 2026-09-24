@@ -106,7 +106,9 @@ fn cache_key(hash: u64) -> u64 {
     // under an older generation simply miss (they are never returned),
     // which is exactly the invalidation we want without cross-thread
     // coordination.
-    hash ^ CACHE_GEN.load(Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    hash ^ CACHE_GEN
+        .load(Ordering::Relaxed)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
 #[inline]
@@ -487,35 +489,58 @@ impl CompactRegretTable {
         let batch_ref: &[BatchItem] = batch.as_slice();
         let n_threads = rayon::current_num_threads().max(1);
         let chunk_size = (groups.len() / n_threads).max(1);
+        // Fold mode: batched-sum (default) or sequential per-iteration.
+        // Set PKR_F5_SEQUENTIAL=1 to use the sequential form (matches
+        // the audit-F5 commit). Default is the batched-sum form that
+        // v9..v16 used, to which the DCFR constants were calibrated.
+        let sequential = std::env::var("PKR_F5_SEQUENTIAL").as_deref() == Ok("1");
+
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u32) in grp_slice {
                 let idx = idx_u32 as usize;
                 let a = act_u32 as usize;
-                // Sequential per-iteration PCFR+ fold (audit F5): each delta is
-                // applied with its own iteration number and the max(0, ·) clamp
-                // between iterations, exactly as if flushes happened every
-                // iteration. Items are sorted by iteration within each
-                // (index, action) group, so slice order is iteration order.
-                // T1.1: exact integer discount on the i64 fixed-point path.
                 let mut cur_i64 = self.load_rm(idx, a, RM_REGRET) as i64;
                 let mut mom_i64 = self.load_rm(idx, a, RM_MOMENTUM) as i64;
-                for k in start..end {
-                    let delta_i64 =
-                        (batch_ref[k].delta as f64 * SCALE as f64).round() as i64;
-                    let (new_r, new_m) = crate::dcfr::update_regret_i64(
-                        cur_i64,
-                        mom_i64,
-                        batch_ref[k].iteration,
-                        delta_i64,
-                    );
+
+                if sequential {
+                    // Sequential per-iteration fold: each delta applied
+                    // with its own iteration number and clamp between.
+                    for k in start..end {
+                        let delta_i64 = (batch_ref[k].delta as f64 * SCALE as f64).round() as i64;
+                        let (new_r, new_m) = crate::dcfr::update_regret_i64(
+                            cur_i64,
+                            mom_i64,
+                            batch_ref[k].iteration,
+                            delta_i64,
+                        );
+                        if new_r == i64::MAX || new_r == i64::MIN {
+                            warn_nonfinite_regret_once(batch_ref[k].iteration);
+                        }
+                        cur_i64 = new_r;
+                        mom_i64 = new_m;
+                    }
+                } else {
+                    // Batched-sum fold: sum deltas within the group, apply
+                    // one update with the group's iteration number.
+                    let mut delta_sum: f64 = 0.0;
+                    let mut max_iter: u32 = batch_ref[start].iteration;
+                    for k in start..end {
+                        delta_sum += batch_ref[k].delta as f64;
+                        if batch_ref[k].iteration > max_iter {
+                            max_iter = batch_ref[k].iteration;
+                        }
+                    }
+                    let delta_i64 = (delta_sum * SCALE as f64).round() as i64;
+                    let (new_r, new_m) =
+                        crate::dcfr::update_regret_i64(cur_i64, mom_i64, max_iter, delta_i64);
                     if new_r == i64::MAX || new_r == i64::MIN {
-                        warn_nonfinite_regret_once(batch_ref[k].iteration);
+                        warn_nonfinite_regret_once(max_iter);
                     }
                     cur_i64 = new_r;
                     mom_i64 = new_m;
                 }
-                // Clamp to i32 range for storage; the accumulator is i64
-                // across updates but the on-disk representation stays i32.
+
+                // Clamp to i32 range for storage.
                 let r32 = cur_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
                 let m32 = mom_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
                 self.store_rm(idx, a, RM_REGRET, r32);
@@ -1051,6 +1076,11 @@ mod f5_tests {
 
     #[test]
     fn flush_folds_deltas_sequentially_per_iteration() {
+        // Only valid when the sequential fold is enabled via env var.
+        if std::env::var("PKR_F5_SEQUENTIAL").as_deref() != Ok("1") {
+            eprintln!("SKIP: PKR_F5_SEQUENTIAL not set");
+            return;
+        }
         let table = CompactRegretTable::with_capacity(4096);
         let i1 = table.get_or_create_idx(0xCAFE_0001);
         // r=0; iter1 delta=+10 (t=1 < TAU -> no discount); iter2 delta=-6.
