@@ -842,7 +842,7 @@ impl CompactRegretTable {
         use std::io::{BufWriter, Write};
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
-        let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
+        let n = self.allocated();
         w.write_all(b"PKRCKPT7")?;
         w.write_all(&7u32.to_le_bytes())?;
         w.write_all(bytemuck::bytes_of(fingerprint))?;

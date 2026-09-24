@@ -134,7 +134,7 @@ struct Cli {
     exploitability_csv: Option<PathBuf>,
 
     /// Deals sampled per exploitability check. Accuracy ~ 1/sqrt(deals).
-    #[arg(long, default_value_t = 2000)]
+    #[arg(long, default_value_t = 10000)]
     eval_deals: u32,
 
     /// Skip exporting infosets whose reach-weighted strategy mass is below
@@ -588,8 +588,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
                 // E1: promotion gate. Reject a checkpoint whose exploitability
                 // is worse than the running best by more than --promote-gate.
+                // C3: gate must exceed measurement noise, else we chase winner's-curse minima.
+                let gate = cli.promote_gate.max(2.0 * br.expl_std_err_mbb);
                 let rejected = match best_expl_mbb {
-                    Some(b) => br.exploitability_mbb > b + cli.promote_gate,
+                    Some(b) => br.exploitability_mbb > b + gate,
                     None => false,
                 };
                 if rejected {

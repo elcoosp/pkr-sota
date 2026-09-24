@@ -84,7 +84,7 @@ impl ValueNet {
     /// Forward pass: features → scalar value in [0, 1].
     /// Features: [ehs, ehs_sq, ochs, ochs_sq]
     pub fn forward(&self, features: &[f32; INPUT_DIM]) -> f32 {
-        let mut h1 = vec![0.0f32; HIDDEN1];
+        let mut h1 = [0.0f32; HIDDEN1];
         for i in 0..HIDDEN1 {
             let mut sum = self.b1[i];
             for j in 0..INPUT_DIM {
@@ -93,7 +93,7 @@ impl ValueNet {
             h1[i] = sum.max(0.0); // ReLU
         }
 
-        let mut h2 = vec![0.0f32; HIDDEN2];
+        let mut h2 = [0.0f32; HIDDEN2];
         for i in 0..HIDDEN2 {
             let mut sum = self.b2[i];
             for j in 0..HIDDEN1 {
