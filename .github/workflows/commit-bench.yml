@@ -1,0 +1,38 @@
+name: commit-bench
+
+on:
+  workflow_run:
+    workflows: [bench]
+    types: [completed]
+
+jobs:
+  commit:
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf-history
+          fetch-depth: 0
+
+      - name: Download bench artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bench-results
+          path: nightly
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move to dated path
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          mkdir -p "nightly/$DATE"
+          mv nightly/bench-results.ndjson "nightly/$DATE/bench-results.ndjson"
+
+      - name: Commit
+        run: |
+          git config user.email "ci@pkr-sota"
+          git config user.name "ci-bot"
+          git add nightly/
+          git commit -m "nightly bench $(date -u +%Y-%m-%d)" || true
+          git push

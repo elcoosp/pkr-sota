@@ -1,0 +1,11 @@
+project: pkr-sota
+testbed: ci-ubuntu-22.04
+branch: main
+# Adapters map bench output formats to Bencher's metric model.
+adapter: json
+# Thresholds: PR-comment warns at 5% regression, alerts at 20%.
+thresholds:
+  - name: default
+    metric: latency
+    upper_limit: 1.20    # 20% slower
+    lower_limit: 0.83    # 17% faster (catches test bugs)

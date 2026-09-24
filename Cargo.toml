@@ -11,6 +11,12 @@ members = [
     "crates/pkr-exploit",
     "crates/pkr-testgames",
     "binaries/pkr-trainer",
+    "benches/pkr_contracts_bench",
+    "benches/pkr_core_bench",
+    "benches/pkr_eval_bench",
+    "benches/pkr_runtime_bench",
+    "benches/pkr_cfr_bench",
+    "benches/pkr_abstraction_bench",
 ]
 resolver = "2"
 
@@ -45,6 +51,12 @@ memmap2 = "0.9"
 mimalloc = { version = "0.1", default-features = false }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# B4: criterion lives here (not in [workspace.dev-dependencies]) because
+# `criterion = { workspace = true }` in a member's [dev-dependencies]
+# resolves against [workspace.dependencies] on this toolchain; a
+# dev-dependencies-only entry produced "unused manifest key" warnings
+# and failed workspace resolution.
+criterion = { version = "0.5", features = ["html_reports", "cargo_bench_support"] }
 
 [profile.release]
 opt-level = 3
@@ -56,3 +68,11 @@ strip = "symbols"
 
 [profile.release.package."*"]
 opt-level = 3
+
+# Anti-pattern #3: benches build without LTO so micro-bench numbers
+# reflect codegen comparable to dev iteration, not release distortion.
+[profile.bench]
+opt-level = 3
+lto = "off"
+codegen-units = 1
+debug = false

@@ -1,0 +1,72 @@
+name: proftest
+
+on:
+  schedule:
+    - cron: '47 3 * * *'   # nightly 03:47 UTC (after bench starts)
+  workflow_dispatch:
+
+jobs:
+  proftest:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proftest-release
+          cache-targets: true
+
+      - name: Compute cache key
+        id: key
+        run: echo "k=$(./ci/cache-key.sh)" >> $GITHUB_OUTPUT
+
+      - name: Cache proftest (refined)
+        uses: actions/cache@v4
+        with:
+          path: outputs/v0-proftest-ci
+          key: proftest-${{ runner.os }}-${{ steps.key.outputs.k }}
+
+      - name: Run proftest
+        run: ./ci/scripts/run-proftest-ci.sh
+
+      - name: Push custom metrics
+        run: ./ci/scripts/push-custom-metrics.sh
+
+      - name: Parse eval stderr
+        run: |
+          python3 ci/scripts/parse-eval-stderr.py \
+              outputs/v0-proftest-ci/trainer.stderr \
+              > eval-metrics.ndjson
+          cat eval-metrics.ndjson
+      - name: Upload eval metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-metrics
+          path: eval-metrics.ndjson
+          retention-days: 30
+      - name: Push eval to Bencher
+        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        run: |
+          ./bencher --token "$BENCHER_API_TOKEN" \
+              --project pkr-sota \
+              run \
+              --adapter json \
+              --file eval-metrics.ndjson \
+              --branch main \
+              --testbed ci-ubuntu-22.04
+        env:
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: proftest
+          path: |
+            outputs/v0-proftest-ci/metrics.csv
+            outputs/v0-proftest-ci/stats.json
+            outputs/v0-proftest-ci/blueprint.bin
+          retention-days: 30

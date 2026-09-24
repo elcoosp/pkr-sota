@@ -1,0 +1,61 @@
+name: smoke
+
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'binaries/**'
+      - 'Cargo.toml'
+      - 'smoke.sh'
+      - 'ci/**'
+      - '.github/workflows/smoke.yml'
+  schedule:
+    - cron: '17 4 * * *'   # nightly 04:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compute cache key
+        id: key
+        run: echo "k=$(./ci/cache-key.sh)" >> $GITHUB_OUTPUT
+
+      - name: Cache smoke abstraction artifacts
+        uses: actions/cache@v4
+        with:
+          path: outputs/v0-smoke
+          key: smoke-abstractions-${{ runner.os }}-${{ steps.key.outputs.k }}
+          restore-keys: |
+            smoke-abstractions-${{ runner.os }}-
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: smoke-release
+          cache-targets: true
+
+      - name: Run smoke
+        env:
+          SMOKE_DIR: outputs/v0-smoke
+        run: ./ci/scripts/run-smoke.sh
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-fail
+          path: |
+            outputs/v0-smoke/metrics.csv
+            outputs/v0-smoke/stats.json
+            outputs/v0-smoke/blueprint.bin
+          retention-days: 7

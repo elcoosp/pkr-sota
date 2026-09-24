@@ -1,0 +1,28 @@
+name: audit
+
+on:
+  schedule:
+    - cron: '13 5 * * *'   # daily 05:13 UTC
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit + cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+
+      - name: Run audit
+        run: ./ci/scripts/run-audit.sh

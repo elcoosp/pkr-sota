@@ -1,0 +1,67 @@
+name: pr-comment
+
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'benches/**'
+
+jobs:
+  bench-pr:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need main for diff
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-release
+          cache-targets: true
+
+      - name: Restore smoke artifacts
+        uses: actions/cache@v4
+        with:
+          path: outputs/v0-smoke
+          key: smoke-abstractions-${{ runner.os }}-${{ hashFiles('ci/cache-key.sh', 'smoke.sh') }}
+
+      - name: Run benches on PR branch
+        run: |
+          export PKR_HAND_RANKS=outputs/v0-smoke/hand_ranks.bin
+          export PKR_BLUEPRINT=outputs/v0-smoke/blueprint.bin
+          cargo bench -p pkr-runtime-bench -p pkr-eval-bench -- \
+              --save-baseline pr > /dev/null 2>&1
+
+      - name: Checkout main, re-run benches
+        run: |
+          git stash
+          git checkout origin/main
+          cargo bench -p pkr-runtime-bench -p pkr-eval-bench -- \
+              --save-baseline main > /dev/null 2>&1
+          git checkout -
+          git stash pop || true
+
+      - name: Compare baselines
+        id: cmp
+        run: |
+          cargo bench -p pkr-runtime-bench -p pkr-eval-bench -- \
+              --baseline main --noplot 2>&1 \
+              | python3 ci/scripts/extract-criterion-diff.py \
+              > diff.md
+          cat diff.md
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat diff.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `${{ steps.cmp.outputs.body }}`,
+            });

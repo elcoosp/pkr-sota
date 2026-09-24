@@ -392,6 +392,7 @@ mod tests {
 ///   1. card encoding (rank*4+suit vs suit*13+rank)
 ///   2. flush path only took top-5-by-id, missing wheel SF
 ///   3. COMBOS_7_5[..6] for m=6 indexed out-of-range slots
+///
 /// Each test is a specific hand that exposed the bug.
 #[cfg(test)]
 mod fast7_bug_regressions {

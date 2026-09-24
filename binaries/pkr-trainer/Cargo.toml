@@ -31,3 +31,10 @@ serde_json = { workspace = true }
 pkr-fuzz = { workspace = true }
 pkr-runtime = { workspace = true }
 tempfile = "3"
+
+[features]
+dhat-profiling = ["dhat"]
+
+[dependencies.dhat]
+version = "0.3"
+optional = true

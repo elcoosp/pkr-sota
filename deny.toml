@@ -1,0 +1,37 @@
+# cargo-deny configuration. See https://embarkstudios.github.io/cargo-deny/.
+[graph]
+# No features gating — analyze the actual graph as built.
+all-features = true
+
+[advisories]
+# Treat RUSTSEC entries with severity >= "medium" as CI-fail.
+# Low-severity items are reported but do not block.
+version = 2
+ignore = [
+  # Add RUSTSEC-IDs here ONLY with a comment explaining why and
+  # when the ignore can be removed. Example:
+  # { id = "RUSTSEC-2024-0000", reason = "dev-only dep, no fix upstream", expires = "2026-12-01" },
+]
+
+[licenses]
+# Allow common permissive licenses. Anything else needs human review.
+allow = [
+  "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
+  "ISC", "Unicode-DFS-2016", "Zlib", "CC0-1.0",
+  "MPL-2.0", "CDLA-Permissive-2.0", "Apache-2.0 WITH LLVM-exception",
+  "Unlicense", "OpenSSL",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Fail if multiple versions of the same crate are pulled in.
+multiple-versions = "warn"
+# Fail on wildcard deps (e.g., "regex = *").
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+# Only crates-io and our own workspace paths are allowed.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

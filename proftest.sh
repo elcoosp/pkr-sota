@@ -62,13 +62,16 @@ time cargo run --release -p pkr-trainer -- \
     --capacity "$CAPACITY" \
     --checkpoint-every 0 \
     --report-every 5000 \
+    --eval-every 10000 \
+    --eval-deals 2000 \
     --centroids "$PROF_DIR_ABS/centroids.bin" \
     --preflop-table "$PROF_DIR_ABS/preflop_abstraction.bin" \
     --flop-table "$PROF_DIR_ABS/flop_abstraction.bin" \
     --rank-table "$PROF_DIR_ABS/hand_ranks.bin" \
     --output "$PROF_DIR_ABS/blueprint.bin" \
     --metrics-csv "$PROF_DIR_ABS/metrics.csv" \
-    --stats-json "$PROF_DIR_ABS/stats.json"
+    --stats-json "$PROF_DIR_ABS/stats.json" \
+    2> "$PROF_DIR_ABS/trainer.stderr"
 
 echo ""
 echo "=== Validating JSON output ==="

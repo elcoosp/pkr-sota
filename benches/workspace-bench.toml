@@ -1,0 +1,13 @@
+# Shared criterion config. Each benches/<crate>_bench/Cargo.toml
+# references this via [[bench]] metadata.
+#
+# Tuned for CI: short warm-up, modest sample size, no html_reports
+# (we emit NDJSON for Bencher instead).
+[criterion]
+warm_up_time = 2        # seconds (default 3; we cut for CI budget)
+measurement_time = 5   # seconds per benchmark (default 5)
+sample_size = 30        # default 100; we cut to 30 for CI noise tolerance
+quiet = true
+
+[criterion.benchmarks]
+# Empty — per-bench tuning lives in the bench source.

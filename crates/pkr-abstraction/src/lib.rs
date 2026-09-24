@@ -421,7 +421,7 @@ impl AbstractionBuilder for KMeansAbstraction {
                 // T2.2: >> 13 -> ~1152 tiers (4x finer than >> 13).
                 // Combined with RIVER_BUCKETS=128, net river keyspace
                 // grows ~2.5x current.
-                let hand_bucket = hand_rank >> 13;
+                let hand_bucket = hand_rank >> pkr_core::abstraction::RIVER_TIER_SHIFT;
                 let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
                     Some(table) => {
                         let idx = Self::flat_index_river_board(board);

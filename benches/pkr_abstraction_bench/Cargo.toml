@@ -1,0 +1,18 @@
+[package]
+name = "pkr-abstraction-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pkr-abstraction = { workspace = true }
+pkr-core = { workspace = true }
+pkr-eval = { workspace = true }
+pkr-contracts = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "abstraction"
+harness = false

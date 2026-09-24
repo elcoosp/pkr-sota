@@ -1,0 +1,41 @@
+name: fast
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancel in-progress runs on the same ref — keeps fast iterations cheap.
+concurrency:
+  group: fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history for cargo cache key
+          fetch-depth: 1
+
+      - name: Install Rust toolchain (stable, minimal)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fast-release
+          cache-targets: true
+          cache-on-failure: true
+
+      - name: Run fast gate
+        run: ./ci/scripts/run-fast.sh

@@ -3,6 +3,14 @@
 
   # pkr-sota
 
+  [![fast](https://github.com/elcoosp/pkr-sota/actions/workflows/fast.yml/badge.svg?branch=main)](https://github.com/elcoosp/pkr-sota/actions/workflows/fast.yml)
+  [![smoke](https://github.com/elcoosp/pkr-sota/actions/workflows/smoke.yml/badge.svg?branch=main)](https://github.com/elcoosp/pkr-sota/actions/workflows/smoke.yml)
+  [![audit](https://github.com/elcoosp/pkr-sota/actions/workflows/audit.yml/badge.svg)](https://github.com/elcoosp/pkr-sota/actions/workflows/audit.yml)
+  [![bench](https://github.com/elcoosp/pkr-sota/actions/workflows/bench.yml/badge.svg)](https://github.com/elcoosp/pkr-sota/actions/workflows/bench.yml)
+  [![proftest](https://github.com/elcoosp/pkr-sota/actions/workflows/proftest-ci.yml/badge.svg)](https://github.com/elcoosp/pkr-sota/actions/workflows/proftest-ci.yml)
+  [![weekly](https://github.com/elcoosp/pkr-sota/actions/workflows/weekly.yml/badge.svg)](https://github.com/elcoosp/pkr-sota/actions/workflows/weekly.yml)
+  [![Bencher](https://api.bencher.dev/perf/pkr-sota?branches=main&testbeds=ci-ubuntu-22.04&kinds=latency)](https://bencher.dev/perf/pkr-sota)
+
   *A Rust workspace that takes a poker game from raw `Card` enums to a queried strategy in production.*
 
   [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-000000?style=flat-square&logo=rust)](https://www.rust-lang.org)

@@ -14,8 +14,22 @@ use std::time::{Duration, Instant};
 /// Global allocator: mimalloc. Under heavy parallel allocation
 /// (BatchItem/StrategyOp buffers, papaya map, large arrays) it
 /// substantially outperforms the system allocator and lowers RSS.
+///
+/// B18: when the `dhat-profiling` feature is enabled, dhat's allocator
+/// replaces mimalloc so heap activity is recorded.
+#[cfg(not(feature = "dhat-profiling"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(feature = "dhat-profiling")]
+use dhat::{Dhat, DhatAlloc};
+
+#[cfg(feature = "dhat-profiling")]
+#[global_allocator]
+static ALLOC: DhatAlloc = DhatAlloc;
+
+#[cfg(feature = "dhat-profiling")]
+static DHAT: Dhat = Dhat::new_heap();
 
 /// Fixed seed for the exploitability evaluator. Using a constant rather
 /// than `done` makes successive EVAL points directly comparable
@@ -854,6 +868,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // T2.4: min-visits filter applied inside export_blueprint.
         let n = export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint)?;
         eprintln!("Blueprint written to {} ({} infosets)", cli.output.display(), n);
+    }
+
+    // B18: dump the dhat heap profile (opt-in via --features dhat-profiling).
+    #[cfg(feature = "dhat-profiling")]
+    {
+        let _ = std::fs::create_dir("dhat-out");
+        dhat::to_file(&DHAT, "dhat-out/dhat-heap.json", None)
+            .expect("failed to write dhat output");
     }
 
     Ok(())

@@ -1,0 +1,146 @@
+name: bench
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # nightly 03:17 UTC
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'benches/**'
+      - 'Cargo.toml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compute smoke cache key
+        id: key
+        run: echo "k=$(./ci/cache-key.sh)" >> $GITHUB_OUTPUT
+
+      - name: Cache smoke artifacts
+        id: cache-smoke
+        uses: actions/cache@v4
+        with:
+          path: outputs/v0-smoke
+          key: smoke-abstractions-${{ runner.os }}-${{ steps.key.outputs.k }}
+          restore-keys: |
+            smoke-abstractions-${{ runner.os }}-
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-release
+          cache-targets: true
+
+      - name: Run smoke to ensure artifacts exist
+        if: steps.cache-smoke.outputs.cache-hit != 'true'
+        run: ./smoke.sh
+
+      - name: Run benches
+        run: ./ci/scripts/run-bench.sh
+        env:
+          BENCH_OUT: bench-results.ndjson
+
+      - name: Measure binary size
+        run: ./ci/scripts/measure-binary-size.sh
+        env:
+          OUT: binary-size.json
+
+      - name: Run Kuhn experiment
+        run: ./ci/scripts/run-kuhn.sh
+        env:
+          OUT: kuhn-results.txt
+
+      - name: Parse Kuhn output
+        run: python3 ci/scripts/parse-kuhn.py kuhn-results.txt > kuhn-metrics.ndjson
+
+      - name: Upload Kuhn metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: kuhn-metrics
+          path: kuhn-metrics.ndjson
+          retention-days: 90
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results.ndjson
+          retention-days: 90
+
+      - name: Push to Bencher
+        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        run: |
+          curl -sL https://bencher.dev/download | tar -xz
+          ./bencher --token "$BENCHER_API_TOKEN" \
+              --project pkr-sota \
+              run \
+              --adapter json \
+              --file bench-results.ndjson \
+              --branch main \
+              --testbed ci-ubuntu-22.04
+        env:
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+
+      - name: Push Kuhn to Bencher
+        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        run: |
+          ./bencher --token "$BENCHER_API_TOKEN" \
+              --project pkr-sota \
+              run \
+              --adapter json \
+              --file kuhn-metrics.ndjson \
+              --branch main \
+              --testbed ci-ubuntu-22.04
+        env:
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+
+  bench-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-release
+          cache-targets: true
+
+      - name: Restore smoke artifacts
+        uses: actions/cache@v4
+        with:
+          path: outputs/v0-smoke
+          key: smoke-abstractions-${{ runner.os }}-${{ hashFiles('ci/cache-key.sh', 'smoke.sh') }}
+
+      - name: Run subset benches
+        run: |
+          export PKR_HAND_RANKS=outputs/v0-smoke/hand_ranks.bin
+          export PKR_BLUEPRINT=outputs/v0-smoke/blueprint.bin
+          cargo bench -p pkr-runtime-bench -p pkr-eval-bench -- \
+              --save-baseline pr --output-format=bencher \
+              > pr-bench.ndjson
+
+      - name: Push to Bencher with PR context
+        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+        run: |
+          ./bencher --token "$BENCHER_API_TOKEN" \
+              --project pkr-sota \
+              run --adapter json --file pr-bench.ndjson \
+              --branch "$PR_BRANCH" \
+              --testbed ci-ubuntu-22.04 \
+              --if-branch-starts-with "$PR_BRANCH/" \
+              --else-if-branch-starts-with "main/" \
+              --else-start-point "${{ github.event.pull_request.base.ref }}"

@@ -37,8 +37,16 @@ for T in $THREADS_LIST; do
         --turn-table "$BENCH_DIR_ABS/turn_abstraction.bin" \
         --river-table "$BENCH_DIR_ABS/river_buckets.bin" \
         --rank-table "$BENCH_DIR_ABS/hand_ranks.bin" \
-        --output "$BENCH_DIR_ABS/bench_blueprint.bin" 2>&1 \
-        | grep -E "(Running with|BENCH|iter .*infosets|\[phase\])"
+        --output "$BENCH_DIR_ABS/bench_blueprint.bin" > /tmp/pkr-bench-t$T.log 2>&1
+    grep -E "(Running with|BENCH|iter .*infosets|\[phase\])" /tmp/pkr-bench-t$T.log || true
+    # Machine-readable summary for ci/scripts/parse-bench-scaling.py:
+    # last "RATE it/s" figure from the trainer's progress lines.
+    RATE=$(grep -oE "[0-9]+\.[0-9]+ it/s" /tmp/pkr-bench-t$T.log | tail -1 | awk '{print $1}')
+    if [ -n "${RATE:-}" ]; then
+        echo "BENCH threads=$T it_per_s=$RATE"
+    else
+        echo "BENCH threads=$T it_per_s=0  # WARNING: no it/s line parsed"
+    fi
     echo ""
     set -e
 done

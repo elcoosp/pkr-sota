@@ -21,3 +21,9 @@ outputs/
 
 .proftest/
 .smoke/
+
+# Bench crate build artifacts (do not commit; reused via cargo workspace)
+benches/*/target
+benches/*/Cargo.lock
+# Criterion HTML reports
+benches/*/target/criterion

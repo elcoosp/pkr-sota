@@ -1,0 +1,25 @@
+[package]
+name = "pkr-eval-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pkr-eval = { workspace = true }
+pkr-core = { workspace = true }
+pkr-contracts = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "table"
+harness = false
+
+[[bench]]
+name = "slow"
+harness = false
+
+[[bench]]
+name = "parity"
+harness = true   # uses default #[test] harness

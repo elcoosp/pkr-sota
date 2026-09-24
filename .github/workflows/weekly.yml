@@ -1,0 +1,80 @@
+name: weekly
+
+on:
+  schedule:
+    - cron: '17 2 * * 1'   # Monday 02:17 UTC
+  workflow_dispatch:
+
+jobs:
+  weekly:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: weekly
+          cache-targets: true
+
+      - name: Coverage
+        run: ./ci/scripts/run-coverage.sh > coverage.ndjson
+      - name: Upload lcov
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+          retention-days: 30
+      - name: Push coverage to Bencher
+        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        run: |
+          ./bencher --token "$BENCHER_API_TOKEN" \
+              --project pkr-sota \
+              run --adapter json --file coverage.ndjson \
+              --branch main --testbed ci-ubuntu-22.04
+        env:
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+
+      - name: Memory profile
+        run: ./ci/scripts/run-dhat.sh > memory.ndjson
+      - name: Upload dhat
+        uses: actions/upload-artifact@v4
+        with:
+          name: dhat-heap
+          path: outputs/v0-dhat/dhat-out/dhat-heap.json
+          retention-days: 30
+      - name: Push memory metrics
+        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        run: |
+          ./bencher --token "$BENCHER_API_TOKEN" \
+              --project pkr-sota \
+              run --adapter json --file memory.ndjson \
+              --branch main --testbed ci-ubuntu-22.04
+        env:
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+
+      - name: Fuzz (10 min budget)
+        run: ./ci/scripts/run-fuzz.sh
+      - name: Upload fuzz artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz-artifacts/
+          retention-days: 90
+
+      - name: Miri (pkr-core, pkr-cfr)
+        run: ./ci/scripts/run-miri.sh
+
+      - name: Flamegraph
+        run: sudo ./ci/scripts/run-flamegraph.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flamegraph
+          path: outputs/v0-flame/flame.svg
+          retention-days: 30

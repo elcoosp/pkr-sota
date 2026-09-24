@@ -30,6 +30,16 @@ pub const NUM_ACTION_BUCKETS: usize = 6;
 /// `Bet` actions produced by `legal_actions*`.
 pub const BET_SIZINGS: [f32; 3] = [0.5, 1.0, 2.0];
 
+/// River hand-tier quantization shift (T2.2, audit F6 follow-up).
+///
+/// The river infoset hash quantizes the evaluator's raw rank by
+/// `hand_rank >> RIVER_TIER_SHIFT`. Changing this value changes every
+/// river infoset key, so the fingerprint must reflect it or a checkpoint
+/// could silently load into a binary that computes different hashes.
+///
+/// History: 6 -> 15 (audit F6) -> 13 (T2.2, 4x finer resolution).
+pub const RIVER_TIER_SHIFT: u8 = 13;
+
 /// Bucket 2: raise size fraction < BUCKET_THRESHOLD_SMALL.
 pub const BUCKET_THRESHOLD_SMALL: f32 = 0.6;
 /// Bucket 3: BUCKET_THRESHOLD_SMALL <= fraction < BUCKET_THRESHOLD_LARGE.
@@ -213,7 +223,12 @@ pub struct AbstractionFingerprint {
     pub sig_version: u8,
     /// Hash algorithm identifier (`HASH_ALGO_FNV1A64_INFOSET`).
     pub hash_algo: u8,
-    pub _pad: [u8; 6],
+    /// T2.2: river hand-tier shift (`hand_rank >> RIVER_TIER_SHIFT`).
+    /// Older writers left `_pad[0] = 0`, which is a distinct value from
+    /// any valid shift, so a pre-T2.2 checkpoint loaded against a post-
+    /// T2.2 binary produces a fingerprint mismatch (correct behaviour).
+    pub river_tier_shift: u8,
+    pub _pad: [u8; 5],
 }
 
 impl AbstractionFingerprint {
@@ -244,13 +259,21 @@ impl AbstractionFingerprint {
                 1
             },
             hash_algo: pkr_contracts::HASH_ALGO_FNV1A64_INFOSET,
-            _pad: [0; 6],
+            river_tier_shift: RIVER_TIER_SHIFT,
+            _pad: [0; 5],
         }
     }
 
     /// Human-readable mismatch report. Called on checkpoint load when
     /// the stored fingerprint differs from the current one.
     pub fn describe_mismatch(&self, expected: &Self) -> String {
+        if self.river_tier_shift != expected.river_tier_shift {
+            return format!(
+                "river_tier_shift mismatch: stored={} current={} (T2.2 changed the \
+                 river hash shift; retrain or use --fresh)",
+                self.river_tier_shift, expected.river_tier_shift,
+            );
+        }
         let mut diffs = Vec::new();
         if self.preflop_k != expected.preflop_k {
             diffs.push(format!(
