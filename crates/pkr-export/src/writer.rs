@@ -9,6 +9,36 @@ use std::io::Write;
 const MAGIC: &[u8; 8] = b"PKRSOTA1";
 const K: usize = 6;
 
+/// Quantise a probability vector to a monotone u8 CDF that ALWAYS
+/// closes at 255 on the last action with non-zero probability. This
+/// prevents rounding slack from landing on an action whose probability
+/// is zero (e.g. an illegal bucket).
+pub(crate) fn quantize_cdf(strat: &[f32; K]) -> [u8; K] {
+    let mut out = [0u8; K];
+    let total: f32 = strat.iter().sum();
+    if !(total > 0.0) {
+        for a in 0..K {
+            out[a] = ((((a + 1) as f32) / K as f32) * 255.0).round() as u8;
+        }
+        out[K - 1] = 255;
+        return out;
+    }
+    let mut cum = 0.0f32;
+    let mut prev = 0u8;
+    for a in 0..K {
+        cum += strat[a] / total;
+        let b = (cum * 255.0).round().clamp(0.0, 255.0) as u8;
+        out[a] = b.max(prev);
+        prev = out[a];
+    }
+    // Close on the last action that actually has probability.
+    let last = (0..K).rev().find(|&a| strat[a] > 0.0).unwrap_or(K - 1);
+    for a in last..K {
+        out[a] = 255;
+    }
+    out
+}
+
 /// Write a complete blueprint file.
 ///
 /// v4 layout:
@@ -21,7 +51,7 @@ pub fn write_blueprint(
     table: &CompactRegretTable,
     keys: &[u64],
     fingerprint: &AbstractionFingerprint,
-) {
+) -> std::io::Result<()> {
     // Sort defensively (reader uses binary search).
     let mut sorted_keys: Vec<u64> = keys.to_vec();
     sorted_keys.sort_unstable();
@@ -35,12 +65,7 @@ pub fn write_blueprint(
     for &key in keys {
         key_bytes.extend_from_slice(&key.to_le_bytes());
         table.get_average_strategy_into(key, &mut strat);
-        let mut cumulative = 0.0f32;
-        for a in 0..K {
-            cumulative += strat[a];
-            let byte = (cumulative * 255.0).round().clamp(0.0, 255.0) as u8;
-            cdf_bytes.push(byte);
-        }
+        cdf_bytes.extend_from_slice(&quantize_cdf(&strat));
     }
 
     let file_header = FileHeader {
@@ -55,24 +80,21 @@ pub fn write_blueprint(
 
     let anchors = AnchorsSection { anchors: ANCHORS };
 
-    let mut file = File::create(path).expect("failed to create blueprint file");
-
-    // 1. FileHeader (32 B)
-    file.write_all(bytemuck::bytes_of(&file_header)).unwrap();
-    // 2. AnchorsSection (48 B)
-    file.write_all(bytemuck::bytes_of(&anchors)).unwrap();
-    // 3. AbstractionFingerprint (40 B) — F2c
-    file.write_all(bytemuck::bytes_of(fingerprint)).unwrap();
-    // 4. key_count:u32, cdf_size:u32
-    file.write_all(&(num_keys as u32).to_le_bytes()).unwrap();
-    file.write_all(&((K * num_keys) as u32).to_le_bytes())
-        .unwrap();
-    // 5. keys
-    file.write_all(&key_bytes).unwrap();
-    // 6. cdfs
-    file.write_all(&cdf_bytes).unwrap();
-
-    file.flush().unwrap();
+    let tmp = format!("{path}.tmp");
+    {
+        let mut file = File::create(&tmp)?;
+        file.write_all(bytemuck::bytes_of(&file_header))?;
+        file.write_all(bytemuck::bytes_of(&anchors))?;
+        file.write_all(bytemuck::bytes_of(fingerprint))?;
+        file.write_all(&(num_keys as u32).to_le_bytes())?;
+        file.write_all(&((K * num_keys) as u32).to_le_bytes())?;
+        file.write_all(&key_bytes)?;
+        file.write_all(&cdf_bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -144,5 +166,36 @@ mod v4_layout_tests {
         let fp_bytes = &bytes[80..120];
         let stored: &pkr_core::abstraction::AbstractionFingerprint = bytemuck::from_bytes(fp_bytes);
         assert_eq!(*stored, fp);
+    }
+}
+
+#[cfg(test)]
+mod cdf_tests {
+    use super::*;
+
+    #[test]
+    fn cdf_is_monotone_and_closes_on_last_nonzero_action() {
+        let s = [0.2f32, 0.3, 0.5, 0.0, 0.0, 0.0];
+        let c = quantize_cdf(&s);
+        assert!(c.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(c[2], 255);
+        assert_eq!(c[5], 255);
+        assert!(c[1] < 255);
+    }
+
+    #[test]
+    fn all_zero_is_uniform_and_closed() {
+        let c = quantize_cdf(&[0.0; K]);
+        assert_eq!(c[K - 1], 255);
+    }
+
+    #[test]
+    fn rounds_to_nearest_without_overshoot() {
+        let s = [0.333f32, 0.333, 0.334, 0.0, 0.0, 0.0];
+        let c = quantize_cdf(&s);
+        for i in 0..K {
+            assert!(c[i] >= c[i.saturating_sub(1)]);
+        }
+        assert_eq!(c[2], 255);
     }
 }
