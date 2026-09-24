@@ -53,10 +53,17 @@ pub fn write_blueprint(
     keys: &[u64],
     fingerprint: &AbstractionFingerprint,
 ) -> std::io::Result<()> {
-    // Sort defensively (reader uses binary search).
-    let mut sorted_keys: Vec<u64> = keys.to_vec();
-    sorted_keys.sort_unstable();
-    let keys: &[u64] = &sorted_keys;
+    // Defensive sort (reader uses binary search). If the caller already
+    // passed sorted keys (the trainer's export_blueprint does), skip the
+    // `to_vec()` + sort entirely. `is_sorted()` is O(n) with no alloc.
+    let owned_keys: Option<Vec<u64>> = if keys.windows(2).all(|w| w[0] <= w[1]) {
+        None
+    } else {
+        let mut v = keys.to_vec();
+        v.sort_unstable();
+        Some(v)
+    };
+    let keys: &[u64] = owned_keys.as_deref().unwrap_or(keys);
     let num_keys = keys.len();
 
     let mut cdf_bytes: Vec<u8> = Vec::with_capacity(num_keys * K);
@@ -93,10 +100,16 @@ pub fn write_blueprint(
         file.write_all(&cdf_bytes)?;
 
         // P3-b: optional FMph tail after the CDF. Absent in older files;
-        // runtime falls back to branchless search. If build_fmph panics
-        // (rare non-convergence), skip the section -- writers must never
-        // fail on it.
-        {
+        // runtime falls back to branchless search.
+        //
+        // SKIP for small tables: FMph is O(1) vs binary search O(log n),
+        // so the win only matters above a few hundred keys -- and
+        // build_fmph's 500K-attempt retry loop becomes an effective hang
+        // for tiny n (its displacement is unlikely to fit). Threshold
+        // chosen to cover every realistic runtime blueprint while
+        // keeping unit tests and small-table exports instantaneous.
+        const FMPH_MIN_KEYS: usize = 64;
+        if keys.len() >= FMPH_MIN_KEYS {
             use std::panic::{catch_unwind, AssertUnwindSafe};
             if let Ok(fmph) = catch_unwind(AssertUnwindSafe(|| build_fmph(keys))) {
                 let hdr = fmph.to_header();
