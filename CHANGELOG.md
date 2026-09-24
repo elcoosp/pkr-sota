@@ -136,3 +136,42 @@ Test fixes:
 
 After the fix, P1-a was re-applied (commit 48a20a5). Expected to match
 the pre-perf baseline on training quality with the ~15-20% it/s win.
+
+
+## 2026-09-24 — Performance landing (post fast7 fix)
+
+After the fast7 bugs were fixed and P1-a re-applied, the following
+additional perf improvements were landed on top of the session's
+earlier audit fixes:
+
+### Data-layout improvements
+- **P1-f**: replaced the 480-byte `[[usize; 10]; K]` `action_indices`
+  table in `traverse` with an 8-byte `bucket_of_action` array and a
+  `pick_in_bucket(bucket, ordinal)` helper. Removes ~4 GB/s of memset
+  per process at ~8M node visits/sec.
+- **UndoRecord**: shrunk `history_len`, `board_len`, `actor` from
+  usize (8B) to u8 (1B each). Size assertion test guards against
+  silent growth.
+
+### Compute improvements
+- **add_sum_grouped**: non-CAS batch path for `apply_strategy_batch`.
+  After sort-dedup each (idx, action) is unique per parallel group, so
+  the CAS loop's branch+fence are unnecessary.
+
+### Inline coverage
+- `#[inline]` on `history_signature`, `terminal_payoff`,
+  `legal_actions_into`, `action_bucket`, `flat_index_*` helpers,
+  `get_strategy_and_idx`, `get_strategy_into`,
+  `TableEvaluator::evaluate_hand`.
+- `#[inline(always)]` already present on `load_rm`/`store_rm`,
+  `off_rm`/`off_sum`, `regret_match_into`, cache helpers.
+
+### Verification
+- All 266 workspace tests pass.
+- 30-second bench on the M1: ~48-61K it/s (vs ~28-30K it/s baseline).
+- 20M training run reproduces the same expl_mbb trajectory as the
+  pre-perf baseline:
+  - v23a3   @ 20M: 5908  (old code)
+  - v25fast7 @ 20M: 5767  (P1-a + fixed fast7)
+  - v25final @ 20M: 5735  (all of the above)
+  - all within 1σ.
