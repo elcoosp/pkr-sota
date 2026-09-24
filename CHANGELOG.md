@@ -104,3 +104,35 @@ scale and is not comparable.
 - v22 momentum OFF, avg=2: 3392 (old estimator), flat within 2% over 10M
 - v23 = v22 flags, 200M iters, first C-patched metric
   (`PKR_MOMENTUM=0 PKR_AVG_POWER=2`)
+
+## 2026-09-24 — fast7 evaluator bug (regression found via A/B bisect)
+
+After landing all perf commits (P1-a through P3-b), training quality
+regressed from ~5500 to ~9000 mbb at 5M iters. Bisected to P1-a
+(TableEvaluator -> Fast7Evaluator wiring).
+
+Root cause: fast7's card encoding was `rank * 4 + suit` but the rest of
+the crate (slow.rs, hand_ranks.bin, precompute) uses `suit * 13 + rank`.
+The parity tests were silently skipping because `find_rank_table()`
+returned None when CWD didn't match the workspace root.
+
+Three concrete bugs, all fixed:
+
+1. **Encoding mismatch.** `evaluate_hand` decoded `c & 3` as suit and
+   `c >> 2` as rank. Fixed to `c / 13` and `c % 13`.
+2. **Flush path missed straight flush.** Top-5-by-id spades of
+   A,T,5,4,3,2 gives ace-high flush but the actual best 5 is
+   A,5,4,3,2 (wheel straight flush). Now enumerates all C(m,5)
+   subsets of the suited cards.
+3. **COMBOS_7_5 out-of-range for m=6.** The 7-slot combo table's
+   first 6 entries referenced index 6 when only 6 suited cards
+   were present. Now filtered by index < m.
+
+Test fixes:
+- `find_rank_table()` resolves against `env!("CARGO_MANIFEST_DIR")/../..`
+  so the parity tests actually run under nextest.
+- Targeted regression tests for each bug class:
+  `fast7::fast7_bug_regressions::*`.
+
+After the fix, P1-a was re-applied (commit 48a20a5). Expected to match
+the pre-perf baseline on training quality with the ~15-20% it/s win.
