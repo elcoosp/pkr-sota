@@ -229,7 +229,10 @@ pub fn traverse(
     let num_actions: &[Action] = &action_buf[..num_actions_n];
 
     let mut action_counts = [0usize; K];
-    let mut action_indices = [[0usize; 10]; K];
+    // P1-f: bucket per concrete-action index. 8 bytes vs the old
+    // 480-byte [[usize;10];K] table that was memset on every node.
+    // `pick_in_bucket` (below) reconstructs the ordinal -> index map.
+    let mut bucket_of_action = [0u8; 8];
     // C3: `action_bucket` always returns a bucket index for every
     // concrete action. Pre-action scalars match the traverser's
     // convention.
@@ -245,11 +248,22 @@ pub fn traverse(
             opp_street,
             actor_pot,
         ) as usize;
-        if action_counts[a] < 10 {
-            action_indices[a][action_counts[a]] = idx;
-            action_counts[a] += 1;
-        }
+        bucket_of_action[idx] = a as u8;
+        action_counts[a] += 1;
     }
+    // The ordinal-th (0-based) concrete action in `bucket`.
+    let pick_in_bucket = |bucket: u8, ordinal: usize| -> usize {
+        let mut seen = 0usize;
+        for (i, &b) in bucket_of_action.iter().enumerate().take(num_actions_n) {
+            if b == bucket {
+                if seen == ordinal {
+                    return i;
+                }
+                seen += 1;
+            }
+        }
+        unreachable!("pick_in_bucket: bucket {bucket} ordinal {ordinal} out of range");
+    };
 
     // E3: forced move -- only one legal bucket. No decision, no regret,
     // no strategy. Recurse without touching the table. Off by default
@@ -259,8 +273,8 @@ pub fn traverse(
         if n_legal_buckets == 1 {
             let a = (0..K).find(|&a| action_counts[a] > 0).unwrap();
             let count = action_counts[a];
-            let pick = if count > 1 { rng.random_range(0..count) } else { 0 };
-            current.apply_action_in_place(&num_actions[action_indices[a][pick]]);
+            let ordinal = if count > 1 { rng.random_range(0..count) } else { 0 };
+            current.apply_action_in_place(&num_actions[pick_in_bucket(a as u8, ordinal)]);
             let child_deck_idx = *deck_idx;
             let v = traverse(
                 current,
@@ -361,7 +375,7 @@ pub fn traverse(
                 v[a] = f32::NAN;
                 continue;
             }
-            let pick_idx = action_indices[a][rng.random_range(0..count)];
+            let pick_idx = pick_in_bucket(a as u8, rng.random_range(0..count));
 
             current.apply_action_in_place(&num_actions[pick_idx]);
             let child_deck_idx = *deck_idx;
@@ -433,7 +447,7 @@ pub fn traverse(
             *deck_idx = saved_deck_idx;
             return 0.0;
         }
-        let pick_idx = action_indices[sampled_abstract][rng.random_range(0..count)];
+        let pick_idx = pick_in_bucket(sampled_abstract as u8, rng.random_range(0..count));
 
         current.apply_action_in_place(&num_actions[pick_idx]);
         let child_deck_idx = *deck_idx;

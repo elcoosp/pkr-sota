@@ -311,10 +311,8 @@ impl CompactRegretTable {
         f64::from_bits(self.strategy_sum[Self::off_sum(idx, action)].load(Ordering::Relaxed))
     }
 
-    /// CAS-loop add. In `apply_strategy_batch` each (idx, action) appears
-    /// in exactly one parallel group, so the CAS succeeds first try. The
-    /// loop exists for `add_strategy_sum_at`, which may be called
-    /// concurrently from multiple threads on the same cell.
+    /// CAS-loop add. Used by the public `add_strategy_sum_at`, which may
+    /// be called concurrently from multiple threads on the same cell.
     #[inline(always)]
     fn add_sum(&self, idx: usize, action: usize, delta: f64) {
         let cell = &self.strategy_sum[Self::off_sum(idx, action)];
@@ -332,6 +330,17 @@ impl CompactRegretTable {
                 Err(actual) => cur_bits = actual,
             }
         }
+    }
+
+    /// Non-CAS add for the batch path: after `apply_strategy_batch`'s
+    /// sort+dedup, each (idx, action) appears in exactly one parallel
+    /// group, so only one thread ever touches a given cell. Load+store
+    /// avoids the CAS loop's branch and memory ordering fence.
+    #[inline(always)]
+    fn add_sum_grouped(&self, idx: usize, action: usize, delta: f64) {
+        let cell = &self.strategy_sum[Self::off_sum(idx, action)];
+        let cur = f64::from_bits(cell.load(Ordering::Relaxed));
+        cell.store((cur + delta).to_bits(), Ordering::Relaxed);
     }
 
     /// Number of slots handed out (>= distinct infosets: lost races leak slots).
@@ -529,7 +538,7 @@ impl CompactRegretTable {
                 for k in start..end {
                     prob += ops_ref[k].prob as f64;
                 }
-                self.add_sum(idx_u32 as usize, act_u8 as usize, prob);
+                self.add_sum_grouped(idx_u32 as usize, act_u8 as usize, prob);
             }
         });
         applied
