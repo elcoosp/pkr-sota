@@ -1,0 +1,34 @@
+=== v25final (non-blocking) ===
+running
+(stopped)
+
+==================================================
+=== Work that does NOT cost CPU: docs + patches
+==================================================
+
+=== 1. T2.2 patch as a reviewable .patch file ===
+--- T2.2 change, ready to 'git apply' after v25final finishes ---
+
+--- a/crates/pkr-abstraction/src/lib.rs
++++ b/crates/pkr-abstraction/src/lib.rs
+@@ -415,10 +415,11 @@
+             }
+             5 => {
+                 // River: bucket hand strength into ~256 ordered tiers.
+                 //
+                 // evaluate_hand returns the inverted-bit encoding !raw =
+                 // ~(category << 20 | rank_bits) — NOT a 7462-scale rank. Its value
+                 // range is ~[2^32 - 9*2^20, 2^32] (audit F6). `>> 15` is a monotone
+                 // quantization of that range into ~287 tiers where lower tier =
+                 // stronger hand. (The old `>> 6` produced ~147k tiers and blew up the
+                 // river infoset count; a true 7462-scale dense rank is the M1-playbook
+                 // fast7 follow-up.)
+                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
+-                let hand_bucket = hand_rank >> 15; // ~0..=287, monotone
++                // T2.2: >> 13 -> ~1152 tiers (4x finer than >> 15).
++                // Combined with RIVER_BUCKETS=128, net river keyspace
++                // grows ~2.5x current — more discriminative without explosion.
++                let hand_bucket = hand_rank >> 13;
+                 let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
+                     Some(table) => {
+                         let idx = Self::flat_index_river_board(board);
