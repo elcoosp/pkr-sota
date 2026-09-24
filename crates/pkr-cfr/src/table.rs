@@ -274,7 +274,6 @@ impl CompactRegretTable {
         }
     }
 
-    #[inline]
     /// Number of slots handed out (>= distinct infosets: lost races leak slots).
     #[inline]
     pub fn allocated(&self) -> usize {
