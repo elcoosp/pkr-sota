@@ -1,15 +1,20 @@
 // T1.1: flush_cpu_batch now uses the integer path
 // (crate::dcfr::update_regret_i64). The f32 wrapper is kept for A/B
 // comparison and tests.
+//
+// GPU path (feature = "gpu") is i32-only and unmaintained; it does NOT
+// mirror the i64 table. `flush_gpu_batch` is feature-gated and its tests
+// only run under `--features gpu`. Production never calls it.
 
-use crate::gpu::{BatchItem, GpuState};
+use crate::gpu::BatchItem;
+#[cfg(feature = "gpu")]
+use crate::gpu::GpuState;
 use crate::metrics::LocalMetrics;
 use foldhash::fast::RandomState as FoldHasher;
 use papaya::HashMap as PapayaMap;
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
@@ -20,6 +25,44 @@ const RM_STRIDE: usize = K * RM_FIELDS;
 const RM_REGRET: usize = 0;
 const RM_MOMENTUM: usize = 1;
 
+/// How `flush_cpu_batch` folds deltas. Read once from the environment.
+///   PKR_F5_SEQUENTIAL=0  → batched-sum fold (v9..v16 behaviour)
+///   PKR_MOMENTUM=0       → plain CFR+/DCFR, no PCFR+ momentum term
+/// Defaults reproduce the current production behaviour.
+#[derive(Clone, Copy, Debug)]
+pub struct FlushMode {
+    pub sequential: bool,
+    pub momentum: bool,
+}
+
+impl FlushMode {
+    pub fn from_env() -> Self {
+        let off = |n: &str| {
+            matches!(
+                std::env::var(n).as_deref(),
+                Ok("0") | Ok("off") | Ok("false")
+            )
+        };
+        Self {
+            sequential: !off("PKR_F5_SEQUENTIAL"),
+            momentum: !off("PKR_MOMENTUM"),
+        }
+    }
+    pub fn production() -> Self {
+        static M: OnceLock<FlushMode> = OnceLock::new();
+        *M.get_or_init(Self::from_env)
+    }
+}
+
+#[inline]
+fn to_fixed(x: f64) -> i64 {
+    if x.is_finite() {
+        (x * SCALE as f64).round() as i64
+    } else {
+        0
+    }
+}
+
 /// Strategy sums live in a separate array indexed [s0..s5].
 /// Stored as f64 bits in AtomicU64 — see `add_sum` for why fixed-point was
 /// wrong here: reach_prob decays multiplicatively through the tree, and at
@@ -29,6 +72,16 @@ const RM_MOMENTUM: usize = 1;
 const SUM_STRIDE: usize = K;
 
 pub(crate) const SCALE: f32 = 1000.0;
+
+/// Maximum |regret| / |momentum| stored in the i32 fixed-point tables,
+/// expressed at `SCALE`. Clipping below `i32::MAX` leaves headroom for
+/// the next batch's delta and prevents the saturation pathology that
+/// silently uniformizes regret-matching on high-traffic infosets.
+///
+/// 500_000 / SCALE=1000 = 500 chips = 2.5× starting stack.
+/// Any strategy preference stronger than that is indistinguishable in
+/// practice, so clipping there costs nothing.
+pub(crate) const R_MAX: i64 = i64::MAX / 4;
 
 #[derive(Clone, Copy, Debug)]
 pub struct StrategyOp {
@@ -78,30 +131,78 @@ pub struct InfoSetDump {
     pub regrets: [f32; K],
 }
 
-const IDX_CACHE_INIT: usize = 1 << 18;
-const IDX_CACHE_MAX: usize = 1 << 20;
+// P1-d: direct-mapped per-thread idx cache. Replaces the HashMap that
+// had a hard clear-at-1M-entries cliff (hit rate collapsed above 1M
+// infosets). Direct mapping means colliding keys evict one slot; the
+// hash is uniform, so eviction is cheap. Memory: 2^19 * 16 B = 8 MB
+// per thread.
+const CACHE_BITS: u32 = 19;
+const CACHE_SIZE: usize = 1 << CACHE_BITS;
+
+#[derive(Clone, Copy)]
+struct CacheSlot {
+    key: u64,
+    idx: u32,
+}
 
 thread_local! {
-    static IDX_CACHE: RefCell<HashMap<u64, usize, FoldHasher>> =
-        RefCell::new(HashMap::with_capacity_and_hasher(
-            IDX_CACHE_INIT,
-            FoldHasher::default(),
-        ));
+    static IDX_CACHE: RefCell<Vec<CacheSlot>> = RefCell::new(vec![
+        CacheSlot { key: 0, idx: 0 };
+        CACHE_SIZE
+    ]);
+}
+
+// Generation counter for the thread-local IDX_CACHE (audit F14):
+// bumped on every checkpoint load so entries cached before the load
+// can never alias post-load indices on a worker thread that did not
+// observe the clear. Folded into the key derivation, so old entries
+// simply miss.
+static CACHE_GEN: AtomicU64 = AtomicU64::new(0);
+
+#[inline(always)]
+fn cache_key(hash: u64) -> u64 {
+    hash ^ CACHE_GEN
+        .load(Ordering::Relaxed)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+#[inline(always)]
+fn cache_slot(key: u64) -> usize {
+    (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - CACHE_BITS)) as usize
 }
 
 #[inline]
 fn cache_lookup(hash: u64) -> Option<usize> {
-    IDX_CACHE.with(|c| c.borrow().get(&hash).copied())
+    let key = cache_key(hash);
+    // key==0 cannot be a valid entry (0 is the sentinel for an empty slot);
+    // the probability of a genuine FNV-1a-collide-with-sentinel is 2^-64,
+    // so we treat it as a miss.
+    if key == 0 {
+        return None;
+    }
+    IDX_CACHE.with(|c| {
+        let slots = c.borrow();
+        let s = &slots[cache_slot(key)];
+        if s.key == key {
+            Some(s.idx as usize)
+        } else {
+            None
+        }
+    })
 }
 
 #[inline]
 fn cache_insert(hash: u64, idx: usize) {
+    let key = cache_key(hash);
+    if key == 0 {
+        // Extremely rare: skip insert rather than clobber the empty sentinel.
+        return;
+    }
     IDX_CACHE.with(|c| {
-        let mut m = c.borrow_mut();
-        if m.len() >= IDX_CACHE_MAX {
-            m.clear();
-        }
-        m.insert(hash, idx);
+        let mut slots = c.borrow_mut();
+        let s = &mut slots[cache_slot(key)];
+        s.key = key;
+        s.idx = idx as u32;
     });
 }
 
@@ -124,12 +225,13 @@ fn warn_nonfinite_regret_once(iteration: u32) {
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
     /// Interleaved regret+momentum, i32 fixed-point at scale 1000.
-    data: Vec<AtomicI32>,
+    data: Vec<AtomicI64>,
     /// f64 strategy sums stored as u64 bits. Independent array to avoid
     /// false sharing with the interleaved regret/momentum data.
     strategy_sum: Vec<AtomicU64>,
     next_idx: AtomicUsize,
     capacity: usize,
+    #[cfg(feature = "gpu")]
     gpu: OnceLock<GpuState>,
 }
 
@@ -140,13 +242,35 @@ impl Default for CompactRegretTable {
 }
 
 impl CompactRegretTable {
+    /// Regret-matching+ strategy from the stored regrets. Since the
+    /// normalisation cancels SCALE, we skip the /SCALE division entirely
+    /// (audit E2). Uniform over all K actions if no positive regret.
+    #[inline(always)]
+    fn regret_match_into(&self, idx: usize, out: &mut [f32; K]) {
+        let mut sum = 0.0f32;
+        for i in 0..K {
+            let raw = self.load_rm(idx, i, RM_REGRET);
+            let v = if raw > 0 { raw as f32 } else { 0.0 };
+            out[i] = v;
+            sum += v;
+        }
+        if sum > 0.0 {
+            let inv = 1.0 / sum;
+            for i in 0..K {
+                out[i] *= inv;
+            }
+        } else {
+            out.fill(1.0 / K as f32);
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_capacity(5_000_000)
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut data: Vec<AtomicI32> = Vec::with_capacity(capacity * RM_STRIDE);
-        data.resize_with(capacity * RM_STRIDE, || AtomicI32::new(0));
+        let mut data: Vec<AtomicI64> = Vec::with_capacity(capacity * RM_STRIDE);
+        data.resize_with(capacity * RM_STRIDE, || AtomicI64::new(0));
         let mut strategy_sum: Vec<AtomicU64> = Vec::with_capacity(capacity * SUM_STRIDE);
         strategy_sum.resize_with(capacity * SUM_STRIDE, || AtomicU64::new(0));
         let map = PapayaMap::with_hasher(FoldHasher::default());
@@ -157,6 +281,7 @@ impl CompactRegretTable {
             strategy_sum,
             next_idx: AtomicUsize::new(0),
             capacity,
+            #[cfg(feature = "gpu")]
             gpu: OnceLock::new(),
         }
     }
@@ -172,12 +297,12 @@ impl CompactRegretTable {
     }
 
     #[inline(always)]
-    fn load_rm(&self, idx: usize, action: usize, field: usize) -> i32 {
+    fn load_rm(&self, idx: usize, action: usize, field: usize) -> i64 {
         self.data[Self::off_rm(idx, action, field)].load(Ordering::Relaxed)
     }
 
     #[inline(always)]
-    fn store_rm(&self, idx: usize, action: usize, field: usize, v: i32) {
+    fn store_rm(&self, idx: usize, action: usize, field: usize, v: i64) {
         self.data[Self::off_rm(idx, action, field)].store(v, Ordering::Relaxed);
     }
 
@@ -209,7 +334,12 @@ impl CompactRegretTable {
         }
     }
 
+    /// Number of slots handed out (>= distinct infosets: lost races leak slots).
     #[inline]
+    pub fn allocated(&self) -> usize {
+        self.next_idx.load(Ordering::Relaxed).min(self.capacity)
+    }
+
     fn alloc_idx(&self) -> usize {
         loop {
             let cur = self.next_idx.load(Ordering::Relaxed);
@@ -282,21 +412,7 @@ impl CompactRegretTable {
                 i
             }
         };
-        let mut sum = 0.0f32;
-        for i in 0..K {
-            let raw = self.load_rm(idx, i, RM_REGRET);
-            let val = ((raw as f32) / SCALE).max(0.0);
-            out[i] = val;
-            sum += val;
-        }
-        if sum > 0.0 {
-            let inv = 1.0 / sum;
-            for i in 0..K {
-                out[i] *= inv;
-            }
-        } else {
-            out.fill(1.0 / K as f32);
-        }
+        self.regret_match_into(idx, out);
         idx
     }
 
@@ -314,21 +430,7 @@ impl CompactRegretTable {
             }
         };
         if let Some(idx) = idx_opt {
-            let mut sum = 0.0f32;
-            for i in 0..K {
-                let raw = self.load_rm(idx, i, RM_REGRET);
-                let val = ((raw as f32) / SCALE).max(0.0);
-                out[i] = val;
-                sum += val;
-            }
-            if sum > 0.0 {
-                let inv = 1.0 / sum;
-                for i in 0..K {
-                    out[i] *= inv;
-                }
-            } else {
-                out.fill(1.0 / K as f32);
-            }
+            self.regret_match_into(idx, out);
         } else {
             out.fill(1.0 / K as f32);
         }
@@ -366,24 +468,8 @@ impl CompactRegretTable {
             return out;
         }
 
-        // Fallback: regret-matched current strategy.
-        let mut rsum = 0.0f32;
-        for i in 0..K {
-            let raw = self.load_rm(idx, i, RM_REGRET) as f32 / SCALE;
-            let val = raw.max(0.0);
-            out[i] = val;
-            rsum += val;
-        }
-        if rsum > 0.0 {
-            let inv = 1.0 / rsum;
-            for i in 0..K {
-                out[i] *= inv;
-            }
-            return out;
-        }
-
-        // Last resort: uniform.
-        out.fill(1.0 / K as f32);
+        // Fallback: regret-matched current strategy (or uniform).
+        self.regret_match_into(idx, &mut out);
         out
     }
 
@@ -417,7 +503,8 @@ impl CompactRegretTable {
         if ops.is_empty() {
             return 0;
         }
-        ops.par_sort_unstable_by_key(|op| (op.index, op.action));
+        // E4b: bit-identical grouping key, single u64 compare (audit E4).
+        ops.par_sort_unstable_by_key(|op| ((op.index as u64) << 8) | op.action as u64);
 
         let mut groups: Vec<(usize, usize, u32, u8)> = Vec::with_capacity(ops.len() / 4 + 16);
         let mut i = 0usize;
@@ -434,7 +521,8 @@ impl CompactRegretTable {
         let applied = groups.len() as u64;
         let ops_ref: &[StrategyOp] = ops.as_slice();
         let n_threads = rayon::current_num_threads().max(1);
-        let chunk_size = (groups.len() / n_threads).max(1);
+        // E4a: match flush_cpu_batch's chunking (audit section E4).
+        let chunk_size = (groups.len() / (n_threads * 8)).max(64);
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u8) in grp_slice {
                 let mut prob = 0.0f64;
@@ -449,13 +537,24 @@ impl CompactRegretTable {
 
     /// Apply a batch of deferred regret updates. Returns (input_len,
     /// unique_count).
+    /// Apply a batch of deferred regret updates. Returns (input_len, unique_count).
+    /// Uses `FlushMode::production()` (env read once).
     pub fn flush_cpu_batch(&self, batch: &mut Vec<BatchItem>) -> (u64, u64) {
+        self.flush_cpu_batch_with(batch, FlushMode::production())
+    }
+
+    /// Same as `flush_cpu_batch` but with explicit mode. Tests should use
+    /// this; production goes through `flush_cpu_batch` -> `FlushMode::production`.
+    pub fn flush_cpu_batch_with(
+        &self,
+        batch: &mut Vec<BatchItem>,
+        mode: FlushMode,
+    ) -> (u64, u64) {
         let input_len = batch.len() as u64;
         if batch.is_empty() {
             return (0, 0);
         }
-        batch.par_sort_unstable_by_key(|item| (item.index, item.action));
-        let iteration = batch[0].iteration;
+        batch.par_sort_unstable_by_key(|item| (item.index, item.action, item.iteration));
 
         let mut groups: Vec<(usize, usize, u32, u32)> = Vec::with_capacity(batch.len() / 4 + 16);
         let mut i = 0usize;
@@ -472,33 +571,72 @@ impl CompactRegretTable {
         let unique_len = groups.len() as u64;
         let batch_ref: &[BatchItem] = batch.as_slice();
         let n_threads = rayon::current_num_threads().max(1);
-        let chunk_size = (groups.len() / n_threads).max(1);
+        // B3 audit: smaller chunks -> more parallel groups -> better work
+        // stealing on skewed group-size distributions.
+        let chunk_size = (groups.len() / (n_threads * 8)).max(64);
+
         groups.par_chunks(chunk_size).for_each(|grp_slice| {
             for &(start, end, idx_u32, act_u32) in grp_slice {
-                let mut delta = 0.0f32;
-                for k in start..end {
-                    delta += batch_ref[k].delta;
-                }
                 let idx = idx_u32 as usize;
                 let a = act_u32 as usize;
-                // T1.1: exact integer discount. cur/mom are raw fixed-point
-                // i32 at SCALE; delta is f32 chips, converted to fixed-point.
-                let cur_i64 = self.load_rm(idx, a, RM_REGRET) as i64;
-                let mom_i64 = self.load_rm(idx, a, RM_MOMENTUM) as i64;
-                let delta_i64 = (delta as f64 * SCALE as f64).round() as i64;
-                let (new_r, new_m) =
-                    crate::dcfr::update_regret_i64(cur_i64, mom_i64, iteration, delta_i64);
-                // Clamp to i32 range for storage; the accumulator is i64
-                // across updates but the on-disk representation stays i32.
-                let r32 = new_r.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                let m32 = new_m.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                self.store_rm(idx, a, RM_REGRET, r32);
-                self.store_rm(idx, a, RM_MOMENTUM, m32);
+                let mut cur_i64 = self.load_rm(idx, a, RM_REGRET);
+                let mut mom_i64 = self.load_rm(idx, a, RM_MOMENTUM);
+
+                if mode.sequential {
+                    for k in start..end {
+                        let delta_i64 = to_fixed(batch_ref[k].delta as f64);
+                        let (new_r, new_m) = crate::dcfr::update_regret_i64_mode(
+                            cur_i64,
+                            mom_i64,
+                            batch_ref[k].iteration,
+                            delta_i64,
+                            mode.momentum,
+                        );
+                        if new_r == i64::MAX {
+                            warn_nonfinite_regret_once(batch_ref[k].iteration);
+                        }
+                        cur_i64 = new_r;
+                        mom_i64 = new_m;
+                    }
+                } else {
+                    // Batched-sum fold: non-finite deltas skipped (B1/B3).
+                    let mut delta_sum: f64 = 0.0;
+                    let mut max_iter: u32 = batch_ref[start].iteration;
+                    for k in start..end {
+                        let d = batch_ref[k].delta;
+                        if d.is_finite() {
+                            delta_sum += d as f64;
+                        }
+                        if batch_ref[k].iteration > max_iter {
+                            max_iter = batch_ref[k].iteration;
+                        }
+                    }
+                    let delta_i64 = to_fixed(delta_sum);
+                    let (new_r, new_m) = crate::dcfr::update_regret_i64_mode(
+                        cur_i64,
+                        mom_i64,
+                        max_iter,
+                        delta_i64,
+                        mode.momentum,
+                    );
+                    if new_r == i64::MAX {
+                        warn_nonfinite_regret_once(max_iter);
+                    }
+                    cur_i64 = new_r;
+                    mom_i64 = new_m;
+                }
+
+                // Clip to R_MAX for arithmetic headroom; not a CFR clip.
+                let r64 = cur_i64.clamp(-R_MAX, R_MAX);
+                let m64 = mom_i64.clamp(-R_MAX, R_MAX);
+                self.store_rm(idx, a, RM_REGRET, r64);
+                self.store_rm(idx, a, RM_MOMENTUM, m64);
             }
         });
         (input_len, unique_len)
     }
 
+    #[cfg(feature = "gpu")]
     pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
         let mut dedup_map: HashMap<(u32, u32), f32> =
             HashMap::with_capacity(batch.len().min(100_000));
@@ -526,8 +664,8 @@ impl CompactRegretTable {
             for (item, result) in chunk.iter().zip(results.iter()) {
                 let idx = item.index as usize;
                 let a = item.action as usize;
-                self.store_rm(idx, a, RM_REGRET, result.regret);
-                self.store_rm(idx, a, RM_MOMENTUM, result.momentum);
+                self.store_rm(idx, a, RM_REGRET, result.regret as i64);
+                self.store_rm(idx, a, RM_MOMENTUM, result.momentum as i64);
             }
         }
     }
@@ -536,7 +674,7 @@ impl CompactRegretTable {
     /// (Brown & Sandholm, NeurIPS 2015) to decide when to skip exploring
     /// a hopeless action. Cheap inline read.
     #[inline(always)]
-    pub fn regret_scaled(&self, idx: usize, action: usize) -> i32 {
+    pub fn regret_scaled(&self, idx: usize, action: usize) -> i64 {
         self.load_rm(idx, action, RM_REGRET)
     }
 
@@ -566,37 +704,41 @@ impl CompactRegretTable {
     }
 
     pub fn snapshot(&self) -> TableSnapshot {
-        let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
+        // A5/B8: regret-only snapshot. Previously this loop also walked
+        // the momentum cells, conflating "regret magnitude" with the
+        // PCFR+ prediction EMA.
+        let n = self.allocated();
         let mut max_abs = 0.0f32;
         let mut sum_abs = 0.0f64;
         let mut nonfinite = 0usize;
-        let mut strat_mass = 0.0f64;
-        let entries_rm = n * RM_STRIDE;
-        for i in 0..entries_rm {
-            let v = self.data[i].load(Ordering::Relaxed) as f32 / SCALE;
-            if !v.is_finite() {
-                nonfinite += 1;
-                continue;
+        for idx in 0..n {
+            for a in 0..K {
+                let v = self.load_rm(idx, a, RM_REGRET) as f32 / SCALE;
+                if !v.is_finite() {
+                    nonfinite += 1;
+                    continue;
+                }
+                let av = v.abs();
+                if av > max_abs {
+                    max_abs = av;
+                }
+                sum_abs += av as f64;
             }
-            let a = v.abs();
-            if a > max_abs {
-                max_abs = a;
-            }
-            sum_abs += a as f64;
         }
+        let mut strat_mass = 0.0f64;
         let entries_sum = n * SUM_STRIDE;
         for i in 0..entries_sum {
             strat_mass += f64::from_bits(self.strategy_sum[i].load(Ordering::Relaxed));
         }
-        let guard = self.hash_to_idx.pin();
-        let infosets = guard.len();
-        drop(guard);
+        // B4: allocated() reflects true slot consumption (races leak slots
+        // that len() would not count); this is what is_near_capacity uses.
+        let infosets = self.allocated();
         TableSnapshot {
             infosets,
             capacity: self.capacity,
             max_abs_regret: max_abs,
-            mean_abs_regret: if entries_rm > 0 {
-                (sum_abs / entries_rm as f64) as f32
+            mean_abs_regret: if n > 0 {
+                (sum_abs / (n * K) as f64) as f32
             } else {
                 0.0
             },
@@ -753,9 +895,9 @@ impl CompactRegretTable {
         use std::io::{BufWriter, Write};
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
-        let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
-        w.write_all(b"PKRCKPT5")?;
-        w.write_all(&5u32.to_le_bytes())?;
+        let n = self.allocated();
+        w.write_all(b"PKRCKPT7")?;
+        w.write_all(&7u32.to_le_bytes())?;
         w.write_all(bytemuck::bytes_of(fingerprint))?;
         w.write_all(&(K as u32).to_le_bytes())?;
         w.write_all(&iteration.to_le_bytes())?;
@@ -763,18 +905,35 @@ impl CompactRegretTable {
         let guard = self.hash_to_idx.pin();
         let map_len = guard.len() as u64;
         w.write_all(&map_len.to_le_bytes())?;
+        // Pack 16 bytes per write_all to halve the call-count on the
+        // 5M-key path (each write_all re-checks BufWriter capacity).
+        let mut kv_buf = [0u8; 16];
         for (k, v) in guard.iter() {
-            w.write_all(&k.to_le_bytes())?;
-            w.write_all(&(*v as u64).to_le_bytes())?;
+            kv_buf[0..8].copy_from_slice(&k.to_le_bytes());
+            kv_buf[8..16].copy_from_slice(&(*v as u64).to_le_bytes());
+            w.write_all(&kv_buf)?;
         }
+        // P2-a: stream the backing arrays directly. AtomicI64/AtomicU64
+        // have the same size/alignment as i64/u64 (std guarantee) and
+        // every bit pattern is valid; we only take a shared view and
+        // elements are never mutated through it.
         let rm_entries = n * RM_STRIDE;
-        for i in 0..rm_entries {
-            w.write_all(&self.data[i].load(Ordering::Relaxed).to_le_bytes())?;
-        }
+        let rm: &[i64] = unsafe {
+            std::slice::from_raw_parts(self.data.as_ptr() as *const i64, rm_entries)
+        };
+        let rm_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(rm.as_ptr() as *const u8, rm_entries * 8)
+        };
+        w.write_all(rm_bytes)?;
+
         let sum_entries = n * SUM_STRIDE;
-        for i in 0..sum_entries {
-            w.write_all(&self.strategy_sum[i].load(Ordering::Relaxed).to_le_bytes())?;
-        }
+        let sums: &[u64] = unsafe {
+            std::slice::from_raw_parts(self.strategy_sum.as_ptr() as *const u64, sum_entries)
+        };
+        let sum_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(sums.as_ptr() as *const u8, sum_entries * 8)
+        };
+        w.write_all(sum_bytes)?;
         w.flush()?;
         Ok(())
     }
@@ -801,14 +960,21 @@ impl CompactRegretTable {
             Ok(s)
         };
         let magic = read(&mut p, 8)?;
-        if magic != b"PKRCKPT5" {
+        if magic == b"PKRCKPT6" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint is v6 (i64 regret cells but pre-A2 layout). \
+                 Start a fresh run or pass --fresh to discard.",
+            ));
+        }
+        if magic != b"PKRCKPT7" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "bad checkpoint magic (expected v5 format)",
             ));
         }
         let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        if version != 5 {
+        if version != 7 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported checkpoint version",
@@ -849,6 +1015,16 @@ impl CompactRegretTable {
             ));
         }
         let map_len = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
+        // Reset ALL state first, so a failed/partial load cannot leave
+        // stale cells that `alloc_idx` would later hand out as fresh.
+        self.data
+            .par_iter()
+            .for_each(|c| c.store(0, Ordering::Relaxed));
+        self.strategy_sum
+            .par_iter()
+            .for_each(|c| c.store(0, Ordering::Relaxed));
+        self.next_idx.store(0, Ordering::Relaxed);
+        IDX_CACHE.with(|c| *c.borrow_mut() = vec![CacheSlot { key: 0, idx: 0 }; CACHE_SIZE]);
         let guard = self.hash_to_idx.pin();
         guard.clear();
         for _ in 0..map_len {
@@ -862,27 +1038,35 @@ impl CompactRegretTable {
             }
             guard.insert(key, idx);
         }
+        // P2-a: bulk read + per-element atomic store. The slow part was
+        // calling `read()` once per element (each call re-checks bounds
+        // and slices buf); doing one big read and iterating the slice is
+        // 10-50x faster at 5M infosets. Atomics still need per-cell
+        // stores because we hold `&self`.
         let rm_entries = n * RM_STRIDE;
-        for i in 0..rm_entries {
-            let v = i32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+        let rm_bytes = read(&mut p, rm_entries * 8)?;
+        for (i, chunk) in rm_bytes.as_chunks::<8>().0.iter().enumerate() {
+            let v = i64::from_le_bytes(*chunk);
             self.data[i].store(v, Ordering::Relaxed);
         }
         let sum_entries = n * SUM_STRIDE;
-        for i in 0..sum_entries {
-            let v = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
+        let sum_bytes = read(&mut p, sum_entries * 8)?;
+        for (i, chunk) in sum_bytes.as_chunks::<8>().0.iter().enumerate() {
+            let v = u64::from_le_bytes(*chunk);
             self.strategy_sum[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);
-        IDX_CACHE.with(|c| c.borrow_mut().clear());
+        CACHE_GEN.fetch_add(1, Ordering::Relaxed);
+        IDX_CACHE.with(|c| *c.borrow_mut() = vec![CacheSlot { key: 0, idx: 0 }; CACHE_SIZE]);
         Ok(iteration)
     }
 }
 
 #[cfg(test)]
-#[cfg(feature = "gpu")]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn flush_writes_back_only_touched_entries_and_is_idempotent_for_untouched() {
         let table = CompactRegretTable::with_capacity(4096);
@@ -965,11 +1149,13 @@ mod tests {
         assert_eq!(input, 5);
         assert_eq!(unique, 2);
 
-        let gamma = 1.0 / std::f32::consts::SQRT_2;
-        let expected_i1 = gamma * 0.8;
-        let expected_i2 = gamma * 0.7;
-        assert!((table.get_regret(0xBEEF_0001, 0) - expected_i1).abs() < 0.01);
-        assert!((table.get_regret(0xBEEF_0002, 2) - expected_i2).abs() < 0.01);
+        // Sequential per-iteration PCFR+ fold (audit F5) at t=1 (warmup,
+        // discount=1, gamma=1/sqrt(2)): each delta folds with its own
+        // momentum state rather than collapsing to one update.
+        //   i1: 100 -> r=71; +300 -> r=304; +400 -> r=655  => 0.655
+        //   i2: 200 -> r=141; +500 -> r=536                => 0.536
+        assert!((table.get_regret(0xBEEF_0001, 0) - 0.655).abs() < 0.01);
+        assert!((table.get_regret(0xBEEF_0002, 2) - 0.536).abs() < 0.01);
     }
 
     /// Regression for the fixed-point truncation bug: an infoset whose
@@ -1013,5 +1199,241 @@ mod tests {
                 avg[a]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod f5_tests {
+    use super::*;
+
+    #[test]
+    fn flush_folds_deltas_sequentially_per_iteration() {
+        // Only valid when the sequential fold is enabled via env var.
+        if std::env::var("PKR_F5_SEQUENTIAL").as_deref() != Ok("1") {
+            eprintln!("SKIP: PKR_F5_SEQUENTIAL not set");
+            return;
+        }
+        let table = CompactRegretTable::with_capacity(4096);
+        let i1 = table.get_or_create_idx(0xCAFE_0001);
+        // r=0; iter1 delta=+10 (t=1 < TAU -> no discount); iter2 delta=-6.
+        //
+        // Sequential PCFR+ on the i64 fixed-point path (SCALE=1000,
+        // gamma = 1/sqrt(t+1)):
+        //   t=1: pred = round(0.7071*10000) = 7071 -> r = 7071, m = 7071
+        //   t=2: pred = round(0.4226*7071 + 0.5774*(-6000)) = -476
+        //        r = max(0, 7071 - 476) = 6595  => 6.595
+        // Collapsed (old code): one update with delta_sum = +4:
+        //   pred = round(0.7071*4000) = 2828 -> r = 2.828
+        // The sequential result must win. This is the clamp-semantics
+        // regression the audit (F5) is about.
+        let mut batch = vec![
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 10.0,
+            },
+            BatchItem {
+                index: i1 as u32,
+                action: 0,
+                iteration: 2,
+                delta: -6.0,
+            },
+        ];
+        table.flush_cpu_batch(&mut batch);
+        let r = table.get_regret(0xCAFE_0001, 0);
+        assert!(
+            (r - 6.595).abs() < 0.05,
+            "expected ~6.595 (sequential fold), got {r}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ckpt_v7_tests {
+    use super::*;
+    use pkr_core::abstraction::AbstractionFingerprint;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("pkr_{}_{}.ckpt", name, std::process::id()))
+    }
+
+    #[test]
+    fn ckpt_v7_roundtrip_beyond_i32() {
+        let fp = AbstractionFingerprint::from_constants(4);
+        let a = CompactRegretTable::with_capacity(64);
+        let idx = a.get_or_create_idx(0xABCD);
+        a.store_rm(idx, 2, RM_REGRET, 5_000_000_000_000i64);
+        a.add_strategy_sum_at(idx, 1, 0.25);
+        let p = tmp("v7rt");
+        a.save_checkpoint(p.to_str().unwrap(), 42, &fp).unwrap();
+
+        let b = CompactRegretTable::with_capacity(64);
+        assert_eq!(b.load_checkpoint(p.to_str().unwrap(), &fp).unwrap(), 42);
+        let j = b.get_or_create_idx(0xABCD);
+        assert_eq!(b.regret_scaled(j, 2), 5_000_000_000_000i64);
+        assert!((b.load_sum(j, 1) - 0.25).abs() < 1e-12);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn ckpt_v6_rejected() {
+        let fp = AbstractionFingerprint::from_constants(4);
+        let p = tmp("v6rej");
+        std::fs::write(&p, b"PKRCKPT6\x06\x00\x00\x00").unwrap();
+        let t = CompactRegretTable::with_capacity(8);
+        let e = t.load_checkpoint(p.to_str().unwrap(), &fp).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Post-audit regression tests. Each test names the audit item it protects.
+#[cfg(test)]
+mod audit_regression_tests {
+    use super::*;
+
+    /// B4: `allocated()` reflects slot consumption, not just map len().
+    #[test]
+    fn allocated_tracks_slot_consumption() {
+        let t = CompactRegretTable::with_capacity(64);
+        assert_eq!(t.allocated(), 0);
+        let i1 = t.get_or_create_idx(0xA1_0001);
+        let i2 = t.get_or_create_idx(0xA1_0002);
+        let i3 = t.get_or_create_idx(0xA1_0003);
+        assert_ne!(i1, i2);
+        assert_ne!(i2, i3);
+        assert_ne!(i1, i3);
+        assert_eq!(t.allocated(), 3);
+        // Second call with the same hash must NOT consume another slot.
+        let again = t.get_or_create_idx(0xA1_0001);
+        assert_eq!(again, i1);
+        assert_eq!(t.allocated(), 3);
+    }
+
+    /// B4 + A5: the snapshot reports `allocated()`, which is what
+    /// `is_near_capacity` also reads.
+    #[test]
+    fn snapshot_infosets_matches_allocated() {
+        let t = CompactRegretTable::with_capacity(64);
+        for k in 0..10u64 {
+            t.get_or_create_idx(0xB4_0000 + k);
+        }
+        let snap = t.snapshot();
+        assert_eq!(snap.infosets, t.allocated());
+        assert_eq!(snap.infosets, 10);
+    }
+
+    /// B2 invariant: after any flush, stored regret is never negative.
+    /// This is what made FBRS pruning dead code; the test guards against
+    /// reintroducing a negative-regret path.
+    #[test]
+    fn regret_is_never_negative_after_flush() {
+        let t = CompactRegretTable::with_capacity(64);
+        let idx = t.get_or_create_idx(0xB2_0000);
+        let mut b = vec![
+            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: -1.0e6 },
+            BatchItem { index: idx as u32, action: 1, iteration: 1, delta: -1.0e9 },
+            BatchItem { index: idx as u32, action: 2, iteration: 1, delta: 5.0 },
+        ];
+        t.flush_cpu_batch_with(
+            &mut b,
+            FlushMode { sequential: true, momentum: false },
+        );
+        for a in 0..K {
+            let r = t.load_rm(idx, a, RM_REGRET);
+            assert!(r >= 0, "regret[action {a}] = {r} < 0");
+        }
+    }
+
+    /// B1 companion: a NaN delta in sequential mode is treated as 0 by
+    /// `to_fixed`, not silently corrupting the stored regret. (The
+    /// batched-mode NaN test lives in `i64_tests`.)
+    #[test]
+    fn nan_delta_in_sequential_flush_is_zero() {
+        let t = CompactRegretTable::with_capacity(16);
+        let idx = t.get_or_create_idx(0xB1_0000);
+        let mut b = vec![
+            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 1.0 },
+            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: f32::NAN },
+        ];
+        t.flush_cpu_batch_with(
+            &mut b,
+            FlushMode { sequential: true, momentum: false },
+        );
+        let r = t.load_rm(idx, 0, RM_REGRET);
+        assert!(!(r as f32).is_nan());
+        // SCALE = 1000; one 1.0 delta, then a 0 delta.
+        assert_eq!(r, 1000);
+    }
+
+    /// B3 sanity: both fold modes apply the same *sum* of deltas for a
+    /// single-action group with equal-iteration entries, so switching
+    /// modes does not silently drop updates.
+    #[test]
+    fn sequential_and_batched_agree_when_iterations_match() {
+        let mk_batch = |idx: usize| {
+            vec![
+                BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 3.0 },
+                BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 4.0 },
+            ]
+        };
+
+        let t1 = CompactRegretTable::with_capacity(16);
+        let i1 = t1.get_or_create_idx(0xB3_0000);
+        let mut b1 = mk_batch(i1);
+        t1.flush_cpu_batch_with(
+            &mut b1,
+            FlushMode { sequential: true, momentum: false },
+        );
+
+        let t2 = CompactRegretTable::with_capacity(16);
+        let i2 = t2.get_or_create_idx(0xB3_0000);
+        let mut b2 = mk_batch(i2);
+        t2.flush_cpu_batch_with(
+            &mut b2,
+            FlushMode { sequential: false, momentum: false },
+        );
+
+        let r1 = t1.load_rm(i1, 0, RM_REGRET);
+        let r2 = t2.load_rm(i2, 0, RM_REGRET);
+        assert_eq!(r1, r2);
+        assert_eq!(r1, 7000); // (3+4) chips * SCALE
+    }
+
+    /// E4b: the strategy-batch sort key ((index << 8) | action) groups
+    /// ops with the same (index, action) together. Two identical op
+    /// entries must sum, not race.
+    #[test]
+    fn strategy_batch_groups_by_index_and_action() {
+        let t = CompactRegretTable::with_capacity(16);
+        let idx = t.get_or_create_idx(0xE4_B000);
+        let mut ops = vec![
+            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
+            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
+            StrategyOp { index: idx as u32, action: 1, prob: 0.50 },
+            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
+        ];
+        let applied = t.apply_strategy_batch(&mut ops);
+        assert_eq!(applied, 2, "two distinct (index, action) groups expected");
+        assert!((t.load_sum(idx, 0) - 0.75).abs() < 1e-9,
+            "action 0 sum = {}", t.load_sum(idx, 0));
+        assert!((t.load_sum(idx, 1) - 0.50).abs() < 1e-9,
+            "action 1 sum = {}", t.load_sum(idx, 1));
+    }
+
+    /// A5: the snapshot's `max_abs_regret` is regret-only. Writing a huge
+    /// momentum value must NOT appear in the snapshot's regret magnitude.
+    #[test]
+    fn snapshot_regret_only_ignores_momentum_cells() {
+        let t = CompactRegretTable::with_capacity(16);
+        let idx = t.get_or_create_idx(0xA5_0000);
+        // Set regret to a small positive value, momentum to something huge.
+        t.store_rm(idx, 0, RM_REGRET, 1000); // 1 chip
+        t.store_rm(idx, 0, RM_MOMENTUM, 100_000_000); // 100k chips
+        let snap = t.snapshot();
+        // max_abs_regret is reported in CHIPS (units / SCALE), so 1.0.
+        assert!(snap.max_abs_regret <= 1.5,
+            "max_abs_regret = {} (momentum leaked in?)", snap.max_abs_regret);
     }
 }

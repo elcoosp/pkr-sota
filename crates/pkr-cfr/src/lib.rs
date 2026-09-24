@@ -26,6 +26,7 @@ pub struct Trainer {
     evaluator: Arc<dyn Evaluator>,
     table: Arc<CompactRegretTable>,
     iteration: AtomicU32,
+    run_seed: u64,
 }
 
 impl Trainer {
@@ -43,7 +44,12 @@ impl Trainer {
             evaluator,
             table: Arc::new(CompactRegretTable::with_capacity(capacity)),
             iteration: AtomicU32::new(0),
+            run_seed: 0x5EED_1F70,
         }
+    }
+
+    pub fn set_run_seed(&mut self, seed: u64) {
+        self.run_seed = seed;
     }
 
     /// Runs `n` logical CFR iterations per rayon dispatch. Each rayon task
@@ -63,6 +69,7 @@ impl Trainer {
         let table = Arc::clone(&self.table);
         let abstraction = Arc::clone(&self.abstraction);
         let evaluator = Arc::clone(&self.evaluator);
+        let run_seed = self.run_seed;
 
         const CHUNK_ITERS: usize = 16;
         let n_chunks = n.div_ceil(CHUNK_ITERS);
@@ -75,14 +82,21 @@ impl Trainer {
                 let start = chunk_idx * CHUNK_ITERS;
                 let end = ((chunk_idx + 1) * CHUNK_ITERS).min(n);
                 let pairs = end - start;
-                let mut batch: Vec<BatchItem> = Vec::with_capacity(pairs * 20);
-                let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 20);
+                // Size hint: ~500 node visits per iteration, each pushing
+                // up to K=6 regrets/strategies; realistic peak is ~1500 per
+                // iter, so pairs*800 gives headroom without over-allocating.
+                let mut batch: Vec<BatchItem> = Vec::with_capacity(pairs * 800);
+                let mut strategy_batch: Vec<StrategyOp> = Vec::with_capacity(pairs * 800);
                 let mut metrics = LocalMetrics::default();
 
-                let mut rng = SmallRng::seed_from_u64(rand::random::<u64>());
+                let base_iter = start_iter + start as u32;
+                let mut rng = SmallRng::seed_from_u64(
+                    run_seed
+                        ^ (base_iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        ^ ((chunk_idx as u64) << 32),
+                );
                 let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
 
-                let base_iter = start_iter + start as u32;
                 for local_i in 0..pairs {
                     let global_iter = base_iter + local_i as u32;
 
@@ -148,11 +162,10 @@ impl Trainer {
         let total_strats: usize = thread_results.iter().map(|(_, s, _)| s.len()).sum();
         let mut merged_batch = Vec::with_capacity(total_items);
         let mut merged_strategy = Vec::with_capacity(total_strats);
-        let mut batch_metrics = LocalMetrics::default();
-        for entry in thread_results.iter() {
-            merged_batch.extend_from_slice(&entry.0);
-            merged_strategy.extend_from_slice(&entry.1);
-            batch_metrics.merge_from(&entry.2);
+        let mut batch_metrics = LocalMetrics::default();        for (mut b, mut s, m) in thread_results {
+            merged_batch.append(&mut b);
+            merged_strategy.append(&mut s);
+            batch_metrics.merge_from(&m);
         }
         let t_merge = t1.elapsed();
 
@@ -213,7 +226,7 @@ impl Trainer {
 
     pub fn is_near_capacity(&self) -> bool {
         let cap = self.table.capacity();
-        cap > 0 && self.table.len() * 100 / cap >= 95
+        cap > 0 && self.table.allocated() * 100 / cap >= 95
     }
 
     pub fn save_checkpoint(

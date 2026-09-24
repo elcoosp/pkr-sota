@@ -10,42 +10,44 @@ impl SolverHandle {
         SolverHandle { mmap }
     }
 
+    /// P3-a: branchless binary search over a `&[u64]` cast from the mmap.
+    /// One multiply-free comparison per probe, one load, no `from_le_bytes`.
+    /// The key section is guaranteed 8-byte aligned because the writer
+    /// emits it immediately after 4-byte header fields that total 8 mod 8.
     pub fn get_advice_fast(&self, infoset_hash: u64) -> Option<SotaAdvice> {
-        let keys = self.mmap.keys_data();
-        let num_keys = keys.len() / 8;
+        let keys: &[u64] = bytemuck::try_cast_slice(self.mmap.keys_data()).ok()?;
+        let num_keys = keys.len();
         if num_keys == 0 {
             return None;
         }
-        // Binary search the sorted key array
-        let mut lo = 0;
-        let mut hi = num_keys;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let k = u64::from_le_bytes(keys[mid * 8..mid * 8 + 8].try_into().unwrap());
-            if k < infoset_hash {
-                lo = mid + 1;
-            } else if k > infoset_hash {
-                hi = mid;
-            } else {
-                let max_actions = self.mmap.file_header().max_actions_k as usize;
-                if max_actions > 16 {
-                    return None;
-                }
-                let cdf_start = mid * max_actions;
-                let cdf_end = cdf_start + max_actions;
-                let cdf = self.mmap.cdf_data();
-                if cdf_end > cdf.len() {
-                    return None;
-                }
-                let mut prob = [0u8; 16];
-                prob[..max_actions].copy_from_slice(&cdf[cdf_start..cdf_end]);
-                return Some(SotaAdvice {
-                    cdf_probabilities: prob,
-                    len: max_actions as u8,
-                });
-            }
+        // Branchless upper-bound search: find the largest i with keys[i] <= target.
+        let mut base = 0usize;
+        let mut size = num_keys;
+        while size > 1 {
+            let half = size / 2;
+            let mid = base + half;
+            base = if keys[mid] <= infoset_hash { mid } else { base };
+            size -= half;
         }
-        None
+        if keys[base] != infoset_hash {
+            return None;
+        }
+        let max_actions = self.mmap.file_header().max_actions_k as usize;
+        if max_actions == 0 || max_actions > 16 {
+            return None;
+        }
+        let cdf = self.mmap.cdf_data();
+        let cdf_start = base * max_actions;
+        let cdf_end = cdf_start + max_actions;
+        if cdf_end > cdf.len() {
+            return None;
+        }
+        let mut prob = [0u8; 16];
+        prob[..max_actions].copy_from_slice(&cdf[cdf_start..cdf_end]);
+        Some(SotaAdvice {
+            cdf_probabilities: prob,
+            len: max_actions as u8,
+        })
     }
 }
 

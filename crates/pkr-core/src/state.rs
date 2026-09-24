@@ -43,7 +43,7 @@ pub enum ActionKind {
     Bet(f32),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Action {
     pub player: usize,
     pub kind: ActionKind,
@@ -62,6 +62,7 @@ pub struct UndoRecord {
     raises_this_street: u8,
     total_raises: u8,
     history_len: usize, // length of abstract_history before action
+    abstract_history_len: u8,
     board_len: usize,   // length of board before action
     folded: [bool; 2],
 }
@@ -132,6 +133,7 @@ impl GameState {
                 raises_this_street: 0,
                 total_raises: 0,
                 history_len: 0,
+                abstract_history_len: 0,
                 board_len: 0,
                 folded: [false; 2],
             }; 48],
@@ -150,76 +152,15 @@ impl GameState {
     }
 
     pub fn legal_actions(&self) -> Vec<Action> {
-        if self.folded[self.actor] {
-            return vec![];
-        }
-        let mut actions = Vec::new();
-        let to_call = self.bet_to_call();
-        if to_call == 0.0 {
-            actions.push(Action {
-                player: self.actor,
-                kind: ActionKind::Check,
-            });
-            let pot = self.pot;
-            // C1.5: `Bet` is the actor's street-bet TOTAL, not the
-            // incremental chips. `pot * frac` was correct postflop
-            // (street_bets[actor] == 0); preflop (SB completing, BB
-            // raising a limp) it forgot the already-posted blind.
-            let base = self.street_bets[self.actor];
-            for &frac in &crate::abstraction::BET_SIZINGS {
-                let bet = base + pot * frac;
-                let chips_needed = bet - base;
-                if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
-                    actions.push(Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(bet),
-                    });
-                }
-            }
-            if self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                // C2: `Bet` is the actor's street-bet TOTAL, not the
-                // incremental chips. Preflop BB facing a limp has
-                // street_bets[BB] == 2 already posted; `Bet(stacks)`
-                // would ask for a 199-total (chips moved = 197, 1 chip
-                // stays behind) and mis-bucket as bucket 4. The correct
-                // all-in total is stacks + street_bets.
-                actions.push(Action {
-                    player: self.actor,
-                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
-                });
-            }
-        } else {
-            actions.push(Action {
-                player: self.actor,
-                kind: ActionKind::Fold,
-            });
-            actions.push(Action {
-                player: self.actor,
-                kind: ActionKind::Call,
-            });
-            let pot = self.pot;
-            // C1.5: raise TOTAL is opponent's committed street bet
-            // + a pot-fraction on top. Old form `to_call + pot * frac`
-            // under-counted by street_bets[actor] preflop.
-            let opp_bet = self.street_bets[1 - self.actor];
-            for &frac in &crate::abstraction::BET_SIZINGS {
-                let raise = opp_bet + pot * frac;
-                let chips_needed = raise - self.street_bets[self.actor];
-                if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
-                    actions.push(Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(raise),
-                    });
-                }
-            }
-            if self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                actions.push(Action {
-                    player: self.actor,
-                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
-                });
-            }
-        }
-        actions
+        // B7: single source of truth. The allocating wrapper delegates to
+        // the training-path implementation so fuzz tests validate the same
+        // action set the CFR traversal actually uses (raise cap, all-in dedup).
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = self.legal_actions_into(&mut buf);
+        buf[..n].to_vec()
     }
 
     /// Non-allocating variant of `legal_actions`. Writes into `out` and
@@ -267,13 +208,20 @@ impl GameState {
                 if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
                     // C2: see legal_actions — all-in total is
                     // stacks + street_bets, not stacks alone.
-                    out[n] = Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(
-                            self.stacks[self.actor] + self.street_bets[self.actor],
-                        ),
-                    };
-                    n += 1;
+                    let all_in_amount =
+                        self.stacks[self.actor] + self.street_bets[self.actor];
+                    // Dedup: skip the all-in push when a pot-fraction sizing
+                    // already offers (numerically) the same total.
+                    let already_offered = (0..n).any(|i| {
+                        matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
+                    });
+                    if !already_offered {
+                        out[n] = Action {
+                            player: self.actor,
+                            kind: ActionKind::Bet(all_in_amount),
+                        };
+                        n += 1;
+                    }
                 }
             }
         } else {
@@ -305,13 +253,18 @@ impl GameState {
                     }
                 }
                 if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                    out[n] = Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(
-                            self.stacks[self.actor] + self.street_bets[self.actor],
-                        ),
-                    };
-                    n += 1;
+                    let all_in_amount =
+                        self.stacks[self.actor] + self.street_bets[self.actor];
+                    let already_offered = (0..n).any(|i| {
+                        matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
+                    });
+                    if !already_offered {
+                        out[n] = Action {
+                            player: self.actor,
+                            kind: ActionKind::Bet(all_in_amount),
+                        };
+                        n += 1;
+                    }
                 }
             }
         }
@@ -368,6 +321,7 @@ impl GameState {
             raises_this_street: self.raises_this_street,
             total_raises: self.total_raises,
             history_len: self.history_len as usize,
+            abstract_history_len: self.abstract_history_len,
             board_len: self.board_len as usize,
             folded: self.folded,
         };
@@ -502,7 +456,7 @@ impl GameState {
         self.history_len = rec.history_len as u8;
         self.board_len = rec.board_len as u8;
         self.folded = rec.folded;
-        self.abstract_history_len = rec.history_len as u8; // same as history length
+        self.abstract_history_len = rec.abstract_history_len;
     }
 
     pub fn is_street_complete(&self) -> bool {
@@ -729,8 +683,7 @@ mod c1_tests {
     /// C1: a legal bet produces street_bets == current + chips (the
     /// invariant the fix restores). This is what training relies on.
     #[test]
-    fn legal_bet_satisfies_street_bets_invariant() {
-        let mut s = GameState::new(200.0, 1.0, 2.0);
+    fn legal_bet_satisfies_street_bets_invariant() {        let mut s = GameState::new(200.0, 1.0, 2.0);
         s.apply_action_in_place(&Action {
             player: 0,
             kind: ActionKind::Call,
@@ -746,6 +699,25 @@ mod c1_tests {
         assert_eq!(s.street_bets[1], total);
         assert_eq!(s.stacks[1], 200.0 - 2.0 - 8.0);
         assert_eq!(s.pot, pot + 8.0);
+    }
+
+    /// Audit F10 (Task 10): a short all-in records actual chips contributed,
+    /// not the requested total.
+    #[test]
+    fn short_allin_records_actual_chips() {
+        // Start stack 10: after blinds, stacks = [9, 8], street_bets = [1, 2], pot = 3.
+        let mut s = GameState::new(10.0, 1.0, 2.0);
+        s.set_hole_cards([0, 1], [2, 3]);
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(500.0),
+        });
+        // Player 0 only has 9 behind; street_bets must equal what was actually
+        // contributed (1 + 9 = 10), not the requested 500.
+        assert_eq!(s.street_bets[0], 10.0);
+        assert_eq!(s.stacks[0], 0.0);
+        assert_eq!(s.pot, 12.0);
+        assert_eq!(s.total_invested[0], 10.0);
     }
 }
 
@@ -1431,6 +1403,7 @@ mod invariants_tests {
 
     /// Snapshot the logical game state (excludes undo stack, history
     /// content, cache fields that legitimately differ across undo).
+    #[allow(clippy::type_complexity)]
     fn logical_snapshot(
         s: &GameState,
     ) -> (
@@ -1679,5 +1652,96 @@ mod invariants_tests {
                 a.kind
             );
         }
+    }
+}
+
+/// B7: `legal_actions()` and `legal_actions_into()` must agree exactly.
+/// Guards the single-source-of-truth refactor: if the allocating wrapper
+/// ever diverges from the training path, the fuzz harness silently stops
+/// validating the code the trainer runs.
+#[cfg(test)]
+mod b7_single_source_tests {
+    use super::*;
+
+    fn fresh_state() -> GameState {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.set_hole_cards([0, 1], [2, 3]);
+        s
+    }
+
+    #[test]
+    fn legal_actions_matches_legal_actions_into_at_start() {
+        let s = fresh_state();
+        let a = s.legal_actions();
+        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        assert_eq!(a.len(), n, "counts differ: alloc={} into={}", a.len(), n);
+        for i in 0..n {
+            assert_eq!(a[i], buf[i], "action {i} differs");
+        }
+    }
+
+    #[test]
+    fn legal_actions_matches_legal_actions_into_after_raises() {
+        // Drive several raises to exercise the MAX_RAISES_PER_STREET cap.
+        let mut s = fresh_state();
+        for _ in 0..5 {
+            if s.is_terminal() {
+                break;
+            }
+            let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let n = s.legal_actions_into(&mut buf);
+            if n == 0 {
+                break;
+            }
+            // Pick the most aggressive legal action each iteration.
+            let mut pick = 0usize;
+            for (i, a) in buf[..n].iter().enumerate() {
+                if let ActionKind::Bet(_) = a.kind {
+                    pick = i;
+                }
+            }
+            s.apply_action_in_place(&buf[pick]);
+            let a = s.legal_actions();
+            let mut buf2 = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let n2 = s.legal_actions_into(&mut buf2);
+            assert_eq!(a.len(), n2);
+            for i in 0..n2 {
+                assert_eq!(a[i], buf2[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn legal_actions_carries_raise_cap() {
+        // After 3 raises this street, no more Bet should be offered.
+        let mut s = fresh_state();
+        let mut raises = 0u32;
+        while raises < 3 && !s.is_terminal() {
+            let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let n = s.legal_actions_into(&mut buf);
+            let mut bet_idx: Option<usize> = None;
+            for (i, a) in buf[..n].iter().enumerate() {
+                if let ActionKind::Bet(_) = a.kind {
+                    bet_idx = Some(i);
+                    break;
+                }
+            }
+            match bet_idx {
+                Some(i) => {
+                    s.apply_action_in_place(&buf[i]);
+                    raises += 1;
+                }
+                None => break,
+            }
+        }
+        // Now the current street should have zero Bet actions in the offered set.
+        let a = s.legal_actions();
+        let bets = a.iter().filter(|x| matches!(x.kind, ActionKind::Bet(_))).count();
+        assert_eq!(
+            bets, 0,
+            "raise cap not honored by legal_actions: {:?}",
+            a.iter().map(|x| x.kind).collect::<Vec<_>>()
+        );
     }
 }

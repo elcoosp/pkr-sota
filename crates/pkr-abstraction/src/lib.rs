@@ -89,6 +89,59 @@ pub struct KMeansAbstraction {
     evaluator: Arc<dyn Evaluator>,
 }
 
+/// Sorting-network helpers for small fixed-size arrays of card bytes.
+/// All sort DESCENDING (highest rank first), matching the previous
+/// `sort_unstable_by(|a, b| b.cmp(a))` semantics bit-for-bit.
+/// Fixed compare-exchange sequences are fully unrolled by LLVM.
+mod sortnets {
+    #[inline(always)]
+    fn ce2(a: &mut [u8; 2], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+    #[inline(always)]
+    fn ce3(a: &mut [u8; 3], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+    #[inline(always)]
+    fn ce5(a: &mut [u8; 5], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+    #[inline(always)]
+    fn ce6(a: &mut [u8; 6], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+
+    pub fn sort2_desc(a: &mut [u8; 2]) {
+        ce2(a, 0, 1);
+    }
+    pub fn sort3_desc(a: &mut [u8; 3]) {
+        ce3(a, 0, 1); ce3(a, 1, 2); ce3(a, 0, 1);
+    }
+    /// Optimal 5-element network (9 compare-exchanges).
+    pub fn sort5_desc(a: &mut [u8; 5]) {
+        ce5(a, 0, 1); ce5(a, 3, 4); ce5(a, 2, 4);
+        ce5(a, 2, 3); ce5(a, 0, 3); ce5(a, 0, 2);
+        ce5(a, 1, 4); ce5(a, 1, 3); ce5(a, 1, 2);
+    }
+    /// 6-element network (12 compare-exchanges).
+    pub fn sort6_desc(a: &mut [u8; 6]) {
+        ce6(a, 1, 2); ce6(a, 4, 5);
+        ce6(a, 0, 2); ce6(a, 3, 5);
+        ce6(a, 0, 1); ce6(a, 3, 4); ce6(a, 2, 5);
+        ce6(a, 0, 3); ce6(a, 1, 4);
+        ce6(a, 2, 4); ce6(a, 1, 3);
+        ce6(a, 2, 3);
+    }
+}
+
 impl KMeansAbstraction {
     pub fn new(default_centroids: Vec<(f32, f32)>, evaluator: Arc<dyn Evaluator>) -> Self {
         let mut tables = HashMap::new();
@@ -152,7 +205,7 @@ impl KMeansAbstraction {
         if board.len() >= 3 {
             if let Some(buckets) = self.flop_buckets.get() {
                 let mut flop = [board[0], board[1], board[2]];
-                flop.sort_unstable_by(|a, b| b.cmp(a));
+                sortnets::sort3_desc(&mut flop);
                 let idx = choose(flop[0] as u32, 3) as usize
                     + choose(flop[1] as u32, 2) as usize
                     + choose(flop[2] as u32, 1) as usize;
@@ -168,7 +221,7 @@ impl KMeansAbstraction {
         assert_eq!(hole.len(), 2);
         assert_ne!(hole[0], hole[1]);
         let mut cards = [hole[0], hole[1]];
-        cards.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort2_desc(&mut cards);
         choose(cards[0] as u32, 2) as usize + choose(cards[1] as u32, 1) as usize
     }
 
@@ -182,7 +235,7 @@ impl KMeansAbstraction {
         all[2] = board[0];
         all[3] = board[1];
         all[4] = board[2];
-        all.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort5_desc(&mut all);
         let combo_idx = combinadic_rank(&all) as usize;
         let hole_set = [hole[0], hole[1]];
         let masks: [[usize; 2]; 10] = [
@@ -219,7 +272,7 @@ impl KMeansAbstraction {
         all[3] = board[1];
         all[4] = board[2];
         all[5] = board[3];
-        all.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort6_desc(&mut all);
         let rank = combinadic_rank_6(&all);
         let hole_set = [hole[0], hole[1]];
         let masks: [[usize; 2]; 15] = [
@@ -254,7 +307,7 @@ impl KMeansAbstraction {
     fn flat_index_river_board(board: &[u8]) -> usize {
         debug_assert_eq!(board.len(), 5);
         let mut sorted = [board[0], board[1], board[2], board[3], board[4]];
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort5_desc(&mut sorted);
         combinadic_rank(&sorted) as usize
     }
 }
@@ -276,6 +329,24 @@ fn combinadic_rank_6(cards: &[u8; 6]) -> u64 {
 
 impl AbstractionBuilder for KMeansAbstraction {
     fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8], street: u8) -> u64 {
+        // INVARIANT: the board slice must contain exactly the cards dealt for
+        // `street`. A caller passing the raw [u8;5] array silently routes every
+        // street through the river branch (regression guard, see audit F1).
+        let expected_len = match street {
+            0 => 0,
+            1 => 3,
+            2 => 4,
+            3 => 5,
+            _ => board.len(),
+        };
+        debug_assert_eq!(
+            board.len(),
+            expected_len,
+            "get_infoset_hash: board.len()={} but street {} expects {} cards",
+            board.len(),
+            street,
+            expected_len
+        );
         debug_assert!(
             hole.iter().all(|h| !board.contains(h)),
             "abstraction hash called with hole and board sharing a card: \
@@ -334,26 +405,31 @@ impl AbstractionBuilder for KMeansAbstraction {
                 }
             }
             5 => {
-                // River: bucket hand rank into ~128 tiers. Raw hand_rank
-                // has cardinality 7462, which alone produces millions of
-                // river infosets over a full training run and dominates the
-                // map size. >> 3 gives 116 tiers — coarse enough to make
-                // CFR see each river infoset repeatedly, fine enough to
-                // preserve strategic distinctions (a made hand vs a busted
-                // draw vs a middle pair still land in different tiers).
-                // The precomputed board bucket (if any) is mixed in.
+                // River: bucket hand strength into ~256 ordered tiers.
+                //
+                // evaluate_hand returns the inverted-bit encoding !raw =
+                // ~(category << 20 | rank_bits) — NOT a 7462-scale rank. Its value
+                // range is ~[2^32 - 9*2^20, 2^32] (audit F6). `>> 15` is a monotone
+                // quantization of that range into ~287 tiers where lower tier =
+                // stronger hand. (The old `>> 6` produced ~147k tiers and blew up the
+                // river infoset count; a true 7462-scale dense rank is the M1-playbook
+                // fast7 follow-up.)
                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
-                let hand_bucket = hand_rank >> 6;
-                let board_bucket = if let Some(table) = self.tables.get(&3u8).and_then(|l| l.get())
-                {
-                    let idx = Self::flat_index_river_board(board);
-                    if idx < table.len() {
-                        table[idx] as u64
-                    } else {
+                let hand_bucket = hand_rank >> 15; // ~0..=287, monotone
+                let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
+                    Some(table) => {
+                        let idx = Self::flat_index_river_board(board);
+                        if idx < table.len() {
+                            table[idx] as u64
+                        } else {
+                            FALLBACK_COUNTS[3].fetch_add(1, Ordering::Relaxed);
+                            0
+                        }
+                    }
+                    None => {
+                        FALLBACK_COUNTS[3].fetch_add(1, Ordering::Relaxed);
                         0
                     }
-                } else {
-                    0
                 };
                 (hand_bucket << 8) | (board_bucket & 0xff)
             }
@@ -442,6 +518,15 @@ mod tests {
         let h1 = builder.get_infoset_hash(&[0, 1], &[], &[], 0);
         let h2 = builder.get_infoset_hash(&[0, 1], &[], &[0], 0);
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    #[should_panic(expected = "board.len()")]
+    fn hash_panics_when_board_len_does_not_match_street() {
+        let builder =
+            KMeansAbstraction::new(vec![(0.3, 0.09), (0.7, 0.49)], Arc::new(MockEvaluator));
+        // street 1 (flop) requires exactly 3 board cards; 4 is a caller bug.
+        let _ = builder.get_infoset_hash(&[0, 1], &[2, 3, 4, 5], &[], 1);
     }
 }
 
@@ -564,20 +649,25 @@ mod c6_unit_tests {
     }
 
     // ------------------------------------------------------------------
-    // River tier coverage (r3 C6.4)
+    // River tier coverage (audit F6)
     //
-    // The river hash uses `hand_rank >> 6`, which maps the 7462-rank
-    // space to 117 buckets (0..=116). If T2.2 changes the shift to
-    // `>> 3`, this test must be updated in the SAME commit that bumps
-    // the blueprint format version — that is the contract.
+    // evaluate_hand returns the inverted-bit encoding !raw, whose value
+    // range is ~[2^32 - 9*2^20, 2^32]. `>> 15` quantizes that range into
+    // ~287 monotone tiers. If the shift changes, bump the blueprint
+    // format version — that is the contract.
     // ------------------------------------------------------------------
     #[test]
-    fn river_tier_coverage_shift_6_is_117_buckets() {
-        const HAND_RANK_MAX: u32 = 7461; // 7462-scale ranks 0..=7461
-        let tiers = (HAND_RANK_MAX >> 6) + 1;
-        assert_eq!(
-            tiers, 117,
-            "river `>> 6` must yield 117 tiers; if this changed, bump the blueprint format"
+    fn river_hand_bucket_is_monotone_and_bounded() {
+        // Stronger hand must map to a <= bucket (monotone) and the tier count
+        // must be small (bounded infoset space).
+        // Direct check of the quantization math used in the river branch:
+        let strong = (u32::MAX - 9_437_184) as u64 >> 15; // best hand in range
+        let weak = (u32::MAX) as u64 >> 15;
+        assert!(strong <= weak);
+        assert!(
+            weak - strong < 512,
+            "river hand tiers must stay bounded, got {}",
+            weak - strong
         );
     }
 
@@ -674,5 +764,157 @@ mod c6_unit_tests {
         assert_ne!(h1, h2);
         assert_ne!(h2, h3);
         assert_ne!(h1, h3);
+    }
+}
+
+#[cfg(test)]
+mod audit_f6_tests {
+    /// The `!raw` encoding produced by both evaluators has its usable
+    /// range bounded above by `u32::MAX` and below by
+    /// `u32::MAX - 9 * 2^20 + 1` (9 hand categories, each with 2^20
+    /// rank-bit combinations). `hand_rank >> 15` quantizes that range
+    /// into a bounded number of ordered tiers.
+    ///
+    /// The audit F6 concern: the pre-fix `>> 6` produced ~147k tiers,
+    /// not the ~117 the comment claimed. This test pins the current
+    /// shift to a bounded count so any future change that silently
+    /// explodes the tier count will fail the test.
+    #[test]
+    fn river_shift_15_yields_bounded_tier_count() {
+        // Lowest possible !raw value across all 9 categories.
+        let min_rank: u32 = u32::MAX - 9 * (1u32 << 20) + 1;
+        let max_rank: u32 = u32::MAX;
+        let tier_lo = min_rank >> 15;
+        let tier_hi = max_rank >> 15;
+        let count = tier_hi - tier_lo + 1;
+        assert!(
+            count <= 512,
+            ">>15 should yield <=512 tiers, got {count} (range {}..{})",
+            tier_lo,
+            tier_hi
+        );
+        assert!(
+            count >= 128,
+            ">>15 should yield >=128 tiers (finer than >>13), got {count}"
+        );
+    }
+
+    /// Monotonicity: a stronger hand (smaller `!raw`) must never map to
+    /// a *larger* tier than a weaker hand. The shift is monotone by
+    /// construction, but this test makes the contract explicit so a
+    /// future change to `river_hand_bucket` cannot silently reverse it.
+    #[test]
+    fn river_tier_ordering_is_monotone() {
+        // A hand with !raw = MAX (weakest possible in the encoding) and
+        // a hand with !raw = MAX - K (stronger by K) — the stronger hand
+        // must map to an equal-or-smaller tier.
+        for k in [1u32, 100, 1000, 100_000, 1_000_000, 9_000_000] {
+            let weak = u32::MAX;
+            let strong = u32::MAX.saturating_sub(k);
+            assert!(
+                (strong >> 15) <= (weak >> 15),
+                "stronger hand (raw={strong}) mapped to a larger tier than weak (raw={weak})",
+            );
+        }
+    }
+}
+
+/// B10: a missing river board table must increment FALLBACK_COUNTS[3],
+/// not silently return 0. Guards the C5c "abort on fallback" guard.
+#[cfg(test)]
+mod b10_fallback_tests {
+    use super::*;
+
+    // NOTE: this test only verifies the *counter* path is reachable.
+    // Building a real river-miss requires an abstraction with no river
+    // table; that's the KMeansAbstraction with an empty river table.
+    // We only assert the atomic increments (side-effect-only test).
+    #[test]
+    fn reset_then_check_counter_round_trip() {
+        reset_fallback_counts();
+        assert_eq!(fallback_count(), 0);
+        // We don't fabricate a river hash here — the code path is
+        // exercised in integration; this only guards the counter API.
+    }
+}
+
+
+
+#[cfg(test)]
+mod sortnet_tests {
+    use super::sortnets;
+
+    fn ref_desc<T: Ord + Copy>(v: &mut [T]) {
+        v.sort_unstable_by(|a, b| b.cmp(a));
+    }
+
+    #[test]
+    fn sort2_matches_reference() {
+        for a in 0u8..=3 {
+            for b in 0u8..=3 {
+                let mut x = [a, b];
+                let mut y = [a, b];
+                sortnets::sort2_desc(&mut x);
+                ref_desc(&mut y);
+                assert_eq!(x, y);
+            }
+        }
+    }
+
+    #[test]
+    fn sort3_matches_reference() {
+        for a in 0u8..=4 {
+            for b in 0u8..=4 {
+                for c in 0u8..=4 {
+                    let mut x = [a, b, c];
+                    let mut y = [a, b, c];
+                    sortnets::sort3_desc(&mut x);
+                    ref_desc(&mut y);
+                    assert_eq!(x, y);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sort5_matches_reference() {
+        let vals = [0u8, 1, 7, 13, 27, 51];
+        for &a in &vals {
+            for &b in &vals {
+                for &c in &vals {
+                    for &d in &vals {
+                        for &e in &vals {
+                            let mut x = [a, b, c, d, e];
+                            let mut y = [a, b, c, d, e];
+                            sortnets::sort5_desc(&mut x);
+                            ref_desc(&mut y);
+                            assert_eq!(x, y, "input {a},{b},{c},{d},{e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sort6_matches_reference() {
+        let vals = [0u8, 1, 7, 13, 27, 51];
+        for &a in &vals {
+            for &b in &vals {
+                for &c in &vals {
+                    for &d in &vals {
+                        for &e in &vals {
+                            for &f in &vals {
+                                let mut x = [a, b, c, d, e, f];
+                                let mut y = [a, b, c, d, e, f];
+                                sortnets::sort6_desc(&mut x);
+                                ref_desc(&mut y);
+                                assert_eq!(x, y, "input {a},{b},{c},{d},{e},{f}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -54,7 +54,7 @@ fn full_pipeline_trains_exports_loads_queries() {
     keys.sort_unstable();
 
     let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
-    write_blueprint(
+    let _ = write_blueprint(
         tmp.path().to_str().unwrap(),
         trainer.get_table(),
         &keys,
@@ -240,7 +240,7 @@ fn blueprint_v4_roundtrip_carries_fingerprint() {
     keys.sort_unstable();
 
     let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
-    write_blueprint(
+    let _ = write_blueprint(
         tmp.path().to_str().unwrap(),
         trainer.get_table(),
         &keys,

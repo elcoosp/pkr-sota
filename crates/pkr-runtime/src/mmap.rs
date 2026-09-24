@@ -3,6 +3,8 @@ use memmap2::Mmap;
 use pkr_export::header::{
     FileHeader, FORMAT_VERSION_V2, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
 };
+#[cfg(test)]
+use pkr_export::header::FORMAT_VERSION_V3;
 use std::fs::File;
 use std::path::Path;
 use thiserror::Error;
@@ -39,12 +41,30 @@ pub struct MmapReader {
     offset_cdf: usize,
     len_cdf: usize,
     fingerprint: Option<pkr_core::abstraction::AbstractionFingerprint>,
+    /// P3-b: parsed FMph tail, if the writer emitted one.
+    fmph: Option<FmphView>,
+}
+
+/// Parsed FMph section (P3-b). Only present in files written after P3-b.
+#[derive(Debug, Clone)]
+pub struct FmphView {
+    pub seed1: u64,
+    pub seed2: u64,
+    pub bucket_count: usize,
+    pub num_keys: usize,
+    pub displacements: Vec<u32>,
 }
 
 unsafe impl Send for MmapReader {}
 unsafe impl Sync for MmapReader {}
 
 impl MmapReader {
+    /// P3-b: parsed FMph tail, if this blueprint was written by a
+    /// post-P3-b exporter. `None` for older files (search fallback used).
+    pub fn fmph(&self) -> Option<&FmphView> {
+        self.fmph.as_ref()
+    }
+
     pub fn new(path: impl AsRef<Path>) -> Result<Self, MmapError> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -61,8 +81,10 @@ impl MmapReader {
                 actual: file_header.magic,
             });
         }
-        // Accept v2 (no anchors) and v3 (anchors section present).
-        if file_header.version < FORMAT_VERSION_V2 {
+        // Accept v2 (no anchors), v3 (anchors), v4 (anchors + fingerprint).
+        // Anything newer is rejected -- parsing it as v4 would silently
+        // misinterpret the layout (audit B6).
+        if file_header.version < FORMAT_VERSION_V2 || file_header.version > FORMAT_VERSION_V4 {
             return Err(MmapError::UnsupportedVersion(file_header.version));
         }
         if file_header.hash_algo != HASH_ALGO_FNV1A64_INFOSET {
@@ -92,8 +114,7 @@ impl MmapReader {
         let fingerprint = if fp_size > 0 {
             let base = after_file_header + anchors_size;
             let raw = &mmap[base..base + fp_size];
-            let fp: &pkr_core::abstraction::AbstractionFingerprint = bytemuck::from_bytes(raw);
-            Some(*fp)
+            Some(bytemuck::pod_read_unaligned::<pkr_core::abstraction::AbstractionFingerprint>(raw))
         } else {
             // v2/v3: no fingerprint. Emit a one-time warning.
             use std::sync::OnceLock;
@@ -115,15 +136,67 @@ impl MmapReader {
             u32::from_le_bytes(mmap[after_header + 4..after_header + 8].try_into().unwrap())
                 as usize;
 
+        let max_k = file_header.max_actions_k as usize;
+        if max_k == 0 || max_k > 16 {
+            return Err(MmapError::InvalidOffset("max_actions_k out of range"));
+        }
+        let keys_bytes = key_count
+            .checked_mul(8)
+            .ok_or(MmapError::InvalidOffset("key_count overflow"))?;
+        if Some(cdf_bytes_len) != key_count.checked_mul(max_k) {
+            return Err(MmapError::InvalidOffset(
+                "cdf size != key_count * max_actions_k",
+            ));
+        }
         let offset_keys = after_header + 8;
-        let keys_bytes = key_count * 8;
         let offset_cdf = offset_keys + keys_bytes;
 
         if mmap.len() < offset_cdf + cdf_bytes_len {
             return Err(MmapError::InvalidOffset("data truncated"));
         }
 
-        Ok(MmapReader {
+                // P3-b: try to parse an optional FMph tail (after the CDF).
+        // Layout: [FmphHeader:40][displacements: u32 * bucket_count].
+        // Absent in pre-P3-b files; runtime falls back to branchless search.
+        let fmph = {
+            use pkr_export::header::FmphHeader;
+            let hdr_size = std::mem::size_of::<FmphHeader>();
+            let tail_off = offset_cdf + cdf_bytes_len;
+            if mmap.len() >= tail_off + hdr_size {
+                let hdr_bytes = &mmap[tail_off..tail_off + hdr_size];
+                let hdr: FmphHeader = bytemuck::pod_read_unaligned(hdr_bytes);
+                // Section-present flag: level_count == 1 AND num_keys matches.
+                if hdr.level_count == 1 && hdr.num_keys == key_count as u64 {
+                    let disp_off = tail_off + hdr_size;
+                    let disp_count = hdr.max_level_size as usize;
+                    let disp_bytes = disp_count
+                        .checked_mul(4)
+                        .ok_or(MmapError::InvalidOffset("fmPH size overflow"))?;
+                    if mmap.len() >= disp_off + disp_bytes {
+                        let mut displacements = Vec::with_capacity(disp_count);
+                        for i in 0..disp_count {
+                            let b = &mmap[disp_off + i * 4..disp_off + i * 4 + 4];
+                            displacements.push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                        }
+                        Some(FmphView {
+                            seed1: hdr.seed1,
+                            seed2: hdr.seed2,
+                            bucket_count: disp_count,
+                            num_keys: key_count as usize,
+                            displacements,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+Ok(MmapReader {
             mmap,
             file_header,
             offset_keys,
@@ -131,7 +204,7 @@ impl MmapReader {
             offset_cdf,
             len_cdf: cdf_bytes_len,
             fingerprint,
-        })
+            fmph,})
     }
 
     /// F2c: enforcement helper. Callers that want to refuse a
@@ -250,5 +323,67 @@ mod tests {
             MmapError::InvalidHashAlgo(1, _) => {}
             other => panic!("expected InvalidHashAlgo, got {:?}", other),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // B6 regression tests (audit: "version > 4 accepted as v4; cdf length
+    // not validated; max_actions_k range unchecked").
+    // ------------------------------------------------------------------
+
+    fn create_test_blueprint_with(version: u32, k: u8, cdf_len_override: Option<u32>) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let fh = FileHeader {
+            magic: *MAGIC,
+            version,
+            variant_id: 0,
+            infoset_count: 10,
+            max_actions_k: k,
+            hash_algo: HASH_ALGO_FNV1A64_INFOSET,
+            _padding: [0; 6],
+        };
+        buf.write_all(bytemuck::bytes_of(&fh)).unwrap();
+        if version >= FORMAT_VERSION_V3 {
+            buf.extend(std::iter::repeat_n(0u8, 48));
+        }
+        if version >= FORMAT_VERSION_V4 {
+            buf.extend(std::iter::repeat_n(0u8, 40));
+        }
+        let kc: u32 = 10;
+        let cdf_len: u32 = cdf_len_override.unwrap_or(kc * k as u32);
+        buf.write_all(&kc.to_le_bytes()).unwrap();
+        buf.write_all(&cdf_len.to_le_bytes()).unwrap();
+        for _ in 0..kc {
+            buf.write_all(&[0u8; 8]).unwrap();
+        }
+        buf.extend(std::iter::repeat_n(0u8, cdf_len as usize));
+        buf
+    }
+
+    #[test]
+    fn b6_rejects_version_above_v4() {
+        let data = create_test_blueprint_with(FORMAT_VERSION_V4 + 1, 3, None);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &data).unwrap();
+        let r = MmapReader::new(tmp.path());
+        assert!(r.is_err(), "version above v4 must be rejected");
+    }
+
+    #[test]
+    fn b6_rejects_max_k_zero() {
+        let data = create_test_blueprint_with(FORMAT_VERSION_V2, 0, None);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &data).unwrap();
+        let r = MmapReader::new(tmp.path());
+        assert!(r.is_err(), "max_actions_k=0 must be rejected");
+    }
+
+    #[test]
+    fn b6_rejects_cdf_len_mismatch() {
+        // k=3, keys=10 => correct cdf_len is 30; advertise 29.
+        let data = create_test_blueprint_with(FORMAT_VERSION_V2, 3, Some(29));
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &data).unwrap();
+        let r = MmapReader::new(tmp.path());
+        assert!(r.is_err(), "cdf_len != key_count * k must be rejected");
     }
 }

@@ -1,4 +1,5 @@
 use super::lookup::{choose, combinadic_rank};
+use crate::fast7::Fast7Evaluator;
 use memmap2::Mmap;
 use pkr_contracts::Evaluator;
 use std::fs::File;
@@ -107,13 +108,18 @@ pub fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
 
 pub struct TableEvaluator {
     mmap: Mmap,
+    /// P1-a: Fast7Evaluator (single-pass 7-card evaluator) owns the
+    /// hot path. TableEvaluator keeps its mmap for LUT probes used by
+    /// the combinadic tests, but `evaluate_hand` now delegates.
+    fast: Fast7Evaluator,
 }
 
 impl TableEvaluator {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        Ok(TableEvaluator { mmap })
+        let fast = Fast7Evaluator::new(&path)?;
+        Ok(TableEvaluator { mmap, fast })
     }
 
     /// Direct combinadic LUT read. Caller MUST pass cards sorted
@@ -143,84 +149,10 @@ impl TableEvaluator {
 
 impl Evaluator for TableEvaluator {
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
-        let mut cards = [0u8; 7];
-        let mut total = 0;
-
-        // Filter out sentinel values (≥52) AND duplicate cards
-        for &c in hole.iter().chain(board) {
-            if c < 52 && !cards[..total].contains(&c) {
-                cards[total] = c;
-                total += 1;
-            }
-        }
-
-        if total < 5 {
-            return u32::MAX;
-        }
-
-        cards[..total].sort_unstable_by(|a, b| b.cmp(a)); // sort once, descending
-
-        let mut best = u32::MAX;
-        if total == 5 {
-            best = self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]);
-        } else if total == 6 {
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
-        } else if total == 7 {
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[4], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[4], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[0], cards[3], cards[4], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[4], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[1], cards[3], cards[4], cards[5], cards[6]]));
-            best = best
-                .min(self.load_rank_sorted(&[cards[2], cards[3], cards[4], cards[5], cards[6]]));
-        }
-        best
+        // P1-a: single-pass fast7 evaluation, replacing the 21-subset min.
+        // Bit-identical to the previous path (fast7's own differential
+        // test asserts equality against `NlheEvaluator`).
+        self.fast.evaluate_hand(hole, board)
     }
 }
 
@@ -231,11 +163,24 @@ mod t13_tests {
     use pkr_contracts::Evaluator;
 
     fn find_rank_table() -> Option<String> {
-        for cand in &[
+        // Resolve against the workspace root (nextest runs from the crate dir).
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crate is two levels deep");
+        let candidates = [
+            "outputs/v23/hand_ranks.bin",
+            "outputs/v0-smoke/hand_ranks.bin",
             "outputs/v9/hand_ranks.bin",
             "outputs/v8/hand_ranks.bin",
-            "outputs/v0-smoke/hand_ranks.bin",
-        ] {
+        ];
+        for cand in &candidates {
+            let p = workspace_root.join(cand);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+        for cand in &candidates {
             if std::path::Path::new(cand).exists() {
                 return Some((*cand).to_string());
             }
@@ -281,6 +226,21 @@ mod t13_tests {
             let s = slow.evaluate_hand(&hole, &board);
             assert_eq!(f, s, "mismatch iteration {i}: cards {:?}", cards);
         }
+    }
+
+    #[test]
+    #[ignore = "requires generated hand_ranks.bin; run after regenerating the table"]
+    fn table_two_pair_ordering_matches_slow_eval() {
+        let path = std::env::var("PKR_RANK_TABLE").unwrap_or_else(|_| "hand_ranks.bin".into());
+        let t = TableEvaluator::new(&path).unwrap();
+        let kk447: [u8; 5] = [11, 24, 2, 15, 5];
+        let qq229: [u8; 5] = [10, 23, 0, 13, 7];
+        let a = t.evaluate_hand(&kk447, &[]);
+        let b = t.evaluate_hand(&qq229, &[]);
+        assert!(
+            a < b,
+            "table must rank KK447 better than QQ229 (lower = better)"
+        );
     }
 
     #[test]

@@ -175,47 +175,73 @@ pub fn discount_num_den(t: u32, p: u32) -> (i128, i128) {
     (tp, tp + 1)
 }
 
+/// Exact `floor(r * t^2 / (t^2 + 1))` for `r >= 0`, `t >= TAU`; identity for warmup.
+#[inline(always)]
+fn discount_pos_i64(r: i64, t: u32) -> i64 {
+    debug_assert!(r >= 0);
+    if t < TAU || r == 0 {
+        return r;
+    }
+    // (2^32 - 1)^2 + 1 < 2^64: no overflow for any u32 t.
+    let d = (t as u64) * (t as u64) + 1;
+    let ru = r as u64;
+    let q = ru / d;
+    let ceil = if !ru.is_multiple_of(d) { q + 1 } else { q };
+    (ru - ceil) as i64
+}
+
+/// β = 0 discount for negative regret: exactly 1/2 (truncated toward zero).
+#[inline(always)]
+fn discount_neg_i64(r: i64, t: u32) -> i64 {
+    if t < TAU {
+        r
+    } else {
+        r / 2
+    }
+}
+
 /// Exact regret/momentum update in i64 (at SCALE=1000).
 ///
-/// `current_i64` and `delta_i64` are raw i32/i64 fixed-point values at
-/// SCALE. `iteration` is the batch's last iteration number.
+/// `momentum_on = true`  → production PCFR+-style update.
+/// `momentum_on = false` → plain CFR+/DCFR: `r' = max(0, disc(r) + delta)`.
 ///
-/// Mirrors `update_regret_full` but keeps the discount and the accumulator
-/// in integer precision. `alpha_p = 2` (α=1.5 rounded), `beta_p = 0`.
+/// Never overflows: the final add saturates.
+#[inline]
+pub fn update_regret_i64_mode(
+    current_i64: i64,
+    prev_momentum_i64: i64,
+    iteration: u32,
+    delta_i64: i64,
+    momentum_on: bool,
+) -> (i64, i64) {
+    let t = iteration;
+    if t == 0 {
+        return (delta_i64, delta_i64);
+    }
+    let predicted_i64 = if momentum_on {
+        let gamma = 1.0 / ((t as f64) + 1.0).sqrt();
+        ((1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64)).round() as i64
+    } else {
+        delta_i64
+    };
+    let discounted = if current_i64 >= 0 {
+        discount_pos_i64(current_i64, t)
+    } else {
+        discount_neg_i64(current_i64, t)
+    };
+    let new_r = discounted.saturating_add(predicted_i64).max(0);
+    (new_r, predicted_i64)
+}
+
+/// Production entry point (momentum on).
+#[inline]
 pub fn update_regret_i64(
     current_i64: i64,
     prev_momentum_i64: i64,
     iteration: u32,
     delta_i64: i64,
 ) -> (i64, i64) {
-    let t = iteration;
-    if t == 0 {
-        return (delta_i64, delta_i64);
-    }
-
-    // PCFR+ momentum. The sqrt is inherently irrational; do it in f64
-    // (this part is numerically fine and 20 lines above were too).
-    let t_f = t as f64;
-    let gamma = 1.0 / ((t_f + 1.0).sqrt());
-    let predicted_f = (1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64);
-    let predicted_i64 = predicted_f.round() as i64;
-
-    // Exact DCFR discount. α=2, β=0.
-    let (num_pos, den_pos) = discount_num_den(t, 2);
-    let (num_neg, den_neg) = discount_num_den(t, 0);
-
-    let r_pos = current_i64.max(0) as i128;
-    let r_neg = current_i64.min(0) as i128;
-
-    // Common denominator for the two discounts. i128 headroom is huge.
-    let common_den = den_pos * den_neg;
-    let pos_num = r_pos * num_pos * den_neg;
-    let neg_num = r_neg * num_neg * den_pos;
-    let discounted_i128 = (pos_num + neg_num) / common_den;
-    let discounted_i64 = discounted_i128.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
-
-    let new_r = (discounted_i64 + predicted_i64).max(0);
-    (new_r, predicted_i64)
+    update_regret_i64_mode(current_i64, prev_momentum_i64, iteration, delta_i64, true)
 }
 
 /// Exact strategy-sum update with the γ=2 discount applied.
@@ -427,5 +453,46 @@ mod integer_discount_tests {
         // the point of this test is just that r is finite and positive.
         assert!(r > 0);
         assert!(r < i64::MAX);
+    }
+}
+
+#[cfg(test)]
+mod saturation_tests {
+    use super::*;
+
+    /// A3: an over-i64 add must saturate, not wrap or panic.
+    #[test]
+    fn update_regret_saturates_at_i64_max() {
+        // discount_pos(i64::MAX, 1e6) is just under i64::MAX, so adding
+        // ~i64::MAX/2 necessarily exceeds i64::MAX; the add must saturate.
+        let (r, _) = update_regret_i64_mode(
+            i64::MAX,
+            0,
+            1_000_000,
+            i64::MAX / 2 + 1,
+            false,
+        );
+        assert_eq!(r, i64::MAX);
+    }
+
+    /// A3: negative extreme clamps at 0 (regret floors at 0, not i64::MIN).
+    #[test]
+    fn update_regret_floors_at_zero() {
+        let (r, _) = update_regret_i64_mode(
+            0,
+            0,
+            1_000_000,
+            i64::MIN / 2,
+            false,
+        );
+        assert_eq!(r, 0);
+    }
+
+    /// A3: warmup (t < TAU) is identity on `current_i64`; result is max(0, cur+delta).
+    #[test]
+    fn update_regret_warmup_is_plain_add() {
+        let (r, m) = update_regret_i64_mode(1_000, 0, 3, 250, false);
+        assert_eq!(r, 1_250);
+        assert_eq!(m, 250); // momentum field = delta during warmup
     }
 }

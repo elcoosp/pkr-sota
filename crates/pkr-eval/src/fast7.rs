@@ -88,8 +88,10 @@ impl Evaluator for Fast7Evaluator {
         let mut rank_counts = [0u8; 13];
         for i in 0..n {
             let c = cards[i];
-            suit_counts[(c & 3) as usize] += 1;
-            rank_counts[(c >> 2) as usize] += 1;
+            // Card encoding matches the rest of the crate (slow.rs,
+            // hand_ranks.bin, precompute): suit = c / 13, rank = c % 13.
+            suit_counts[(c / 13) as usize] += 1;
+            rank_counts[(c % 13) as usize] += 1;
         }
 
         let key = rank_key(&rank_counts);
@@ -97,29 +99,50 @@ impl Evaluator for Fast7Evaluator {
 
         // At most one suit can have >= 5 cards in a 7-card hand, so break
         // after the first match.
+        //
+        // NOTE: taking the top-5-by-card-id gives the best FLUSH, but the
+        // best FLUSH-or-STRAIGHT-FLUSH may be a different 5-card subset
+        // of the suited cards (e.g. spades A T 5 4 3 2 -> the top-5 by id
+        // is the Ace-high flush, but A 5 4 3 2 is a wheel straight flush,
+        // which is a strictly stronger hand). Enumerate every C(m,5)
+        // subset of the suited cards and take the min (best) LUT rank.
         for s in 0..4u8 {
             if suit_counts[s as usize] < 5 {
                 continue;
             }
-            let mut flush_cards = [0u8; 7];
+            let mut suited = [0u8; 7];
             let mut m = 0usize;
             for i in 0..n {
-                if (cards[i] & 3) == s {
-                    flush_cards[m] = cards[i];
+                if (cards[i] / 13) == s {
+                    suited[m] = cards[i];
                     m += 1;
                 }
             }
-            flush_cards[..m].sort_unstable_by(|a, b| b.cmp(a));
-            let top5 = [
-                flush_cards[0],
-                flush_cards[1],
-                flush_cards[2],
-                flush_cards[3],
-                flush_cards[4],
+            // m in 5..=7; sort descending so subset indices preserve order.
+            suited[..m].sort_unstable_by(|a, b| b.cmp(a));
+
+            // 5-card-subsets of m by index; reused pattern from slow.rs.
+            const COMBOS_7_5: [[u8; 5]; 21] = [
+                [0,1,2,3,4],[0,1,2,3,5],[0,1,2,3,6],[0,1,2,4,5],[0,1,2,4,6],[0,1,2,5,6],
+                [0,1,3,4,5],[0,1,3,4,6],[0,1,3,5,6],[0,1,4,5,6],[0,2,3,4,5],[0,2,3,4,6],
+                [0,2,3,5,6],[0,2,4,5,6],[0,3,4,5,6],[1,2,3,4,5],[1,2,3,4,6],[1,2,3,5,6],
+                [1,2,4,5,6],[1,3,4,5,6],[2,3,4,5,6],
             ];
-            let flush_rank = self.lut_rank(&top5);
-            if flush_rank < best {
-                best = flush_rank;
+            // COMBOS_7_5 assumes 7 slots. For m=6, entries referencing
+            // index 6 must be skipped (they would read zero-initialized
+            // slots and duplicate cards). Filter by index < m.
+            for combo in COMBOS_7_5.iter() {
+                if combo.iter().any(|&i| (i as usize) >= m) {
+                    continue;
+                }
+                let mut sel = [0u8; 5];
+                for (j, &ci) in combo.iter().enumerate() {
+                    sel[j] = suited[ci as usize];
+                }
+                let r = self.lut_rank(&sel);
+                if r < best {
+                    best = r;
+                }
             }
             break;
         }
@@ -156,10 +179,8 @@ fn enumerate_counts(
     if rank == 13 {
         if remaining == 0 {
             let key = rank_key(counts);
-            if !map.contains_key(&key) {
-                let best = best_non_flush_rank(counts, mmap);
-                map.insert(key, best);
-            }
+            map.entry(key)
+                .or_insert_with(|| best_non_flush_rank(counts, mmap));
         }
         return;
     }
@@ -212,8 +233,14 @@ fn choose_5(
 #[inline]
 fn eval_5_avoid_flush(sel: &[u8; 5], mmap: &Mmap) -> u32 {
     let mut cards = [0u8; 5];
+    // Build cards under the crate's canonical encoding: suit * 13 + rank.
+    // Suit assignment cycles through {0,1,2,3,0}; this guarantees at most
+    // two cards share any suit, so the resulting hand cannot form a flush.
     for i in 0..5 {
-        cards[i] = (sel[i] << 2) | (i as u8 & 3);
+        let suit = (i as u8) & 3;
+        // Canonical encoding (matches slow.rs and hand_ranks.bin):
+        // card = suit * 13 + rank.
+        cards[i] = suit * 13 + sel[i];
     }
     cards.sort_unstable_by(|a, b| b.cmp(a));
     let idx = combinadic_rank(&cards) as usize;
@@ -235,11 +262,27 @@ mod tests {
     use crate::NlheEvaluator;
 
     fn find_rank_table() -> Option<String> {
-        for cand in &[
+        // Resolve relative to the workspace root so the test runs from
+        // any CWD (nextest uses the crate dir). Checks the current and
+        // historical output locations.
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crate is two levels deep");
+        let candidates = [
+            "outputs/v23/hand_ranks.bin",
+            "outputs/v0-smoke/hand_ranks.bin",
             "outputs/v9/hand_ranks.bin",
             "outputs/v8/hand_ranks.bin",
-            "outputs/v0-smoke/hand_ranks.bin",
-        ] {
+        ];
+        for cand in &candidates {
+            let p = workspace_root.join(cand);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+        // Also try the manifest-relative location as a fallback.
+        for cand in &candidates {
             if std::path::Path::new(cand).exists() {
                 return Some((*cand).to_string());
             }
@@ -340,5 +383,125 @@ mod tests {
         let n = fast.non_flush_len();
         assert!(n > 10_000, "LUT has only {n} entries - expected >10K");
         assert!(n < 100_000, "LUT has {n} entries - suspiciously large");
+    }
+}
+
+
+/// Targeted regression tests for the three fast7 bugs that landed in
+/// the initial P1-a wiring (pre-fix):
+///   1. card encoding (rank*4+suit vs suit*13+rank)
+///   2. flush path only took top-5-by-id, missing wheel SF
+///   3. COMBOS_7_5[..6] for m=6 indexed out-of-range slots
+/// Each test is a specific hand that exposed the bug.
+#[cfg(test)]
+mod fast7_bug_regressions {
+    use super::*;
+    use crate::NlheEvaluator;
+
+    fn find_rank_table() -> Option<String> {
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("two levels deep");
+        for cand in &[
+            "outputs/v23/hand_ranks.bin",
+            "outputs/v0-smoke/hand_ranks.bin",
+        ] {
+            let p = workspace_root.join(cand);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+        None
+    }
+
+    /// Encode (suit, rank) as the canonical `suit * 13 + rank`.
+    fn c(suit: u8, rank: u8) -> u8 {
+        suit * 13 + rank
+    }
+
+    /// Bug #2: 6 spades A,T,5,4,3,2 + offsuit 4c.
+    /// Poker: wheel straight flush (A-5-4-3-2 spades) is the best hand.
+    /// The old fast7 took top-5 spades = A,T,5,4,3 = ace-high flush.
+    #[test]
+    fn wheel_straight_flush_beats_ace_high_flush() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = As, Ts; board = 5s, 4s, 3s, 2s, 4c
+        let hole = [c(3, 12), c(3, 8)]; // As, Ts
+        let board = [c(3, 3), c(3, 2), c(3, 1), c(3, 0), c(0, 2)]; // 5s,4s,3s,2s,4c
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s, "wheel straight flush must match slow.rs");
+    }
+
+    /// Bug #2 (variation): 5 spades A,K,5,4,3 + offsuit 2s.
+    /// Top-5-by-id spades = A,K,5,4,3 = ace-high flush. No SF here.
+    /// This ensures the fix does not over-eagerly find SFs that aren't there.
+    #[test]
+    fn ace_high_flush_not_upgraded_to_straight_flush() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = As, Ks; board = 5s, 4s, 3s, 2s, 6c
+        let hole = [c(3, 12), c(3, 11)];
+        let board = [c(3, 3), c(3, 2), c(3, 1), c(3, 0), c(0, 4)];
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s);
+    }
+
+    /// Bug #3: turn the specific hand that first exposed the bug into a
+    /// permanent regression: 6 spades A,T,5,4,3,2 + offsuit 4c — while
+    /// a 6-suit flush (m=6) was being enumerated, the old fast7 read
+    /// `suited[6]` (zero-init) and evaluated a phantom hand.
+    #[test]
+    fn six_suited_cards_do_not_read_out_of_bounds() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = As, Ts; board = 5s, 4s, 3s, 2s, 6s (6 spades)
+        let hole = [c(3, 12), c(3, 8)];
+        let board = [c(3, 3), c(3, 2), c(3, 1), c(3, 0), c(3, 4)];
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s);
+    }
+
+    /// Bug #1: encoding sanity. A lone ace (rank 12, suit 0) is card 12
+    /// (suit*13 + rank) not card 48 (rank*4 + suit). Test that the fast
+    /// evaluator's result matches slow for a simple flush.
+    #[test]
+    fn card_encoding_suit_major() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = Ah, Kh; board = 8h, 5h, 3h, 2c, 9d
+        let hole = [c(1, 12), c(1, 11)];
+        let board = [c(1, 6), c(1, 3), c(1, 1), c(0, 0), c(2, 7)];
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s);
     }
 }

@@ -3,7 +3,6 @@
 use clap::Parser;
 use pkr_abstraction::{load_centroids, KMeansAbstraction};
 use pkr_cfr::Trainer;
-use pkr_contracts;
 use pkr_eval::TableEvaluator;
 use pkr_export::writer::write_blueprint;
 use rayon::ThreadPoolBuilder;
@@ -11,6 +10,17 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Global allocator: mimalloc. Under heavy parallel allocation
+/// (BatchItem/StrategyOp buffers, papaya map, large arrays) it
+/// substantially outperforms the system allocator and lowers RSS.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Fixed seed for the exploitability evaluator. Using a constant rather
+/// than `done` makes successive EVAL points directly comparable
+/// (common-random-numbers comparison). The training RNG is separate.
+const EVAL_SEED: u64 = 0xE7A1_0000_0000_0001;
 
 #[derive(Parser)]
 #[command(name = "pkr-trainer")]
@@ -110,6 +120,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     eval_now: bool,
 
+    /// Discard an existing checkpoint instead of resuming.
+    #[arg(long, default_value_t = false)]
+    fresh: bool,
+
     /// Tolerance (in mbb/hand) for the promotion gate: a new checkpoint
     /// is allowed to be worse than the current best by up to this much
     /// before it is rejected. Larger = more permissive. Zero means
@@ -125,7 +139,7 @@ struct Cli {
     exploitability_csv: Option<PathBuf>,
 
     /// Deals sampled per exploitability check. Accuracy ~ 1/sqrt(deals).
-    #[arg(long, default_value_t = 2000)]
+    #[arg(long, default_value_t = 10000)]
     eval_deals: u32,
 
     /// Skip exporting infosets whose reach-weighted strategy mass is below
@@ -133,6 +147,10 @@ struct Cli {
     /// and removes uniform-fallback infosets from the shipped file.
     #[arg(long, default_value_t = 0.0)]
     min_visits: f32,
+
+    /// Seed for the worker RNGs. Same seed + same inputs = identical training run.
+    #[arg(long, default_value_t = 0x5EED_1F70u64)]
+    seed: u64,
 }
 
 fn main() {
@@ -157,6 +175,44 @@ fn save_checkpoint_rolling(
     }
     std::fs::rename(&tmp, ckpt)?;
     Ok(())
+}
+fn export_blueprint(
+    trainer: &pkr_cfr::Trainer,
+    output: &std::path::Path,
+    min_visits: f32,
+    fingerprint: &pkr_core::abstraction::AbstractionFingerprint,
+) -> std::io::Result<usize> {
+    let table = trainer.get_table();
+    let mut keys = table.get_keys();
+    keys.sort_unstable();
+    if min_visits > 0.0 {
+        keys.retain(|k| {
+            table
+                .get_average_strategy_slice(*k)
+                .is_some_and(|s| s.iter().sum::<f32>() >= min_visits)
+        });
+    }
+    let path_str = output.to_str().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid output path")
+    })?;
+    write_blueprint(path_str, table, &keys, fingerprint)?;
+    Ok(keys.len())
+}
+
+
+/// True when the eval should fire at the current iteration.
+///
+/// Fires on the regular schedule (done advanced by >= eval_every since
+/// the last eval) AND on the final iteration. The final-iteration case
+/// matters because `done` advances in `iters_per_sync` batches, so the
+/// observed `last_eval_iter` can be a few hundred iters past the
+/// theoretical multiple; without this clause, a run that stops exactly
+/// at `max_iters` loses its final data point entirely (v23a bug: 5M
+/// run with eval_every=2.5M only produced the 2.5M row).
+#[inline]
+fn should_eval(done: u32, last_eval_iter: u32, eval_every: u32, max_iters: u32) -> bool {
+    eval_every > 0
+        && (done >= last_eval_iter.saturating_add(eval_every) || done == max_iters)
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -271,30 +327,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let abstraction_for_eval = Arc::clone(&abstraction);
     let evaluator_for_eval = Arc::clone(&evaluator);
     let mut trainer = Trainer::with_capacity(abstraction, evaluator, cli.capacity);
+    trainer.set_run_seed(cli.seed);
     eprintln!(
         "init: table + abstraction ready in {:.2}s (capacity={})",
         t_init.elapsed().as_secs_f64(),
         cli.capacity
     );
 
-    let start_iter = if let Some(ckpt) = &cli.checkpoint {
-        if ckpt.exists() {
+    let start_iter: u32 = match &cli.checkpoint {
+        Some(ckpt) if ckpt.exists() && !cli.fresh => {
             match trainer.load_checkpoint(ckpt.to_str().unwrap(), &fingerprint) {
                 Ok(()) => {
                     let it = trainer.iteration();
                     eprintln!("Resumed from checkpoint at iteration {}", it);
                     it
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    return Err(format!(
+                        "checkpoint {} is incompatible: {e}. Delete it or pass --fresh.",
+                        ckpt.display()
+                    )
+                    .into());
+                }
                 Err(e) => {
-                    eprintln!("WARNING: failed to load checkpoint: {} — starting fresh", e);
-                    0
+                    let prev = ckpt.with_extension("ckpt.prev");
+                    if !prev.exists() {
+                        return Err(format!(
+                            "checkpoint {} unreadable ({e}) and no .prev. Pass --fresh.",
+                            ckpt.display()
+                        )
+                        .into());
+                    }
+                    eprintln!("WARNING: primary checkpoint failed ({e}), trying .prev");
+                    trainer
+                        .load_checkpoint(prev.to_str().unwrap(), &fingerprint)
+                        .map_err(|e2| format!("both checkpoint and .prev failed: {e2}"))?;
+                    let it = trainer.iteration();
+                    eprintln!("Resumed from .prev checkpoint at iteration {}", it);
+                    it
                 }
             }
-        } else {
+        }
+        Some(ckpt) if ckpt.exists() && cli.fresh => {
+            eprintln!(
+                "WARNING: --fresh: existing checkpoint {} will be overwritten",
+                ckpt.display()
+            );
             0
         }
-    } else {
-        0
+        _ => 0,
     };
 
     let mut csv_writer: Option<std::io::BufWriter<std::fs::File>> = match &cli.metrics_csv {
@@ -325,11 +406,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             abstraction_for_eval.as_ref(),
             evaluator_for_eval.as_ref(),
             cli.eval_deals,
-            start_iter as u64,
+            EVAL_SEED ^ (start_iter as u64),
         );
         eprintln!(
-            "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
-            start_iter, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
+            "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
+            start_iter,
+            br.exploitability_mbb,
+            br.expl_std_err_mbb,
+            br.expl_insample_mbb,
+            br.br0,
+            br.br1,
+            br.deals_sampled
         );
     }
 
@@ -338,6 +425,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_report_iter = start_iter;
     let mut last_eval_iter = start_iter;
     let mut stopped_early = false;
+    let mut hit_capacity = false;
+    let mut interrupted = false;
+    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let f = std::sync::Arc::clone(&stop_flag);
+        ctrlc::set_handler(move || {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .expect("install ctrlc handler");
+    }
 
     let bench_deadline = if cli.bench_seconds > 0 {
         Some(Duration::from_secs(cli.bench_seconds))
@@ -366,7 +463,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| cli.output.with_file_name("exploitability.csv"));
         let f = std::fs::File::create(&path)?;
         let mut w = std::io::BufWriter::new(f);
-        writeln!(w, "iter,expl_mbb,br0,br1_p0,deals")?;
+        writeln!(w, "iter,expl_mbb,expl_stderr_mbb,br0,br1,deals")?;
         w.flush()?;
         eprintln!("exploitability CSV: {}", path.display());
         Some(w)
@@ -381,6 +478,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut promoted = false;
 
     while done < max_iters {
+        if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("Signal received: stopping after iteration {done}");
+            interrupted = true;
+            break;
+        }
+        if trainer.is_near_capacity() {
+            eprintln!(
+                "WARN: table >=95% capacity ({} slots), stopping early",
+                trainer.get_table().allocated()
+            );
+            stopped_early = true;
+            hit_capacity = true;
+            break;
+        }
         if let Some(d) = bench_deadline {
             if start.elapsed() >= d {
                 stopped_early = true;
@@ -489,7 +600,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Sampled best-response exploitability check.
             // Fire when done has advanced by at least eval_every since the
             // last eval (done increments by ITERS_PER_SYNC, not by 1).
-            if cli.eval_every > 0 && done >= last_eval_iter.saturating_add(cli.eval_every) {
+            if should_eval(done, last_eval_iter, cli.eval_every, max_iters) {
                 let br = pkr_exploit::best_response::sampled_exploitability(
                     trainer.get_table(),
                     abstraction_for_eval.as_ref(),
@@ -498,24 +609,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     done as u64,
                 );
                 eprintln!(
-                    "EVAL iter={} expl_mbb={:.2} br0={:.4} br1_p0={:.4} deals={}",
-                    done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled
-                );
+            "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
+            done, br.exploitability_mbb, br.expl_std_err_mbb,
+            br.expl_insample_mbb, br.br0, br.br1, br.deals_sampled
+        );
 
                 // E1: append to the exploitability CSV.
                 if let Some(w) = expl_writer.as_mut() {
                     writeln!(
                         w,
-                        "{},{:.4},{:.4},{:.4},{}",
-                        done, br.exploitability_mbb, br.br0, br.br1_to_p0, br.deals_sampled,
+                        "{},{:.4},{:.4},{:.4},{:.4},{}",
+                        done,
+                        br.exploitability_mbb,
+                        br.expl_std_err_mbb,
+                        br.br0,
+                        br.br1,
+                        br.deals_sampled,
                     )?;
                     w.flush()?;
                 }
 
                 // E1: promotion gate. Reject a checkpoint whose exploitability
                 // is worse than the running best by more than --promote-gate.
+                // C3: gate must exceed measurement noise, else we chase winner's-curse minima.
+                let gate = cli.promote_gate.max(2.0 * br.expl_std_err_mbb);
                 let rejected = match best_expl_mbb {
-                    Some(b) => br.exploitability_mbb > b + cli.promote_gate,
+                    Some(b) => br.exploitability_mbb > b + gate,
                     None => false,
                 };
                 if rejected {
@@ -528,31 +647,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 } else {
                     // Export the current table as the promoted blueprint.
-                    let mut keys = trainer.get_table().get_keys();
-                    keys.sort_unstable();
-                    if cli.min_visits > 0.0 {
-                        keys.retain(
-                            |k| match trainer.get_table().get_average_strategy_slice(*k) {
-                                Some(strat) => {
-                                    let mass: f32 = strat.iter().sum();
-                                    mass >= cli.min_visits
-                                }
-                                None => false,
-                            },
-                        );
+                    match export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint) {
+                        Ok(n) => {
+                            eprintln!(
+                                "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
+                                done,
+                                br.exploitability_mbb,
+                                best_expl_mbb,
+                                cli.output.display(),
+                                n,
+                            );
+                            best_expl_mbb = Some(br.exploitability_mbb);
+                            promoted = true;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "WARNING: blueprint export failed at iter {done}: {e}"
+                            );
+                        }
                     }
-                    let output_path = cli.output.to_str().expect("invalid output path");
-                    write_blueprint(output_path, trainer.get_table(), &keys, &fingerprint);
-                    eprintln!(
-                        "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
-                        done,
-                        br.exploitability_mbb,
-                        best_expl_mbb,
-                        cli.output.display(),
-                        keys.len(),
-                    );
-                    best_expl_mbb = Some(br.exploitability_mbb);
-                    promoted = true;
                 }
 
                 last_eval_iter = done;
@@ -593,15 +706,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             prev_metrics_snapshot = cur_metrics;
             last_report_iter = done;
-
-            if trainer.is_near_capacity() {
-                eprintln!(
-                    "WARN: table near capacity ({} infosets), stopping early",
-                    snap.infosets
-                );
-                stopped_early = true;
-                break;
-            }
         }
 
         if cli.checkpoint_every > 0
@@ -620,7 +724,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if !stopped_early {
+    if !stopped_early || hit_capacity || interrupted {
         if let Some(ckpt) = &cli.checkpoint {
             if let Err(e) = save_checkpoint_rolling(&trainer, ckpt, &fingerprint) {
                 eprintln!("WARNING: final checkpoint failed: {}", e);
@@ -747,39 +851,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // already the best checkpoint; do not overwrite it here.
     if !promoted {
         // Fallback: --eval-every == 0 (no gate) or no eval fired.
-        let mut keys = trainer.get_table().get_keys();
-        keys.sort_unstable();
-
-        // T2.4: filter infosets whose accumulated reach-weighted strategy
-        // mass is below min_visits. These are the ones that would export as
-        // uniform fallback (never reached with meaningful probability) and
-        // contribute nothing but size to the blueprint. The runtime's
-        // host-app fallback handles them at inference time.
-        if cli.min_visits > 0.0 {
-            let before = keys.len();
-            keys.retain(
-                |k| match trainer.get_table().get_average_strategy_slice(*k) {
-                    Some(strat) => {
-                        let mass: f32 = strat.iter().sum();
-                        mass >= cli.min_visits
-                    }
-                    None => false,
-                },
-            );
-            eprintln!(
-                "min-visits filter ({:.1}): {} -> {} infosets",
-                cli.min_visits,
-                before,
-                keys.len()
-            );
-        }
-
-        eprintln!("Exporting {} infosets...", keys.len());
-
-        let output_path = cli.output.to_str().expect("invalid output path");
-        write_blueprint(output_path, trainer.get_table(), &keys, &fingerprint);
-        eprintln!("Blueprint written to {}", output_path);
+        // T2.4: min-visits filter applied inside export_blueprint.
+        let n = export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint)?;
+        eprintln!("Blueprint written to {} ({} infosets)", cli.output.display(), n);
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod should_eval_tests {
+    use super::should_eval;
+
+    #[test]
+    fn fires_on_regular_schedule() {
+        assert!(should_eval(5_000_000, 0, 5_000_000, 20_000_000));
+        assert!(should_eval(10_000_000, 5_000_000, 5_000_000, 20_000_000));
+    }
+
+    #[test]
+    fn does_not_fire_early() {
+        assert!(!should_eval(4_999_999, 0, 5_000_000, 20_000_000));
+        assert!(!should_eval(9_999_999, 5_000_000, 5_000_000, 20_000_000));
+    }
+
+    #[test]
+    fn fires_on_final_iteration_even_if_batch_misaligned() {
+        // Reproduces the v23a bug: eval fired at 2_501_120 (a multiple of 512),
+        // so last_eval_iter=2_501_120 and the next threshold is 5_001_120,
+        // but the run stops at max_iters=5_000_000.
+        assert!(should_eval(5_000_000, 2_501_120, 2_500_000, 5_000_000));
+    }
+
+    #[test]
+    fn disabled_when_eval_every_is_zero() {
+        assert!(!should_eval(5_000_000, 0, 0, 20_000_000));
+        assert!(!should_eval(20_000_000, 0, 0, 20_000_000));
+    }
+
+    #[test]
+    fn fires_at_very_first_iteration_when_max_is_zero() {
+        // Degenerate; must not panic.
+        assert!(!should_eval(0, 0, 0, 0));
+    }
 }

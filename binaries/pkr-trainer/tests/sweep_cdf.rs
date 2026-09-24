@@ -102,7 +102,7 @@ fn sweep_all_chunks() {
         sweep(&bp, &abs_dir, sig, &format!("v12 @ {:>10}", chunk));
     }
 
-    println!("");
+    println!();
     println!("v13 (sizings reverted, thresholds fixed):");
     for chunk in [5_000_000u32, 10_000_000, 15_000_000, 20_000_000] {
         let bp = workspace_root
@@ -115,7 +115,7 @@ fn sweep_all_chunks() {
         sweep(&bp, &abs_dir, sig, &format!("v13 @ {:>10}", chunk));
     }
 
-    println!("");
+    println!();
     println!("v9 baseline for comparison:");
     for chunk in [5_000_000u32, 10_000_000, 15_000_000, 20_000_000] {
         let bp = workspace_root

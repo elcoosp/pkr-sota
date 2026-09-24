@@ -9,18 +9,14 @@ use rand::RngExt;
 const K: usize = 6;
 const MAX_DEPTH: u32 = 50;
 
-/// FBRS (Brown & Sandholm, NeurIPS 2015) pruning.
-///   - Warmup: don't prune before PRUNE_WARMUP iterations, so regrets have
-///     time to accumulate signal.
-///   - Threshold: prune when the action's regret is below -PRUNE_THRESHOLD
-///     (fixed-point ×1000) AND regret matching gave it zero probability.
-///   - 5% non-prune: keeps a small exploration tail so a truly recovering
-///     action can re-enter measurement. The formal FBRS criterion is
-///     r < -t * π_-i(I) * Δ; the absolute threshold is the conservative
-///     common approximation.
-const PRUNE_WARMUP: u32 = 1_000_000;
-const PRUNE_THRESHOLD: i32 = -400_000; // -400 chips at SCALE=1000
-const PRUNE_SKIP_PROB: f32 = 0.95;
+/// PKR_SKIP_FORCED=1 -> skip forced-move nodes (single legal bucket, e.g.
+/// after an all-in call on a completed street). Default off. Changes RNG
+/// streams when on, so not comparable bit-for-bit to a run where off.
+fn skip_forced_nodes() -> bool {
+    use std::sync::OnceLock;
+    static S: OnceLock<bool> = OnceLock::new();
+    *S.get_or_init(|| std::env::var("PKR_SKIP_FORCED").as_deref() == Ok("1"))
+}
 
 /// Exploration floor at opponent nodes during MCCFR sampling.
 ///
@@ -41,6 +37,35 @@ const PRUNE_SKIP_PROB: f32 = 0.95;
 /// reachability. EPSILON=0.05 keeps the sampled distribution close to the
 /// intended strategy while ensuring every legal action has nonzero
 /// probability. Override via PKR_EXPLORE_EPSILON for A/B testing.
+/// PKR_AVG_POWER=p -> strategy-sum weight t^p (0 = uniform, 1 = linear, 2 = DCFR gamma).
+/// Default 0 reproduces the current behaviour exactly.
+fn avg_weight_power() -> f32 {
+    use std::sync::OnceLock;
+    static P: OnceLock<f32> = OnceLock::new();
+    *P.get_or_init(|| {
+        std::env::var("PKR_AVG_POWER")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|p| (0.0..=4.0).contains(p))
+            .unwrap_or(0.0)
+    })
+}
+
+#[inline]
+fn avg_weight(t: u32) -> f32 {
+    let p = avg_weight_power();
+    if p == 0.0 {
+        1.0
+    } else if p == 1.0 {
+        t as f32
+    } else if p == 2.0 {
+        let x = t as f32;
+        x * x
+    } else {
+        (t as f32).powf(p)
+    }
+}
+
 fn exploration_epsilon() -> f32 {
     use std::sync::OnceLock;
     static E: OnceLock<f32> = OnceLock::new();
@@ -226,6 +251,43 @@ pub fn traverse(
         }
     }
 
+    // E3: forced move -- only one legal bucket. No decision, no regret,
+    // no strategy. Recurse without touching the table. Off by default
+    // (PKR_SKIP_FORCED=1 to enable).
+    if skip_forced_nodes() {
+        let n_legal_buckets = action_counts.iter().filter(|&&c| c > 0).count();
+        if n_legal_buckets == 1 {
+            let a = (0..K).find(|&a| action_counts[a] > 0).unwrap();
+            let count = action_counts[a];
+            let pick = if count > 1 { rng.random_range(0..count) } else { 0 };
+            current.apply_action_in_place(&num_actions[action_indices[a][pick]]);
+            let child_deck_idx = *deck_idx;
+            let v = traverse(
+                current,
+                table,
+                abstraction,
+                evaluator,
+                rng,
+                global_iteration,
+                traverser,
+                reach_prob,
+                deck,
+                &mut *deck_idx,
+                depth + 1,
+                batch,
+                strategy_batch,
+                metrics,
+            );
+            *deck_idx = child_deck_idx;
+            current.undo_action();
+            if advanced {
+                current.undo_action();
+            }
+            *deck_idx = saved_deck_idx;
+            return v;
+        }
+    }
+
     // Compact history signature: (actions_this_street, num_raises,
     // last_was_bet). Collapses the infoset key space vs. hashing the
     // raw action sequence.
@@ -241,7 +303,7 @@ pub fn traverse(
     // ignores the preflop/flop/turn tables entirely.
     let board: &[u8] = &current.board[..current.board_len as usize];
     let street_code = current.street as u8;
-    let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
+    let infoset_hash = abstraction.get_infoset_hash(hole, board, history_bytes, street_code);
 
     let mut strategy = [0.0f32; K];
     let traverser_idx = if acting_player == traverser {
@@ -277,6 +339,7 @@ pub fn traverse(
     }
 
     if let Some(idx) = traverser_idx {
+        let w_avg = avg_weight(global_iteration);
         for a in 0..K {
             if strategy[a] <= 0.0 {
                 continue;
@@ -284,7 +347,7 @@ pub fn traverse(
             strategy_batch.push(StrategyOp {
                 index: idx as u32,
                 action: a as u8,
-                prob: strategy[a] * reach_prob,
+                prob: strategy[a] * reach_prob * w_avg,
             });
         }
     }
@@ -295,18 +358,6 @@ pub fn traverse(
         for a in 0..K {
             let count = action_counts[a];
             if count == 0 {
-                v[a] = f32::NAN;
-                continue;
-            }
-            // FBRS pruning: skip a hopeless action (regret very negative,
-            // probability already zero) most of the time. Sentinal value
-            // is NaN, same as illegal buckets, so v_sigma and the push
-            // loop already skip it.
-            if global_iteration > PRUNE_WARMUP
-                && strategy[a] == 0.0
-                && table.regret_scaled(idx, a) < PRUNE_THRESHOLD
-                && rng.random::<f32>() < PRUNE_SKIP_PROB
-            {
                 v[a] = f32::NAN;
                 continue;
             }
@@ -340,7 +391,7 @@ pub fn traverse(
             .sum();
 
         for a in 0..K {
-            if action_counts[a] == 0 {
+            if action_counts[a] == 0 || v[a].is_nan() {
                 continue;
             }
             let delta = v[a] - v_sigma;
@@ -671,4 +722,22 @@ mod tests {
         assert_eq!(hit[3], 0);
         assert_eq!(hit[5], 0);
     }
+
+
+    // ---- E3: forced-move node helper ----
+    #[test]
+    fn skip_forced_nodes_reads_env_off_by_default() {
+        // Note: skip_forced_nodes() uses a OnceLock; this test only
+        // asserts the default is "off" when the env var is not set.
+        // The env var is not modified here because OnceLock caches on
+        // first call and would poison later tests in this binary.
+        if std::env::var("PKR_SKIP_FORCED").is_ok() {
+            eprintln!("SKIP: PKR_SKIP_FORCED is set in the test env");
+            return;
+        }
+        // Fresh process default: off.
+        // (OnceLock means we can't call this twice with different env.)
+        assert!(!skip_forced_nodes(), "default must be false");
+    }
+
 }
