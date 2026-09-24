@@ -1,3 +1,20 @@
+==================================================
+=== T2.2 LAUNCH — ready, not executed
+==================================================
+
+  Concern: a concurrent agent is doing bench/CI work.
+  Launching v26a at 8 threads will starve them.
+
+  Check for concurrent cargo activity first:
+  ACTIVE:
+==================================================
+
+
+  Consider waiting for them to finish, or reduce --threads.
+
+==================================================
+=== Write scripts/T22-fire.sh (does NOT auto-run)
+==================================================
 #!/usr/bin/env bash
 # Fire T2.2: rebuild, regen tables at RIVER_BUCKETS=128, launch v26a.
 # Reviewed and tested; run manually when cores are free.
