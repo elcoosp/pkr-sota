@@ -27,3 +27,15 @@ benches/*/target
 benches/*/Cargo.lock
 # Criterion HTML reports
 benches/*/target/criterion
+
+=== worklog.md — is it theirs, empty, or ours? ===
+
+=== Check .gitignore for worklog ===
+  (not in .gitignore)
+
+=== Plan: add worklog.md to .gitignore (it's the other agent's scratch) ===
+
+# other-agent scratch file (not ours)
+# other-agent scratch file (not ours)
+worklog.md
+worklog.md
