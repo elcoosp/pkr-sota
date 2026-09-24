@@ -1233,3 +1233,153 @@ mod ckpt_v7_tests {
         let _ = std::fs::remove_file(p);
     }
 }
+
+/// Post-audit regression tests. Each test names the audit item it protects.
+#[cfg(test)]
+mod audit_regression_tests {
+    use super::*;
+
+    /// B4: `allocated()` reflects slot consumption, not just map len().
+    #[test]
+    fn allocated_tracks_slot_consumption() {
+        let t = CompactRegretTable::with_capacity(64);
+        assert_eq!(t.allocated(), 0);
+        let i1 = t.get_or_create_idx(0xA1_0001);
+        let i2 = t.get_or_create_idx(0xA1_0002);
+        let i3 = t.get_or_create_idx(0xA1_0003);
+        assert_ne!(i1, i2);
+        assert_ne!(i2, i3);
+        assert_ne!(i1, i3);
+        assert_eq!(t.allocated(), 3);
+        // Second call with the same hash must NOT consume another slot.
+        let again = t.get_or_create_idx(0xA1_0001);
+        assert_eq!(again, i1);
+        assert_eq!(t.allocated(), 3);
+    }
+
+    /// B4 + A5: the snapshot reports `allocated()`, which is what
+    /// `is_near_capacity` also reads.
+    #[test]
+    fn snapshot_infosets_matches_allocated() {
+        let t = CompactRegretTable::with_capacity(64);
+        for k in 0..10u64 {
+            t.get_or_create_idx(0xB4_0000 + k);
+        }
+        let snap = t.snapshot();
+        assert_eq!(snap.infosets, t.allocated());
+        assert_eq!(snap.infosets, 10);
+    }
+
+    /// B2 invariant: after any flush, stored regret is never negative.
+    /// This is what made FBRS pruning dead code; the test guards against
+    /// reintroducing a negative-regret path.
+    #[test]
+    fn regret_is_never_negative_after_flush() {
+        let t = CompactRegretTable::with_capacity(64);
+        let idx = t.get_or_create_idx(0xB2_0000);
+        let mut b = vec![
+            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: -1.0e6 },
+            BatchItem { index: idx as u32, action: 1, iteration: 1, delta: -1.0e9 },
+            BatchItem { index: idx as u32, action: 2, iteration: 1, delta: 5.0 },
+        ];
+        t.flush_cpu_batch_with(
+            &mut b,
+            FlushMode { sequential: true, momentum: false },
+        );
+        for a in 0..K {
+            let r = t.load_rm(idx, a, RM_REGRET);
+            assert!(r >= 0, "regret[action {a}] = {r} < 0");
+        }
+    }
+
+    /// B1 companion: a NaN delta in sequential mode is treated as 0 by
+    /// `to_fixed`, not silently corrupting the stored regret. (The
+    /// batched-mode NaN test lives in `i64_tests`.)
+    #[test]
+    fn nan_delta_in_sequential_flush_is_zero() {
+        let t = CompactRegretTable::with_capacity(16);
+        let idx = t.get_or_create_idx(0xB1_0000);
+        let mut b = vec![
+            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 1.0 },
+            BatchItem { index: idx as u32, action: 0, iteration: 1, delta: f32::NAN },
+        ];
+        t.flush_cpu_batch_with(
+            &mut b,
+            FlushMode { sequential: true, momentum: false },
+        );
+        let r = t.load_rm(idx, 0, RM_REGRET);
+        assert!(!(r as f32).is_nan());
+        // SCALE = 1000; one 1.0 delta, then a 0 delta.
+        assert_eq!(r, 1000);
+    }
+
+    /// B3 sanity: both fold modes apply the same *sum* of deltas for a
+    /// single-action group with equal-iteration entries, so switching
+    /// modes does not silently drop updates.
+    #[test]
+    fn sequential_and_batched_agree_when_iterations_match() {
+        let mk_batch = |idx: usize| {
+            vec![
+                BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 3.0 },
+                BatchItem { index: idx as u32, action: 0, iteration: 1, delta: 4.0 },
+            ]
+        };
+
+        let t1 = CompactRegretTable::with_capacity(16);
+        let i1 = t1.get_or_create_idx(0xB3_0000);
+        let mut b1 = mk_batch(i1);
+        t1.flush_cpu_batch_with(
+            &mut b1,
+            FlushMode { sequential: true, momentum: false },
+        );
+
+        let t2 = CompactRegretTable::with_capacity(16);
+        let i2 = t2.get_or_create_idx(0xB3_0000);
+        let mut b2 = mk_batch(i2);
+        t2.flush_cpu_batch_with(
+            &mut b2,
+            FlushMode { sequential: false, momentum: false },
+        );
+
+        let r1 = t1.load_rm(i1, 0, RM_REGRET);
+        let r2 = t2.load_rm(i2, 0, RM_REGRET);
+        assert_eq!(r1, r2);
+        assert_eq!(r1, 7000); // (3+4) chips * SCALE
+    }
+
+    /// E4b: the strategy-batch sort key ((index << 8) | action) groups
+    /// ops with the same (index, action) together. Two identical op
+    /// entries must sum, not race.
+    #[test]
+    fn strategy_batch_groups_by_index_and_action() {
+        let t = CompactRegretTable::with_capacity(16);
+        let idx = t.get_or_create_idx(0xE4_B000);
+        let mut ops = vec![
+            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
+            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
+            StrategyOp { index: idx as u32, action: 1, prob: 0.50 },
+            StrategyOp { index: idx as u32, action: 0, prob: 0.25 },
+        ];
+        let applied = t.apply_strategy_batch(&mut ops);
+        assert_eq!(applied, 2, "two distinct (index, action) groups expected");
+        assert!((t.load_sum(idx, 0) - 0.75).abs() < 1e-9,
+            "action 0 sum = {}", t.load_sum(idx, 0));
+        assert!((t.load_sum(idx, 1) - 0.50).abs() < 1e-9,
+            "action 1 sum = {}", t.load_sum(idx, 1));
+    }
+
+    /// A5: the snapshot's `max_abs_regret` is regret-only. Writing a huge
+    /// momentum value must NOT appear in the snapshot's regret magnitude.
+    #[test]
+    fn snapshot_regret_only_ignores_momentum_cells() {
+        let t = CompactRegretTable::with_capacity(16);
+        let idx = t.get_or_create_idx(0xA5_0000);
+        // Set regret to a small positive value, momentum to something huge.
+        t.store_rm(idx, 0, RM_REGRET, 1000); // 1 chip
+        t.store_rm(idx, 0, RM_MOMENTUM, 100_000_000); // 100k chips
+        let snap = t.snapshot();
+        // max_abs_regret is reported in CHIPS (units / SCALE), so 1.0.
+        assert!(snap.max_abs_regret <= 1.5,
+            "max_abs_regret = {} (momentum leaked in?)", snap.max_abs_regret);
+    }
+}
