@@ -14,7 +14,6 @@ use foldhash::fast::RandomState as FoldHasher;
 use papaya::HashMap as PapayaMap;
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
@@ -1042,14 +1041,14 @@ impl CompactRegretTable {
         // stores because we hold `&self`.
         let rm_entries = n * RM_STRIDE;
         let rm_bytes = read(&mut p, rm_entries * 8)?;
-        for (i, chunk) in rm_bytes.chunks_exact(8).enumerate() {
-            let v = i64::from_le_bytes(chunk.try_into().unwrap());
+        for (i, chunk) in rm_bytes.as_chunks::<8>().0.iter().enumerate() {
+            let v = i64::from_le_bytes(*chunk);
             self.data[i].store(v, Ordering::Relaxed);
         }
         let sum_entries = n * SUM_STRIDE;
         let sum_bytes = read(&mut p, sum_entries * 8)?;
-        for (i, chunk) in sum_bytes.chunks_exact(8).enumerate() {
-            let v = u64::from_le_bytes(chunk.try_into().unwrap());
+        for (i, chunk) in sum_bytes.as_chunks::<8>().0.iter().enumerate() {
+            let v = u64::from_le_bytes(*chunk);
             self.strategy_sum[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);
