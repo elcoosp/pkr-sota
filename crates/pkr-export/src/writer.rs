@@ -99,17 +99,18 @@ pub fn write_blueprint(
         file.write_all(&key_bytes)?;
         file.write_all(&cdf_bytes)?;
 
-        // P3-b: optional FMph tail after the CDF. Absent in older files;
-        // runtime falls back to branchless search.
+        // P3-b: FMph tail is OPT-IN via PKR_EMIT_FMPH=1, default off.
         //
-        // SKIP for small tables: FMph is O(1) vs binary search O(log n),
-        // so the win only matters above a few hundred keys -- and
-        // build_fmph's 500K-attempt retry loop becomes an effective hang
-        // for tiny n (its displacement is unlikely to fit). Threshold
-        // chosen to cover every realistic runtime blueprint while
-        // keeping unit tests and small-table exports instantaneous.
-        const FMPH_MIN_KEYS: usize = 64;
-        if keys.len() >= FMPH_MIN_KEYS {
+        // Rationale: FMph gives O(1) vs O(log n) lookup at the runtime --
+        // worth ~20-50 ns per query. But build_fmph's retry loop (up to
+        // 500K attempts, each re-hashing every key) can take MINUTES to
+        // HOURS for large tables, blocking the training process on the
+        // promote branch. Net-negative for training; the runtime can
+        // still use FMph if a hand-built file has it.
+        //
+        // Env override: PKR_EMIT_FMPH=1 enables (dev mode, small tables).
+        let emit_fmph = std::env::var("PKR_EMIT_FMPH").as_deref() == Ok("1");
+        if emit_fmph {
             use std::panic::{catch_unwind, AssertUnwindSafe};
             if let Ok(fmph) = catch_unwind(AssertUnwindSafe(|| build_fmph(keys))) {
                 let hdr = fmph.to_header();
