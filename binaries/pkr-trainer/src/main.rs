@@ -115,6 +115,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     eval_now: bool,
 
+    /// Discard an existing checkpoint instead of resuming.
+    #[arg(long, default_value_t = false)]
+    fresh: bool,
+
     /// Tolerance (in mbb/hand) for the promotion gate: a new checkpoint
     /// is allowed to be worse than the current best by up to this much
     /// before it is rejected. Larger = more permissive. Zero means
@@ -287,40 +291,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cli.capacity
     );
 
-    let start_iter = if let Some(ckpt) = &cli.checkpoint {
-        if ckpt.exists() {
+    let start_iter: u32 = match &cli.checkpoint {
+        Some(ckpt) if ckpt.exists() && !cli.fresh => {
             match trainer.load_checkpoint(ckpt.to_str().unwrap(), &fingerprint) {
                 Ok(()) => {
                     let it = trainer.iteration();
                     eprintln!("Resumed from checkpoint at iteration {}", it);
                     it
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    return Err(format!(
+                        "checkpoint {} is incompatible: {e}. Delete it or pass --fresh.",
+                        ckpt.display()
+                    )
+                    .into());
+                }
                 Err(e) => {
                     let prev = ckpt.with_extension("ckpt.prev");
-                    if prev.exists() {
-                        eprintln!("WARNING: primary checkpoint failed ({}), trying .prev", e);
-                        match trainer.load_checkpoint(prev.to_str().unwrap(), &fingerprint) {
-                            Ok(()) => {
-                                let it = trainer.iteration();
-                                eprintln!("Resumed from .prev checkpoint at iteration {}", it);
-                                it
-                            }
-                            Err(e2) => {
-                                eprintln!("WARNING: .prev also failed: {} — starting fresh", e2);
-                                0
-                            }
-                        }
-                    } else {
-                        eprintln!("WARNING: failed to load checkpoint: {} — starting fresh", e);
-                        0
+                    if !prev.exists() {
+                        return Err(format!(
+                            "checkpoint {} unreadable ({e}) and no .prev. Pass --fresh.",
+                            ckpt.display()
+                        )
+                        .into());
                     }
+                    eprintln!("WARNING: primary checkpoint failed ({e}), trying .prev");
+                    trainer
+                        .load_checkpoint(prev.to_str().unwrap(), &fingerprint)
+                        .map_err(|e2| format!("both checkpoint and .prev failed: {e2}"))?;
+                    let it = trainer.iteration();
+                    eprintln!("Resumed from .prev checkpoint at iteration {}", it);
+                    it
                 }
             }
-        } else {
+        }
+        Some(ckpt) if ckpt.exists() && cli.fresh => {
+            eprintln!(
+                "WARNING: --fresh: existing checkpoint {} will be overwritten",
+                ckpt.display()
+            );
             0
         }
-    } else {
-        0
+        _ => 0,
     };
 
     let mut csv_writer: Option<std::io::BufWriter<std::fs::File>> = match &cli.metrics_csv {
@@ -370,6 +382,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_report_iter = start_iter;
     let mut last_eval_iter = start_iter;
     let mut stopped_early = false;
+    let mut hit_capacity = false;
+    let mut interrupted = false;
+    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let f = std::sync::Arc::clone(&stop_flag);
+        ctrlc::set_handler(move || {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .expect("install ctrlc handler");
+    }
 
     let bench_deadline = if cli.bench_seconds > 0 {
         Some(Duration::from_secs(cli.bench_seconds))
@@ -413,6 +435,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut promoted = false;
 
     while done < max_iters {
+        if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("Signal received: stopping after iteration {done}");
+            interrupted = true;
+            break;
+        }
+        if trainer.is_near_capacity() {
+            eprintln!(
+                "WARN: table >=95% capacity ({} slots), stopping early",
+                trainer.get_table().allocated()
+            );
+            stopped_early = true;
+            hit_capacity = true;
+            break;
+        }
         if let Some(d) = bench_deadline {
             if start.elapsed() >= d {
                 stopped_early = true;
@@ -632,15 +668,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             prev_metrics_snapshot = cur_metrics;
             last_report_iter = done;
-
-            if trainer.is_near_capacity() {
-                eprintln!(
-                    "WARN: table near capacity ({} infosets), stopping early",
-                    snap.infosets
-                );
-                stopped_early = true;
-                break;
-            }
         }
 
         if cli.checkpoint_every > 0
@@ -659,7 +686,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if !stopped_early {
+    if !stopped_early || hit_capacity || interrupted {
         if let Some(ckpt) = &cli.checkpoint {
             if let Err(e) = save_checkpoint_rolling(&trainer, ckpt, &fingerprint) {
                 eprintln!("WARNING: final checkpoint failed: {}", e);

@@ -865,8 +865,8 @@ impl CompactRegretTable {
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         let n = self.next_idx.load(Ordering::Relaxed).min(self.capacity);
-        w.write_all(b"PKRCKPT6")?;
-        w.write_all(&6u32.to_le_bytes())?;
+        w.write_all(b"PKRCKPT7")?;
+        w.write_all(&7u32.to_le_bytes())?;
         w.write_all(bytemuck::bytes_of(fingerprint))?;
         w.write_all(&(K as u32).to_le_bytes())?;
         w.write_all(&iteration.to_le_bytes())?;
@@ -912,14 +912,21 @@ impl CompactRegretTable {
             Ok(s)
         };
         let magic = read(&mut p, 8)?;
-        if magic != b"PKRCKPT6" {
+        if magic == b"PKRCKPT6" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint is v6 (i64 regret cells but pre-A2 layout). \
+                 Start a fresh run or pass --fresh to discard.",
+            ));
+        }
+        if magic != b"PKRCKPT7" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "bad checkpoint magic (expected v5 format)",
             ));
         }
         let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        if version != 6 {
+        if version != 7 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported checkpoint version",
@@ -960,6 +967,16 @@ impl CompactRegretTable {
             ));
         }
         let map_len = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
+        // Reset ALL state first, so a failed/partial load cannot leave
+        // stale cells that `alloc_idx` would later hand out as fresh.
+        self.data
+            .par_iter()
+            .for_each(|c| c.store(0, Ordering::Relaxed));
+        self.strategy_sum
+            .par_iter()
+            .for_each(|c| c.store(0, Ordering::Relaxed));
+        self.next_idx.store(0, Ordering::Relaxed);
+        IDX_CACHE.with(|c| c.borrow_mut().clear());
         let guard = self.hash_to_idx.pin();
         guard.clear();
         for _ in 0..map_len {
@@ -1174,5 +1191,44 @@ mod f5_tests {
             (r - 6.595).abs() < 0.05,
             "expected ~6.595 (sequential fold), got {r}"
         );
+    }
+}
+
+#[cfg(test)]
+mod ckpt_v7_tests {
+    use super::*;
+    use pkr_core::abstraction::AbstractionFingerprint;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("pkr_{}_{}.ckpt", name, std::process::id()))
+    }
+
+    #[test]
+    fn ckpt_v7_roundtrip_beyond_i32() {
+        let fp = AbstractionFingerprint::from_constants(4);
+        let a = CompactRegretTable::with_capacity(64);
+        let idx = a.get_or_create_idx(0xABCD);
+        a.store_rm(idx, 2, RM_REGRET, 5_000_000_000_000i64);
+        a.add_strategy_sum_at(idx, 1, 0.25);
+        let p = tmp("v7rt");
+        a.save_checkpoint(p.to_str().unwrap(), 42, &fp).unwrap();
+
+        let b = CompactRegretTable::with_capacity(64);
+        assert_eq!(b.load_checkpoint(p.to_str().unwrap(), &fp).unwrap(), 42);
+        let j = b.get_or_create_idx(0xABCD);
+        assert_eq!(b.regret_scaled(j, 2), 5_000_000_000_000i64);
+        assert!((b.load_sum(j, 1) - 0.25).abs() < 1e-12);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn ckpt_v6_rejected() {
+        let fp = AbstractionFingerprint::from_constants(4);
+        let p = tmp("v6rej");
+        std::fs::write(&p, b"PKRCKPT6\x06\x00\x00\x00").unwrap();
+        let t = CompactRegretTable::with_capacity(8);
+        let e = t.load_checkpoint(p.to_str().unwrap(), &fp).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        let _ = std::fs::remove_file(p);
     }
 }

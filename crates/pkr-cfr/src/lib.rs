@@ -224,7 +224,7 @@ impl Trainer {
 
     pub fn is_near_capacity(&self) -> bool {
         let cap = self.table.capacity();
-        cap > 0 && self.table.len() * 100 / cap >= 95
+        cap > 0 && self.table.allocated() * 100 / cap >= 95
     }
 
     pub fn save_checkpoint(

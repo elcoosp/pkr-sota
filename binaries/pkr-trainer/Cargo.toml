@@ -9,6 +9,7 @@ name = "pkr-trainer"
 path = "src/main.rs"
 
 [dependencies]
+ctrlc = { version = "3", features = ["termination"] }
 pkr-contracts = { workspace = true }
 pkr-core = { workspace = true }
 pkr-cfr = { workspace = true }
