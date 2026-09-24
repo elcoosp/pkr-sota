@@ -52,7 +52,10 @@ pub struct Action {
 /// A compact record of what changed in the state so we can undo an action.
 #[derive(Debug, Clone, Copy)]
 pub struct UndoRecord {
-    actor: usize,
+    /// Packed to u8: actor ∈ {0,1}, history_len ≤ 48, board_len ≤ 5.
+    /// P2: shrinking these from usize saves 24 B per push_undo call,
+    /// which runs on every action.
+    actor: u8,
     street: Street,
     pot: f32,
     stacks: [f32; 2],
@@ -61,9 +64,9 @@ pub struct UndoRecord {
     actions_this_street: u8,
     raises_this_street: u8,
     total_raises: u8,
-    history_len: usize, // length of abstract_history before action
+    history_len: u8,
     abstract_history_len: u8,
-    board_len: usize,   // length of board before action
+    board_len: u8,
     folded: [bool; 2],
 }
 
@@ -311,7 +314,7 @@ impl GameState {
             );
         }
         let record = UndoRecord {
-            actor: self.actor,
+            actor: self.actor as u8,
             street: self.street,
             pot: self.pot,
             stacks: self.stacks,
@@ -320,9 +323,9 @@ impl GameState {
             actions_this_street: self.actions_this_street,
             raises_this_street: self.raises_this_street,
             total_raises: self.total_raises,
-            history_len: self.history_len as usize,
+            history_len: self.history_len,
             abstract_history_len: self.abstract_history_len,
-            board_len: self.board_len as usize,
+            board_len: self.board_len,
             folded: self.folded,
         };
         self.undo_stack[self.undo_len as usize] = record;
@@ -444,7 +447,7 @@ impl GameState {
         }
         self.undo_len -= 1;
         let rec = self.undo_stack[self.undo_len as usize];
-        self.actor = rec.actor;
+        self.actor = rec.actor as usize;
         self.street = rec.street;
         self.pot = rec.pot;
         self.stacks = rec.stacks;
@@ -453,8 +456,8 @@ impl GameState {
         self.actions_this_street = rec.actions_this_street;
         self.raises_this_street = rec.raises_this_street;
         self.total_raises = rec.total_raises;
-        self.history_len = rec.history_len as u8;
-        self.board_len = rec.board_len as u8;
+        self.history_len = rec.history_len;
+        self.board_len = rec.board_len;
         self.folded = rec.folded;
         self.abstract_history_len = rec.abstract_history_len;
     }
@@ -1743,5 +1746,20 @@ mod b7_single_source_tests {
             "raise cap not honored by legal_actions: {:?}",
             a.iter().map(|x| x.kind).collect::<Vec<_>>()
         );
+    }
+}
+
+
+#[cfg(test)]
+mod p2_undo_size_tests {
+    use super::*;
+
+    /// P2: UndoRecord should stay small. It's memcpy'd on every action
+    /// push. Target: <= 48 bytes (fits comfortably within one cache line
+    /// alongside bookkeeping when 48 records are packed per state).
+    #[test]
+    fn undo_record_is_compact() {
+        let sz = std::mem::size_of::<UndoRecord>();
+        assert!(sz <= 48, "UndoRecord grew to {} bytes; revisit packing", sz);
     }
 }
