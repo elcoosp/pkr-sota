@@ -41,12 +41,30 @@ pub struct MmapReader {
     offset_cdf: usize,
     len_cdf: usize,
     fingerprint: Option<pkr_core::abstraction::AbstractionFingerprint>,
+    /// P3-b: parsed FMph tail, if the writer emitted one.
+    fmph: Option<FmphView>,
+}
+
+/// Parsed FMph section (P3-b). Only present in files written after P3-b.
+#[derive(Debug, Clone)]
+pub struct FmphView {
+    pub seed1: u64,
+    pub seed2: u64,
+    pub bucket_count: usize,
+    pub num_keys: usize,
+    pub displacements: Vec<u32>,
 }
 
 unsafe impl Send for MmapReader {}
 unsafe impl Sync for MmapReader {}
 
 impl MmapReader {
+    /// P3-b: parsed FMph tail, if this blueprint was written by a
+    /// post-P3-b exporter. `None` for older files (search fallback used).
+    pub fn fmph(&self) -> Option<&FmphView> {
+        self.fmph.as_ref()
+    }
+
     pub fn new(path: impl AsRef<Path>) -> Result<Self, MmapError> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -137,7 +155,48 @@ impl MmapReader {
             return Err(MmapError::InvalidOffset("data truncated"));
         }
 
-        Ok(MmapReader {
+                // P3-b: try to parse an optional FMph tail (after the CDF).
+        // Layout: [FmphHeader:40][displacements: u32 * bucket_count].
+        // Absent in pre-P3-b files; runtime falls back to branchless search.
+        let fmph = {
+            use pkr_export::header::FmphHeader;
+            let hdr_size = std::mem::size_of::<FmphHeader>();
+            let tail_off = offset_cdf + cdf_bytes_len;
+            if mmap.len() >= tail_off + hdr_size {
+                let hdr_bytes = &mmap[tail_off..tail_off + hdr_size];
+                let hdr: FmphHeader = bytemuck::pod_read_unaligned(hdr_bytes);
+                // Section-present flag: level_count == 1 AND num_keys matches.
+                if hdr.level_count == 1 && hdr.num_keys == key_count as u64 {
+                    let disp_off = tail_off + hdr_size;
+                    let disp_count = hdr.max_level_size as usize;
+                    let disp_bytes = disp_count
+                        .checked_mul(4)
+                        .ok_or(MmapError::InvalidOffset("fmPH size overflow"))?;
+                    if mmap.len() >= disp_off + disp_bytes {
+                        let mut displacements = Vec::with_capacity(disp_count);
+                        for i in 0..disp_count {
+                            let b = &mmap[disp_off + i * 4..disp_off + i * 4 + 4];
+                            displacements.push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                        }
+                        Some(FmphView {
+                            seed1: hdr.seed1,
+                            seed2: hdr.seed2,
+                            bucket_count: disp_count,
+                            num_keys: key_count as usize,
+                            displacements,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+Ok(MmapReader {
             mmap,
             file_header,
             offset_keys,
@@ -145,7 +204,7 @@ impl MmapReader {
             offset_cdf,
             len_cdf: cdf_bytes_len,
             fingerprint,
-        })
+            fmph,})
     }
 
     /// F2c: enforcement helper. Callers that want to refuse a

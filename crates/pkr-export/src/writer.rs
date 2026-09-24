@@ -1,6 +1,7 @@
 use crate::header::{
     AnchorsSection, FileHeader, ANCHORS, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
 };
+use crate::fmph::build_fmph;
 use pkr_cfr::table::CompactRegretTable;
 use pkr_core::abstraction::AbstractionFingerprint;
 use std::fs::File;
@@ -90,6 +91,22 @@ pub fn write_blueprint(
         file.write_all(&((K * num_keys) as u32).to_le_bytes())?;
         file.write_all(&key_bytes)?;
         file.write_all(&cdf_bytes)?;
+
+        // P3-b: optional FMph tail after the CDF. Absent in older files;
+        // runtime falls back to branchless search. If build_fmph panics
+        // (rare non-convergence), skip the section -- writers must never
+        // fail on it.
+        {
+            use std::panic::{catch_unwind, AssertUnwindSafe};
+            if let Ok(fmph) = catch_unwind(AssertUnwindSafe(|| build_fmph(keys))) {
+                let hdr = fmph.to_header();
+                file.write_all(bytemuck::bytes_of(&hdr))?;
+                for d in &fmph.displacements {
+                    file.write_all(&d.to_le_bytes())?;
+                }
+            }
+        }
+
         file.flush()?;
         file.sync_all()?;
     }
