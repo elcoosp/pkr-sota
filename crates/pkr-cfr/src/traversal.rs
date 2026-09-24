@@ -298,18 +298,6 @@ pub fn traverse(
                 v[a] = f32::NAN;
                 continue;
             }
-            // FBRS pruning: skip a hopeless action (regret very negative,
-            // probability already zero) most of the time. Sentinal value
-            // is NaN, same as illegal buckets, so v_sigma and the push
-            // loop already skip it.
-            if global_iteration > PRUNE_WARMUP
-                && strategy[a] == 0.0
-                && table.regret_scaled(idx, a) < PRUNE_THRESHOLD
-                && rng.random::<f32>() < PRUNE_SKIP_PROB
-            {
-                v[a] = f32::NAN;
-                continue;
-            }
             let pick_idx = action_indices[a][rng.random_range(0..count)];
 
             current.apply_action_in_place(&num_actions[pick_idx]);
@@ -340,7 +328,7 @@ pub fn traverse(
             .sum();
 
         for a in 0..K {
-            if action_counts[a] == 0 {
+            if action_counts[a] == 0 || v[a].is_nan() {
                 continue;
             }
             let delta = v[a] - v_sigma;

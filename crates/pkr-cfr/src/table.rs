@@ -20,6 +20,44 @@ const RM_STRIDE: usize = K * RM_FIELDS;
 const RM_REGRET: usize = 0;
 const RM_MOMENTUM: usize = 1;
 
+/// How `flush_cpu_batch` folds deltas. Read once from the environment.
+///   PKR_F5_SEQUENTIAL=0  → batched-sum fold (v9..v16 behaviour)
+///   PKR_MOMENTUM=0       → plain CFR+/DCFR, no PCFR+ momentum term
+/// Defaults reproduce the current production behaviour.
+#[derive(Clone, Copy, Debug)]
+pub struct FlushMode {
+    pub sequential: bool,
+    pub momentum: bool,
+}
+
+impl FlushMode {
+    pub fn from_env() -> Self {
+        let off = |n: &str| {
+            matches!(
+                std::env::var(n).as_deref(),
+                Ok("0") | Ok("off") | Ok("false")
+            )
+        };
+        Self {
+            sequential: !off("PKR_F5_SEQUENTIAL"),
+            momentum: !off("PKR_MOMENTUM"),
+        }
+    }
+    pub fn production() -> Self {
+        static M: OnceLock<FlushMode> = OnceLock::new();
+        *M.get_or_init(Self::from_env)
+    }
+}
+
+#[inline]
+fn to_fixed(x: f64) -> i64 {
+    if x.is_finite() {
+        (x * SCALE as f64).round() as i64
+    } else {
+        0
+    }
+}
+
 /// Strategy sums live in a separate array indexed [s0..s5].
 /// Stored as f64 bits in AtomicU64 — see `add_sum` for why fixed-point was
 /// wrong here: reach_prob decays multiplicatively through the tree, and at
@@ -516,7 +554,7 @@ impl CompactRegretTable {
                     // Sequential per-iteration fold: each delta applied
                     // with its own iteration number and clamp between.
                     for k in start..end {
-                        let delta_i64 = (batch_ref[k].delta as f64 * SCALE as f64).round() as i64;
+                        let delta_i64 = to_fixed(batch_ref[k].delta as f64);
                         let (new_r, new_m) = crate::dcfr::update_regret_i64(
                             cur_i64,
                             mom_i64,
