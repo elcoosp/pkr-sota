@@ -152,76 +152,15 @@ impl GameState {
     }
 
     pub fn legal_actions(&self) -> Vec<Action> {
-        if self.folded[self.actor] {
-            return vec![];
-        }
-        let mut actions = Vec::new();
-        let to_call = self.bet_to_call();
-        if to_call == 0.0 {
-            actions.push(Action {
-                player: self.actor,
-                kind: ActionKind::Check,
-            });
-            let pot = self.pot;
-            // C1.5: `Bet` is the actor's street-bet TOTAL, not the
-            // incremental chips. `pot * frac` was correct postflop
-            // (street_bets[actor] == 0); preflop (SB completing, BB
-            // raising a limp) it forgot the already-posted blind.
-            let base = self.street_bets[self.actor];
-            for &frac in &crate::abstraction::BET_SIZINGS {
-                let bet = base + pot * frac;
-                let chips_needed = bet - base;
-                if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
-                    actions.push(Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(bet),
-                    });
-                }
-            }
-            if self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                // C2: `Bet` is the actor's street-bet TOTAL, not the
-                // incremental chips. Preflop BB facing a limp has
-                // street_bets[BB] == 2 already posted; `Bet(stacks)`
-                // would ask for a 199-total (chips moved = 197, 1 chip
-                // stays behind) and mis-bucket as bucket 4. The correct
-                // all-in total is stacks + street_bets.
-                actions.push(Action {
-                    player: self.actor,
-                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
-                });
-            }
-        } else {
-            actions.push(Action {
-                player: self.actor,
-                kind: ActionKind::Fold,
-            });
-            actions.push(Action {
-                player: self.actor,
-                kind: ActionKind::Call,
-            });
-            let pot = self.pot;
-            // C1.5: raise TOTAL is opponent's committed street bet
-            // + a pot-fraction on top. Old form `to_call + pot * frac`
-            // under-counted by street_bets[actor] preflop.
-            let opp_bet = self.street_bets[1 - self.actor];
-            for &frac in &crate::abstraction::BET_SIZINGS {
-                let raise = opp_bet + pot * frac;
-                let chips_needed = raise - self.street_bets[self.actor];
-                if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
-                    actions.push(Action {
-                        player: self.actor,
-                        kind: ActionKind::Bet(raise),
-                    });
-                }
-            }
-            if self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                actions.push(Action {
-                    player: self.actor,
-                    kind: ActionKind::Bet(self.stacks[self.actor] + self.street_bets[self.actor]),
-                });
-            }
-        }
-        actions
+        // B7: single source of truth. The allocating wrapper delegates to
+        // the training-path implementation so fuzz tests validate the same
+        // action set the CFR traversal actually uses (raise cap, all-in dedup).
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = self.legal_actions_into(&mut buf);
+        buf[..n].to_vec()
     }
 
     /// Non-allocating variant of `legal_actions`. Writes into `out` and
