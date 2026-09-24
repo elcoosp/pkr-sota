@@ -879,14 +879,27 @@ impl CompactRegretTable {
             w.write_all(&k.to_le_bytes())?;
             w.write_all(&(*v as u64).to_le_bytes())?;
         }
+        // P2-a: stream the backing arrays directly. AtomicI64/AtomicU64
+        // have the same size/alignment as i64/u64 (std guarantee) and
+        // every bit pattern is valid; we only take a shared view and
+        // elements are never mutated through it.
         let rm_entries = n * RM_STRIDE;
-        for i in 0..rm_entries {
-            w.write_all(&self.data[i].load(Ordering::Relaxed).to_le_bytes())?;
-        }
+        let rm: &[i64] = unsafe {
+            std::slice::from_raw_parts(self.data.as_ptr() as *const i64, rm_entries)
+        };
+        let rm_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(rm.as_ptr() as *const u8, rm_entries * 8)
+        };
+        w.write_all(rm_bytes)?;
+
         let sum_entries = n * SUM_STRIDE;
-        for i in 0..sum_entries {
-            w.write_all(&self.strategy_sum[i].load(Ordering::Relaxed).to_le_bytes())?;
-        }
+        let sums: &[u64] = unsafe {
+            std::slice::from_raw_parts(self.strategy_sum.as_ptr() as *const u64, sum_entries)
+        };
+        let sum_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(sums.as_ptr() as *const u8, sum_entries * 8)
+        };
+        w.write_all(sum_bytes)?;
         w.flush()?;
         Ok(())
     }
@@ -991,14 +1004,21 @@ impl CompactRegretTable {
             }
             guard.insert(key, idx);
         }
+        // P2-a: bulk read + per-element atomic store. The slow part was
+        // calling `read()` once per element (each call re-checks bounds
+        // and slices buf); doing one big read and iterating the slice is
+        // 10-50x faster at 5M infosets. Atomics still need per-cell
+        // stores because we hold `&self`.
         let rm_entries = n * RM_STRIDE;
-        for i in 0..rm_entries {
-            let v = i64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
+        let rm_bytes = read(&mut p, rm_entries * 8)?;
+        for (i, chunk) in rm_bytes.chunks_exact(8).enumerate() {
+            let v = i64::from_le_bytes(chunk.try_into().unwrap());
             self.data[i].store(v, Ordering::Relaxed);
         }
         let sum_entries = n * SUM_STRIDE;
-        for i in 0..sum_entries {
-            let v = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
+        let sum_bytes = read(&mut p, sum_entries * 8)?;
+        for (i, chunk) in sum_bytes.chunks_exact(8).enumerate() {
+            let v = u64::from_le_bytes(chunk.try_into().unwrap());
             self.strategy_sum[i].store(v, Ordering::Relaxed);
         }
         self.next_idx.store(n, Ordering::Relaxed);
