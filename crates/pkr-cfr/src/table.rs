@@ -681,10 +681,9 @@ impl CompactRegretTable {
         for i in 0..entries_sum {
             strat_mass += f64::from_bits(self.strategy_sum[i].load(Ordering::Relaxed));
         }
-        let infosets = {
-            let guard = self.hash_to_idx.pin();
-            guard.len()
-        };
+        // B4: allocated() reflects true slot consumption (races leak slots
+        // that len() would not count); this is what is_near_capacity uses.
+        let infosets = self.allocated();
         TableSnapshot {
             infosets,
             capacity: self.capacity,

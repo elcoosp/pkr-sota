@@ -9,6 +9,15 @@ use rand::RngExt;
 const K: usize = 6;
 const MAX_DEPTH: u32 = 50;
 
+/// PKR_SKIP_FORCED=1 -> skip forced-move nodes (single legal bucket, e.g.
+/// after an all-in call on a completed street). Default off. Changes RNG
+/// streams when on, so not comparable bit-for-bit to a run where off.
+fn skip_forced_nodes() -> bool {
+    use std::sync::OnceLock;
+    static S: OnceLock<bool> = OnceLock::new();
+    *S.get_or_init(|| std::env::var("PKR_SKIP_FORCED").as_deref() == Ok("1"))
+}
+
 /// Exploration floor at opponent nodes during MCCFR sampling.
 ///
 /// Rationale: regret-matching+ clips negative regrets to 0, so an action
@@ -239,6 +248,43 @@ pub fn traverse(
         if action_counts[a] < 10 {
             action_indices[a][action_counts[a]] = idx;
             action_counts[a] += 1;
+        }
+    }
+
+    // E3: forced move -- only one legal bucket. No decision, no regret,
+    // no strategy. Recurse without touching the table. Off by default
+    // (PKR_SKIP_FORCED=1 to enable).
+    if skip_forced_nodes() {
+        let n_legal_buckets = action_counts.iter().filter(|&&c| c > 0).count();
+        if n_legal_buckets == 1 {
+            let a = (0..K).find(|&a| action_counts[a] > 0).unwrap();
+            let count = action_counts[a];
+            let pick = if count > 1 { rng.random_range(0..count) } else { 0 };
+            current.apply_action_in_place(&num_actions[action_indices[a][pick]]);
+            let child_deck_idx = *deck_idx;
+            let v = traverse(
+                current,
+                table,
+                abstraction,
+                evaluator,
+                rng,
+                global_iteration,
+                traverser,
+                reach_prob,
+                deck,
+                &mut *deck_idx,
+                depth + 1,
+                batch,
+                strategy_batch,
+                metrics,
+            );
+            *deck_idx = child_deck_idx;
+            current.undo_action();
+            if advanced {
+                current.undo_action();
+            }
+            *deck_idx = saved_deck_idx;
+            return v;
         }
     }
 
