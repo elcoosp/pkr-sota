@@ -89,6 +89,59 @@ pub struct KMeansAbstraction {
     evaluator: Arc<dyn Evaluator>,
 }
 
+/// Sorting-network helpers for small fixed-size arrays of card bytes.
+/// All sort DESCENDING (highest rank first), matching the previous
+/// `sort_unstable_by(|a, b| b.cmp(a))` semantics bit-for-bit.
+/// Fixed compare-exchange sequences are fully unrolled by LLVM.
+mod sortnets {
+    #[inline(always)]
+    fn ce2(a: &mut [u8; 2], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+    #[inline(always)]
+    fn ce3(a: &mut [u8; 3], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+    #[inline(always)]
+    fn ce5(a: &mut [u8; 5], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+    #[inline(always)]
+    fn ce6(a: &mut [u8; 6], i: usize, j: usize) {
+        if a[i] < a[j] {
+            a.swap(i, j);
+        }
+    }
+
+    pub fn sort2_desc(a: &mut [u8; 2]) {
+        ce2(a, 0, 1);
+    }
+    pub fn sort3_desc(a: &mut [u8; 3]) {
+        ce3(a, 0, 1); ce3(a, 1, 2); ce3(a, 0, 1);
+    }
+    /// Optimal 5-element network (9 compare-exchanges).
+    pub fn sort5_desc(a: &mut [u8; 5]) {
+        ce5(a, 0, 1); ce5(a, 3, 4); ce5(a, 2, 4);
+        ce5(a, 2, 3); ce5(a, 0, 3); ce5(a, 0, 2);
+        ce5(a, 1, 4); ce5(a, 1, 3); ce5(a, 1, 2);
+    }
+    /// 6-element network (12 compare-exchanges).
+    pub fn sort6_desc(a: &mut [u8; 6]) {
+        ce6(a, 1, 2); ce6(a, 4, 5);
+        ce6(a, 0, 2); ce6(a, 3, 5);
+        ce6(a, 0, 1); ce6(a, 3, 4); ce6(a, 2, 5);
+        ce6(a, 0, 3); ce6(a, 1, 4);
+        ce6(a, 2, 4); ce6(a, 1, 3);
+        ce6(a, 2, 3);
+    }
+}
+
 impl KMeansAbstraction {
     pub fn new(default_centroids: Vec<(f32, f32)>, evaluator: Arc<dyn Evaluator>) -> Self {
         let mut tables = HashMap::new();
@@ -152,7 +205,7 @@ impl KMeansAbstraction {
         if board.len() >= 3 {
             if let Some(buckets) = self.flop_buckets.get() {
                 let mut flop = [board[0], board[1], board[2]];
-                flop.sort_unstable_by(|a, b| b.cmp(a));
+                sortnets::sort3_desc(&mut flop);
                 let idx = choose(flop[0] as u32, 3) as usize
                     + choose(flop[1] as u32, 2) as usize
                     + choose(flop[2] as u32, 1) as usize;
@@ -168,7 +221,7 @@ impl KMeansAbstraction {
         assert_eq!(hole.len(), 2);
         assert_ne!(hole[0], hole[1]);
         let mut cards = [hole[0], hole[1]];
-        cards.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort2_desc(&mut cards);
         choose(cards[0] as u32, 2) as usize + choose(cards[1] as u32, 1) as usize
     }
 
@@ -182,7 +235,7 @@ impl KMeansAbstraction {
         all[2] = board[0];
         all[3] = board[1];
         all[4] = board[2];
-        all.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort5_desc(&mut all);
         let combo_idx = combinadic_rank(&all) as usize;
         let hole_set = [hole[0], hole[1]];
         let masks: [[usize; 2]; 10] = [
@@ -219,7 +272,7 @@ impl KMeansAbstraction {
         all[3] = board[1];
         all[4] = board[2];
         all[5] = board[3];
-        all.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort6_desc(&mut all);
         let rank = combinadic_rank_6(&all);
         let hole_set = [hole[0], hole[1]];
         let masks: [[usize; 2]; 15] = [
@@ -254,7 +307,7 @@ impl KMeansAbstraction {
     fn flat_index_river_board(board: &[u8]) -> usize {
         debug_assert_eq!(board.len(), 5);
         let mut sorted = [board[0], board[1], board[2], board[3], board[4]];
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        sortnets::sort5_desc(&mut sorted);
         combinadic_rank(&sorted) as usize
     }
 }
@@ -782,5 +835,86 @@ mod b10_fallback_tests {
         assert_eq!(fallback_count(), 0);
         // We don't fabricate a river hash here — the code path is
         // exercised in integration; this only guards the counter API.
+    }
+}
+
+
+
+#[cfg(test)]
+mod sortnet_tests {
+    use super::sortnets;
+
+    fn ref_desc<T: Ord + Copy>(v: &mut [T]) {
+        v.sort_unstable_by(|a, b| b.cmp(a));
+    }
+
+    #[test]
+    fn sort2_matches_reference() {
+        for a in 0u8..=3 {
+            for b in 0u8..=3 {
+                let mut x = [a, b];
+                let mut y = [a, b];
+                sortnets::sort2_desc(&mut x);
+                ref_desc(&mut y);
+                assert_eq!(x, y);
+            }
+        }
+    }
+
+    #[test]
+    fn sort3_matches_reference() {
+        for a in 0u8..=4 {
+            for b in 0u8..=4 {
+                for c in 0u8..=4 {
+                    let mut x = [a, b, c];
+                    let mut y = [a, b, c];
+                    sortnets::sort3_desc(&mut x);
+                    ref_desc(&mut y);
+                    assert_eq!(x, y);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sort5_matches_reference() {
+        let vals = [0u8, 1, 7, 13, 27, 51];
+        for &a in &vals {
+            for &b in &vals {
+                for &c in &vals {
+                    for &d in &vals {
+                        for &e in &vals {
+                            let mut x = [a, b, c, d, e];
+                            let mut y = [a, b, c, d, e];
+                            sortnets::sort5_desc(&mut x);
+                            ref_desc(&mut y);
+                            assert_eq!(x, y, "input {a},{b},{c},{d},{e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sort6_matches_reference() {
+        let vals = [0u8, 1, 7, 13, 27, 51];
+        for &a in &vals {
+            for &b in &vals {
+                for &c in &vals {
+                    for &d in &vals {
+                        for &e in &vals {
+                            for &f in &vals {
+                                let mut x = [a, b, c, d, e, f];
+                                let mut y = [a, b, c, d, e, f];
+                                sortnets::sort6_desc(&mut x);
+                                ref_desc(&mut y);
+                                assert_eq!(x, y, "input {a},{b},{c},{d},{e},{f}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

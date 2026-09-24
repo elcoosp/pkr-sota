@@ -17,12 +17,12 @@ const fn choose_const(n: u32, k: u32) -> u32 {
 /// Precomputed binomial coefficients: `CHOOSE[n][k] == C(n, k)` for
 /// n in 0..=51, k in 0..=5. 1.25 KB; one L1 load per (n, k).
 /// Bit-identical to the multiply-based implementation.
-static CHOOSE: [[u32; 6]; 52] = {
-    let mut t = [[0u32; 6]; 52];
+static CHOOSE: [[u32; 8]; 52] = {
+    let mut t = [[0u32; 8]; 52];
     let mut n: usize = 0;
     while n < 52 {
         let mut k: usize = 0;
-        while k < 6 {
+        while k < 8 {
             t[n][k] = choose_const(n as u32, k as u32);
             k += 1;
         }
@@ -35,7 +35,7 @@ static CHOOSE: [[u32; 6]; 52] = {
 /// range (n < 52, k < 6); pure-math fallback otherwise.
 #[inline(always)]
 pub fn choose(n: u32, k: u32) -> u32 {
-    if n < 52 && k < 6 {
+    if n < 52 && k < 8 {
         CHOOSE[n as usize][k as usize]
     } else {
         choose_const(n, k)
