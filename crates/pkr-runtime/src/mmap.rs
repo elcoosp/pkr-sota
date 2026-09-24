@@ -61,8 +61,10 @@ impl MmapReader {
                 actual: file_header.magic,
             });
         }
-        // Accept v2 (no anchors) and v3 (anchors section present).
-        if file_header.version < FORMAT_VERSION_V2 {
+        // Accept v2 (no anchors), v3 (anchors), v4 (anchors + fingerprint).
+        // Anything newer is rejected -- parsing it as v4 would silently
+        // misinterpret the layout (audit B6).
+        if file_header.version < FORMAT_VERSION_V2 || file_header.version > FORMAT_VERSION_V4 {
             return Err(MmapError::UnsupportedVersion(file_header.version));
         }
         if file_header.hash_algo != HASH_ALGO_FNV1A64_INFOSET {
@@ -92,8 +94,7 @@ impl MmapReader {
         let fingerprint = if fp_size > 0 {
             let base = after_file_header + anchors_size;
             let raw = &mmap[base..base + fp_size];
-            let fp: &pkr_core::abstraction::AbstractionFingerprint = bytemuck::from_bytes(raw);
-            Some(*fp)
+            Some(bytemuck::pod_read_unaligned::<pkr_core::abstraction::AbstractionFingerprint>(raw))
         } else {
             // v2/v3: no fingerprint. Emit a one-time warning.
             use std::sync::OnceLock;
@@ -115,8 +116,19 @@ impl MmapReader {
             u32::from_le_bytes(mmap[after_header + 4..after_header + 8].try_into().unwrap())
                 as usize;
 
+        let max_k = file_header.max_actions_k as usize;
+        if max_k == 0 || max_k > 16 {
+            return Err(MmapError::InvalidOffset("max_actions_k out of range"));
+        }
+        let keys_bytes = key_count
+            .checked_mul(8)
+            .ok_or(MmapError::InvalidOffset("key_count overflow"))?;
+        if Some(cdf_bytes_len) != key_count.checked_mul(max_k) {
+            return Err(MmapError::InvalidOffset(
+                "cdf size != key_count * max_actions_k",
+            ));
+        }
         let offset_keys = after_header + 8;
-        let keys_bytes = key_count * 8;
         let offset_cdf = offset_keys + keys_bytes;
 
         if mmap.len() < offset_cdf + cdf_bytes_len {

@@ -205,6 +205,28 @@ impl Default for CompactRegretTable {
 }
 
 impl CompactRegretTable {
+    /// Regret-matching+ strategy from the stored regrets. Since the
+    /// normalisation cancels SCALE, we skip the /SCALE division entirely
+    /// (audit E2). Uniform over all K actions if no positive regret.
+    #[inline(always)]
+    fn regret_match_into(&self, idx: usize, out: &mut [f32; K]) {
+        let mut sum = 0.0f32;
+        for i in 0..K {
+            let raw = self.load_rm(idx, i, RM_REGRET);
+            let v = if raw > 0 { raw as f32 } else { 0.0 };
+            out[i] = v;
+            sum += v;
+        }
+        if sum > 0.0 {
+            let inv = 1.0 / sum;
+            for i in 0..K {
+                out[i] *= inv;
+            }
+        } else {
+            out.fill(1.0 / K as f32);
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_capacity(5_000_000)
     }
@@ -352,21 +374,7 @@ impl CompactRegretTable {
                 i
             }
         };
-        let mut sum = 0.0f32;
-        for i in 0..K {
-            let raw = self.load_rm(idx, i, RM_REGRET);
-            let val = ((raw as f32) / SCALE).max(0.0);
-            out[i] = val;
-            sum += val;
-        }
-        if sum > 0.0 {
-            let inv = 1.0 / sum;
-            for i in 0..K {
-                out[i] *= inv;
-            }
-        } else {
-            out.fill(1.0 / K as f32);
-        }
+        self.regret_match_into(idx, out);
         idx
     }
 
@@ -384,21 +392,7 @@ impl CompactRegretTable {
             }
         };
         if let Some(idx) = idx_opt {
-            let mut sum = 0.0f32;
-            for i in 0..K {
-                let raw = self.load_rm(idx, i, RM_REGRET);
-                let val = ((raw as f32) / SCALE).max(0.0);
-                out[i] = val;
-                sum += val;
-            }
-            if sum > 0.0 {
-                let inv = 1.0 / sum;
-                for i in 0..K {
-                    out[i] *= inv;
-                }
-            } else {
-                out.fill(1.0 / K as f32);
-            }
+            self.regret_match_into(idx, out);
         } else {
             out.fill(1.0 / K as f32);
         }
@@ -436,24 +430,8 @@ impl CompactRegretTable {
             return out;
         }
 
-        // Fallback: regret-matched current strategy.
-        let mut rsum = 0.0f32;
-        for i in 0..K {
-            let raw = self.load_rm(idx, i, RM_REGRET) as f32 / SCALE;
-            let val = raw.max(0.0);
-            out[i] = val;
-            rsum += val;
-        }
-        if rsum > 0.0 {
-            let inv = 1.0 / rsum;
-            for i in 0..K {
-                out[i] *= inv;
-            }
-            return out;
-        }
-
-        // Last resort: uniform.
-        out.fill(1.0 / K as f32);
+        // Fallback: regret-matched current strategy (or uniform).
+        self.regret_match_into(idx, &mut out);
         out
     }
 
