@@ -1,5 +1,4 @@
 use super::lookup::{choose, combinadic_rank};
-use crate::fast7::Fast7Evaluator;
 use memmap2::Mmap;
 use pkr_contracts::Evaluator;
 use std::fs::File;
@@ -108,18 +107,13 @@ pub fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
 
 pub struct TableEvaluator {
     mmap: Mmap,
-    /// P1-a: Fast7Evaluator (single-pass 7-card evaluator) owns the
-    /// hot path. TableEvaluator keeps its mmap for LUT probes used by
-    /// the combinadic tests, but `evaluate_hand` now delegates.
-    fast: Fast7Evaluator,
 }
 
 impl TableEvaluator {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
-        let file = File::open(&path)?;
+        let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        let fast = Fast7Evaluator::new(&path)?;
-        Ok(TableEvaluator { mmap, fast })
+        Ok(TableEvaluator { mmap })
     }
 
     /// Direct combinadic LUT read. Caller MUST pass cards sorted
@@ -149,10 +143,84 @@ impl TableEvaluator {
 
 impl Evaluator for TableEvaluator {
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
-        // P1-a: single-pass fast7 evaluation, replacing the 21-subset min.
-        // Bit-identical to the previous path (fast7's own differential
-        // test asserts equality against `NlheEvaluator`).
-        self.fast.evaluate_hand(hole, board)
+        let mut cards = [0u8; 7];
+        let mut total = 0;
+
+        // Filter out sentinel values (≥52) AND duplicate cards
+        for &c in hole.iter().chain(board) {
+            if c < 52 && !cards[..total].contains(&c) {
+                cards[total] = c;
+                total += 1;
+            }
+        }
+
+        if total < 5 {
+            return u32::MAX;
+        }
+
+        cards[..total].sort_unstable_by(|a, b| b.cmp(a)); // sort once, descending
+
+        let mut best = u32::MAX;
+        if total == 5 {
+            best = self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]);
+        } else if total == 6 {
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
+        } else if total == 7 {
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[4]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[3], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[2], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[3], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[1], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[3], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[2], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[0], cards[3], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[5]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[4], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[3], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[2], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[1], cards[3], cards[4], cards[5], cards[6]]));
+            best = best
+                .min(self.load_rank_sorted(&[cards[2], cards[3], cards[4], cards[5], cards[6]]));
+        }
+        best
     }
 }
 
