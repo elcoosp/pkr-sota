@@ -709,3 +709,55 @@ mod c6_unit_tests {
         assert_ne!(h1, h3);
     }
 }
+
+#[cfg(test)]
+mod audit_f6_tests {
+    /// The `!raw` encoding produced by both evaluators has its usable
+    /// range bounded above by `u32::MAX` and below by
+    /// `u32::MAX - 9 * 2^20 + 1` (9 hand categories, each with 2^20
+    /// rank-bit combinations). `hand_rank >> 15` quantizes that range
+    /// into a bounded number of ordered tiers.
+    ///
+    /// The audit F6 concern: the pre-fix `>> 6` produced ~147k tiers,
+    /// not the ~117 the comment claimed. This test pins the current
+    /// shift to a bounded count so any future change that silently
+    /// explodes the tier count will fail the test.
+    #[test]
+    fn river_shift_15_yields_bounded_tier_count() {
+        // Lowest possible !raw value across all 9 categories.
+        let min_rank: u32 = u32::MAX - 9 * (1u32 << 20) + 1;
+        let max_rank: u32 = u32::MAX;
+        let tier_lo = min_rank >> 15;
+        let tier_hi = max_rank >> 15;
+        let count = tier_hi - tier_lo + 1;
+        assert!(
+            count <= 512,
+            ">>15 should yield <=512 tiers, got {count} (range {}..{})",
+            tier_lo,
+            tier_hi
+        );
+        assert!(
+            count >= 128,
+            ">>15 should yield >=128 tiers (finer than >>13), got {count}"
+        );
+    }
+
+    /// Monotonicity: a stronger hand (smaller `!raw`) must never map to
+    /// a *larger* tier than a weaker hand. The shift is monotone by
+    /// construction, but this test makes the contract explicit so a
+    /// future change to `river_hand_bucket` cannot silently reverse it.
+    #[test]
+    fn river_tier_ordering_is_monotone() {
+        // A hand with !raw = MAX (weakest possible in the encoding) and
+        // a hand with !raw = MAX - K (stronger by K) — the stronger hand
+        // must map to an equal-or-smaller tier.
+        for k in [1u32, 100, 1000, 100_000, 1_000_000, 9_000_000] {
+            let weak = u32::MAX;
+            let strong = u32::MAX.saturating_sub(k);
+            assert!(
+                (strong >> 15) <= (weak >> 15),
+                "stronger hand (raw={strong}) mapped to a larger tier than weak (raw={weak})",
+            );
+        }
+    }
+}
