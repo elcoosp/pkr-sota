@@ -1,0 +1,5 @@
+# T0-c: all cargo builds match production (run.sh already sets these).
+# Env RUSTFLAGS overrides this file; values agree, so no conflict.
+# Binaries become machine-specific: never ship them cross-machine.
+[build]
+rustflags = ["-C", "target-cpu=native"]
