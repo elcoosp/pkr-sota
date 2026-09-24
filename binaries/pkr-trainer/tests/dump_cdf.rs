@@ -94,7 +94,7 @@ fn dump_cdf() {
 
     println!("### blueprint: {}", bp);
     for (name, sig) in scenarios {
-        println!("");
+        println!();
         println!("### {}   sig=0x{:08x}", name, sig);
         let hist = sig.to_le_bytes();
         println!(
@@ -108,9 +108,9 @@ fn dump_cdf() {
                     let n = advice.len as usize;
                     let mut probs = [0.0f32; 6];
                     let mut prev = 0u16;
-                    for i in 0..n.min(6) {
+                    for (i, p) in probs.iter_mut().enumerate().take(n.min(6)) {
                         let c = advice.cdf_probabilities[i] as u16;
-                        probs[i] = (c.saturating_sub(prev)) as f32 / 255.0;
+                        *p = (c.saturating_sub(prev)) as f32 / 255.0;
                         prev = c;
                     }
                     let (am, _) = probs

@@ -183,7 +183,7 @@ fn export_blueprint(
         keys.retain(|k| {
             table
                 .get_average_strategy_slice(*k)
-                .map_or(false, |s| s.iter().sum::<f32>() >= min_visits)
+                .is_some_and(|s| s.iter().sum::<f32>() >= min_visits)
         });
     }
     let path_str = output.to_str().ok_or_else(|| {
