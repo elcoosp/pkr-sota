@@ -354,10 +354,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             EVAL_SEED ^ (start_iter as u64),
         );
         eprintln!(
-            "EVAL iter={} expl_mbb={:.2}±{:.2} br0={:.4} br1={:.4} deals={}",
+            "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
             start_iter,
             br.exploitability_mbb,
             br.expl_std_err_mbb,
+            br.expl_insample_mbb,
             br.br0,
             br.br1,
             br.deals_sampled
@@ -529,14 +530,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     done as u64,
                 );
                 eprintln!(
-                    "EVAL iter={} expl_mbb={:.2}±{:.2} br0={:.4} br1={:.4} deals={}",
-                    done,
-                    br.exploitability_mbb,
-                    br.expl_std_err_mbb,
-                    br.br0,
-                    br.br1,
-                    br.deals_sampled
-                );
+            "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
+            done, br.exploitability_mbb, br.expl_std_err_mbb,
+            br.expl_insample_mbb, br.br0, br.br1, br.deals_sampled
+        );
 
                 // E1: append to the exploitability CSV.
                 if let Some(w) = expl_writer.as_mut() {
