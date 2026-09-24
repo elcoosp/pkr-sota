@@ -9,6 +9,8 @@ jobs:
   proftest:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    env:
+      BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +51,7 @@ jobs:
           path: eval-metrics.ndjson
           retention-days: 30
       - name: Push eval to Bencher
-        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        if: env.BENCHER_API_TOKEN != ''
         run: |
           ./bencher --token "$BENCHER_API_TOKEN" \
               --project pkr-sota \

@@ -15,6 +15,8 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +79,7 @@ jobs:
           retention-days: 90
 
       - name: Push to Bencher
-        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        if: env.BENCHER_API_TOKEN != ''
         run: |
           curl -sL https://bencher.dev/download | tar -xz
           ./bencher --token "$BENCHER_API_TOKEN" \
@@ -91,7 +93,7 @@ jobs:
           BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
 
       - name: Push Kuhn to Bencher
-        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        if: env.BENCHER_API_TOKEN != ''
         run: |
           ./bencher --token "$BENCHER_API_TOKEN" \
               --project pkr-sota \
@@ -107,6 +109,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    env:
+      BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -130,7 +134,7 @@ jobs:
               > pr-bench.ndjson
 
       - name: Push to Bencher with PR context
-        if: ${{ secrets.BENCHER_API_TOKEN != '' }}
+        if: env.BENCHER_API_TOKEN != ''
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
