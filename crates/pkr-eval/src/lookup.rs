@@ -1,21 +1,45 @@
 /// Binomial coefficient C(n,k), safe for 0≤k≤7. Uses u64 for intermediates.
-pub fn choose(n: u32, k: u32) -> u32 {
+/// Binomial coefficient `C(n, k)`, computed at compile time.
+const fn choose_const(n: u32, k: u32) -> u32 {
     if k > n {
         return 0;
     }
-    let n = n as u64;
-    let result: u64 = match k {
-        0 => 1,
-        1 => n,
-        2 => n * (n - 1) / 2,
-        3 => n * (n - 1) * (n - 2) / 6,
-        4 => n * (n - 1) * (n - 2) * (n - 3) / 24,
-        5 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) / 120,
-        6 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) * (n - 5) / 720,
-        7 => n * (n - 1) * (n - 2) * (n - 3) * (n - 4) * (n - 5) * (n - 6) / 5040,
-        _ => panic!("k>7 unsupported"),
-    };
+    let k = if k > n - k { n - k } else { k };
+    let mut result: u64 = 1;
+    let mut i: u32 = 0;
+    while i < k {
+        result = result * (n - i) as u64 / (i + 1) as u64;
+        i += 1;
+    }
     result as u32
+}
+
+/// Precomputed binomial coefficients: `CHOOSE[n][k] == C(n, k)` for
+/// n in 0..=51, k in 0..=5. 1.25 KB; one L1 load per (n, k).
+/// Bit-identical to the multiply-based implementation.
+static CHOOSE: [[u32; 6]; 52] = {
+    let mut t = [[0u32; 6]; 52];
+    let mut n: usize = 0;
+    while n < 52 {
+        let mut k: usize = 0;
+        while k < 6 {
+            t[n][k] = choose_const(n as u32, k as u32);
+            k += 1;
+        }
+        n += 1;
+    }
+    t
+};
+
+/// Binomial coefficient `C(n, k)` as u32. Table lookup for the hot
+/// range (n < 52, k < 6); pure-math fallback otherwise.
+#[inline(always)]
+pub fn choose(n: u32, k: u32) -> u32 {
+    if n < 52 && k < 6 {
+        CHOOSE[n as usize][k as usize]
+    } else {
+        choose_const(n, k)
+    }
 }
 
 /// Combinadic rank of a 5-card combination sorted descending.
