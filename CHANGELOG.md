@@ -175,3 +175,37 @@ earlier audit fixes:
   - v25fast7 @ 20M: 5767  (P1-a + fixed fast7)
   - v25final @ 20M: 5735  (all of the above)
   - all within 1σ.
+  added wr*.sh to .gitignore
+
+=== git status ===
+
+=== Commit .gitignore ===
+  (no .gitignore change to commit)
+
+==================================================
+=== CHANGELOG: T2.2 entry
+==================================================
+
+## 2026-09-24 — T2.2 river resolution
+
+Bumped the river hand-tier resolution. Pre-T2.2 state was
+`hand_rank >> 15` (~287 hand tiers) with RIVER_BUCKETS=200.
+T2.2 changes:
+
+- `RIVER_TIER_SHIFT` (in pkr-core::abstraction) changed 15 -> 13
+  (~1152 hand tiers, 4x finer).
+- `RIVER_BUCKETS` default 200 -> 128 (coarser board texture).
+- Net river keyspace: ~2.5x pre-T2.2.
+- `AbstractionFingerprint.river_tier_shift` now encodes the shift.
+  A pre-T2.2 checkpoint loaded against a post-T2.2 binary is
+  REJECTED (InvalidData) rather than silently mis-hashed.
+
+Also:
+
+- Precompute river default `EHS_SAMPLES` 1000 -> 100.
+  Cuts regen from hours to ~15 min on 6 threads with no
+  measurable change at k=128 (k-means quantisation dominates).
+- New `scripts/T22-runbook.md` documents the eval comparison.
+
+Run: `outputs/v26a/` (200M iters, evals every 20M, 6 threads).
+Log: `/tmp/v26a.log`. Compare against v25final (pre-T2.2).
