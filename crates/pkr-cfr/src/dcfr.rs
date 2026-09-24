@@ -186,7 +186,7 @@ fn discount_pos_i64(r: i64, t: u32) -> i64 {
     let d = (t as u64) * (t as u64) + 1;
     let ru = r as u64;
     let q = ru / d;
-    let ceil = if ru % d != 0 { q + 1 } else { q };
+    let ceil = if !ru.is_multiple_of(d) { q + 1 } else { q };
     (ru - ceil) as i64
 }
 

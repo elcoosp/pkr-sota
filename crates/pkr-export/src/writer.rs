@@ -16,7 +16,7 @@ const K: usize = 6;
 pub(crate) fn quantize_cdf(strat: &[f32; K]) -> [u8; K] {
     let mut out = [0u8; K];
     let total: f32 = strat.iter().sum();
-    if !(total > 0.0) {
+    if total.is_nan() || total <= 0.0 {
         for a in 0..K {
             out[a] = ((((a + 1) as f32) / K as f32) * 255.0).round() as u8;
         }
@@ -137,7 +137,7 @@ mod v4_layout_tests {
         let keys: Vec<u64> = vec![1, 42, 999];
         let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(4);
 
-        write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
+        let _ = write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
 
         let expected = 32 + 48 + 40 + 4 + 4 + 8 * keys.len() + 6 * keys.len();
         let actual = std::fs::metadata(tmp.path()).unwrap().len() as usize;
@@ -159,7 +159,7 @@ mod v4_layout_tests {
         let table = CompactRegretTable::with_capacity(16);
         let keys: Vec<u64> = vec![100];
         let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(7);
-        write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
+        let _ = write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
 
         let bytes = std::fs::read(tmp.path()).unwrap();
         // Fingerprint at offset 32 + 48 = 80, length 40.

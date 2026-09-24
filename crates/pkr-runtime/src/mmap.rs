@@ -1,9 +1,10 @@
 use bytemuck;
 use memmap2::Mmap;
 use pkr_export::header::{
-    FileHeader, FORMAT_VERSION_V2, FORMAT_VERSION_V3, FORMAT_VERSION_V4,
-    HASH_ALGO_FNV1A64_INFOSET,
+    FileHeader, FORMAT_VERSION_V2, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
 };
+#[cfg(test)]
+use pkr_export::header::FORMAT_VERSION_V3;
 use std::fs::File;
 use std::path::Path;
 use thiserror::Error;

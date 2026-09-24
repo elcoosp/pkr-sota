@@ -1403,6 +1403,7 @@ mod invariants_tests {
 
     /// Snapshot the logical game state (excludes undo stack, history
     /// content, cache fields that legitimately differ across undo).
+    #[allow(clippy::type_complexity)]
     fn logical_snapshot(
         s: &GameState,
     ) -> (

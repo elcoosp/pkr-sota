@@ -156,10 +156,8 @@ fn enumerate_counts(
     if rank == 13 {
         if remaining == 0 {
             let key = rank_key(counts);
-            if !map.contains_key(&key) {
-                let best = best_non_flush_rank(counts, mmap);
-                map.insert(key, best);
-            }
+            map.entry(key)
+                .or_insert_with(|| best_non_flush_rank(counts, mmap));
         }
         return;
     }

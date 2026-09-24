@@ -303,7 +303,7 @@ pub fn traverse(
     // ignores the preflop/flop/turn tables entirely.
     let board: &[u8] = &current.board[..current.board_len as usize];
     let street_code = current.street as u8;
-    let infoset_hash = abstraction.get_infoset_hash(hole, board, &history_bytes, street_code);
+    let infoset_hash = abstraction.get_infoset_hash(hole, board, history_bytes, street_code);
 
     let mut strategy = [0.0f32; K];
     let traverser_idx = if acting_player == traverser {
