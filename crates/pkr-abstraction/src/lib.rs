@@ -217,6 +217,7 @@ impl KMeansAbstraction {
         0
     }
 
+    #[inline]
     fn flat_index_preflop(hole: &[u8]) -> usize {
         assert_eq!(hole.len(), 2);
         assert_ne!(hole[0], hole[1]);
@@ -225,6 +226,7 @@ impl KMeansAbstraction {
         choose(cards[0] as u32, 2) as usize + choose(cards[1] as u32, 1) as usize
     }
 
+    #[inline]
     fn flat_index_flop(hole: &[u8], board: &[u8]) -> usize {
         assert_eq!(hole.len(), 2);
         assert_eq!(board.len(), 3);
@@ -262,6 +264,7 @@ impl KMeansAbstraction {
         combo_idx * 10 + mask_idx
     }
 
+    #[inline]
     fn flat_index_turn(hole: &[u8], board: &[u8]) -> usize {
         assert_eq!(hole.len(), 2);
         assert_eq!(board.len(), 4);
@@ -304,6 +307,7 @@ impl KMeansAbstraction {
         (rank as usize) * 15 + mask_idx
     }
 
+    #[inline]
     fn flat_index_river_board(board: &[u8]) -> usize {
         debug_assert_eq!(board.len(), 5);
         let mut sorted = [board[0], board[1], board[2], board[3], board[4]];

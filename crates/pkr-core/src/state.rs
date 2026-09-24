@@ -280,6 +280,7 @@ impl GameState {
     /// bytes (which are 6^32 possibilities) with a compact ~16-bit key,
     /// collapsing the infoset space by orders of magnitude without
     /// changing the legal action space at any node.
+    #[inline]
     pub fn history_signature(&self) -> u32 {
         // C4a: `total_raises` maintained incrementally in
         // apply_action_internal; restored in undo_action. This replaces
@@ -476,6 +477,7 @@ impl GameState {
         false
     }
 
+    #[inline]
     pub fn terminal_payoff(&self, player: usize, evaluator: &dyn Evaluator) -> f32 {
         if self.folded[player] {
             return -self.total_invested[player];
