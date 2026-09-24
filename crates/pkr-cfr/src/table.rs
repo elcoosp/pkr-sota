@@ -2,7 +2,9 @@
 // (crate::dcfr::update_regret_i64). The f32 wrapper is kept for A/B
 // comparison and tests.
 
-use crate::gpu::{BatchItem, GpuState};
+use crate::gpu::BatchItem;
+#[cfg(feature = "gpu")]
+use crate::gpu::GpuState;
 use crate::metrics::LocalMetrics;
 use foldhash::fast::RandomState as FoldHasher;
 use papaya::HashMap as PapayaMap;
@@ -195,6 +197,7 @@ pub struct CompactRegretTable {
     strategy_sum: Vec<AtomicU64>,
     next_idx: AtomicUsize,
     capacity: usize,
+    #[cfg(feature = "gpu")]
     gpu: OnceLock<GpuState>,
 }
 
@@ -244,6 +247,7 @@ impl CompactRegretTable {
             strategy_sum,
             next_idx: AtomicUsize::new(0),
             capacity,
+            #[cfg(feature = "gpu")]
             gpu: OnceLock::new(),
         }
     }
@@ -583,6 +587,7 @@ impl CompactRegretTable {
         (input_len, unique_len)
     }
 
+    #[cfg(feature = "gpu")]
     pub fn flush_gpu_batch(&self, batch: &[BatchItem]) {
         let mut dedup_map: HashMap<(u32, u32), f32> =
             HashMap::with_capacity(batch.len().min(100_000));

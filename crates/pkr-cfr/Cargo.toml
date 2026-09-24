@@ -15,9 +15,9 @@ papaya = { workspace = true }
 foldhash = { workspace = true }
 wgpu = { version = "29.0.3", optional = true }
 bytemuck = { workspace = true }
-pollster = "0.3"
+pollster = { version = "0.3", optional = true }
 
 [features]
 # GPU path is opt-in. Production uses flush_cpu_batch.
 default = []
-gpu = ["wgpu"]
+gpu = ["wgpu", "pollster"]
