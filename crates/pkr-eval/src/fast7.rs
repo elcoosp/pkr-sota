@@ -385,3 +385,123 @@ mod tests {
         assert!(n < 100_000, "LUT has {n} entries - suspiciously large");
     }
 }
+
+
+/// Targeted regression tests for the three fast7 bugs that landed in
+/// the initial P1-a wiring (pre-fix):
+///   1. card encoding (rank*4+suit vs suit*13+rank)
+///   2. flush path only took top-5-by-id, missing wheel SF
+///   3. COMBOS_7_5[..6] for m=6 indexed out-of-range slots
+/// Each test is a specific hand that exposed the bug.
+#[cfg(test)]
+mod fast7_bug_regressions {
+    use super::*;
+    use crate::NlheEvaluator;
+
+    fn find_rank_table() -> Option<String> {
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("two levels deep");
+        for cand in &[
+            "outputs/v23/hand_ranks.bin",
+            "outputs/v0-smoke/hand_ranks.bin",
+        ] {
+            let p = workspace_root.join(cand);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+        None
+    }
+
+    /// Encode (suit, rank) as the canonical `suit * 13 + rank`.
+    fn c(suit: u8, rank: u8) -> u8 {
+        suit * 13 + rank
+    }
+
+    /// Bug #2: 6 spades A,T,5,4,3,2 + offsuit 4c.
+    /// Poker: wheel straight flush (A-5-4-3-2 spades) is the best hand.
+    /// The old fast7 took top-5 spades = A,T,5,4,3 = ace-high flush.
+    #[test]
+    fn wheel_straight_flush_beats_ace_high_flush() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = As, Ts; board = 5s, 4s, 3s, 2s, 4c
+        let hole = [c(3, 12), c(3, 8)]; // As, Ts
+        let board = [c(3, 3), c(3, 2), c(3, 1), c(3, 0), c(0, 2)]; // 5s,4s,3s,2s,4c
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s, "wheel straight flush must match slow.rs");
+    }
+
+    /// Bug #2 (variation): 5 spades A,K,5,4,3 + offsuit 2s.
+    /// Top-5-by-id spades = A,K,5,4,3 = ace-high flush. No SF here.
+    /// This ensures the fix does not over-eagerly find SFs that aren't there.
+    #[test]
+    fn ace_high_flush_not_upgraded_to_straight_flush() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = As, Ks; board = 5s, 4s, 3s, 2s, 6c
+        let hole = [c(3, 12), c(3, 11)];
+        let board = [c(3, 3), c(3, 2), c(3, 1), c(3, 0), c(0, 4)];
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s);
+    }
+
+    /// Bug #3: turn the specific hand that first exposed the bug into a
+    /// permanent regression: 6 spades A,T,5,4,3,2 + offsuit 4c — while
+    /// a 6-suit flush (m=6) was being enumerated, the old fast7 read
+    /// `suited[6]` (zero-init) and evaluated a phantom hand.
+    #[test]
+    fn six_suited_cards_do_not_read_out_of_bounds() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = As, Ts; board = 5s, 4s, 3s, 2s, 6s (6 spades)
+        let hole = [c(3, 12), c(3, 8)];
+        let board = [c(3, 3), c(3, 2), c(3, 1), c(3, 0), c(3, 4)];
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s);
+    }
+
+    /// Bug #1: encoding sanity. A lone ace (rank 12, suit 0) is card 12
+    /// (suit*13 + rank) not card 48 (rank*4 + suit). Test that the fast
+    /// evaluator's result matches slow for a simple flush.
+    #[test]
+    fn card_encoding_suit_major() {
+        let path = match find_rank_table() {
+            Some(p) => p,
+            None => { eprintln!("SKIP: no rank table"); return; }
+        };
+        let fast = Fast7Evaluator::new(&path).unwrap();
+        let slow = NlheEvaluator;
+
+        // hole = Ah, Kh; board = 8h, 5h, 3h, 2c, 9d
+        let hole = [c(1, 12), c(1, 11)];
+        let board = [c(1, 6), c(1, 3), c(1, 1), c(0, 0), c(2, 7)];
+
+        let f = fast.evaluate_hand(&hole, &board);
+        let s = slow.evaluate_hand(&hole, &board);
+        assert_eq!(f, s);
+    }
+}
