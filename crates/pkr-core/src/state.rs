@@ -43,7 +43,7 @@ pub enum ActionKind {
     Bet(f32),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Action {
     pub player: usize,
     pub kind: ActionKind,
@@ -1651,5 +1651,96 @@ mod invariants_tests {
                 a.kind
             );
         }
+    }
+}
+
+/// B7: `legal_actions()` and `legal_actions_into()` must agree exactly.
+/// Guards the single-source-of-truth refactor: if the allocating wrapper
+/// ever diverges from the training path, the fuzz harness silently stops
+/// validating the code the trainer runs.
+#[cfg(test)]
+mod b7_single_source_tests {
+    use super::*;
+
+    fn fresh_state() -> GameState {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.set_hole_cards([0, 1], [2, 3]);
+        s
+    }
+
+    #[test]
+    fn legal_actions_matches_legal_actions_into_at_start() {
+        let s = fresh_state();
+        let a = s.legal_actions();
+        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        assert_eq!(a.len(), n, "counts differ: alloc={} into={}", a.len(), n);
+        for i in 0..n {
+            assert_eq!(a[i], buf[i], "action {i} differs");
+        }
+    }
+
+    #[test]
+    fn legal_actions_matches_legal_actions_into_after_raises() {
+        // Drive several raises to exercise the MAX_RAISES_PER_STREET cap.
+        let mut s = fresh_state();
+        for _ in 0..5 {
+            if s.is_terminal() {
+                break;
+            }
+            let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let n = s.legal_actions_into(&mut buf);
+            if n == 0 {
+                break;
+            }
+            // Pick the most aggressive legal action each iteration.
+            let mut pick = 0usize;
+            for (i, a) in buf[..n].iter().enumerate() {
+                if let ActionKind::Bet(_) = a.kind {
+                    pick = i;
+                }
+            }
+            s.apply_action_in_place(&buf[pick]);
+            let a = s.legal_actions();
+            let mut buf2 = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let n2 = s.legal_actions_into(&mut buf2);
+            assert_eq!(a.len(), n2);
+            for i in 0..n2 {
+                assert_eq!(a[i], buf2[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn legal_actions_carries_raise_cap() {
+        // After 3 raises this street, no more Bet should be offered.
+        let mut s = fresh_state();
+        let mut raises = 0u32;
+        while raises < 3 && !s.is_terminal() {
+            let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+            let n = s.legal_actions_into(&mut buf);
+            let mut bet_idx: Option<usize> = None;
+            for (i, a) in buf[..n].iter().enumerate() {
+                if let ActionKind::Bet(_) = a.kind {
+                    bet_idx = Some(i);
+                    break;
+                }
+            }
+            match bet_idx {
+                Some(i) => {
+                    s.apply_action_in_place(&buf[i]);
+                    raises += 1;
+                }
+                None => break,
+            }
+        }
+        // Now the current street should have zero Bet actions in the offered set.
+        let a = s.legal_actions();
+        let bets = a.iter().filter(|x| matches!(x.kind, ActionKind::Bet(_))).count();
+        assert_eq!(
+            bets, 0,
+            "raise cap not honored by legal_actions: {:?}",
+            a.iter().map(|x| x.kind).collect::<Vec<_>>()
+        );
     }
 }
