@@ -455,3 +455,44 @@ mod integer_discount_tests {
         assert!(r < i64::MAX);
     }
 }
+
+#[cfg(test)]
+mod saturation_tests {
+    use super::*;
+
+    /// A3: an over-i64 add must saturate, not wrap or panic.
+    #[test]
+    fn update_regret_saturates_at_i64_max() {
+        // discount_pos(i64::MAX, 1e6) is just under i64::MAX, so adding
+        // ~i64::MAX/2 necessarily exceeds i64::MAX; the add must saturate.
+        let (r, _) = update_regret_i64_mode(
+            i64::MAX,
+            0,
+            1_000_000,
+            i64::MAX / 2 + 1,
+            false,
+        );
+        assert_eq!(r, i64::MAX);
+    }
+
+    /// A3: negative extreme clamps at 0 (regret floors at 0, not i64::MIN).
+    #[test]
+    fn update_regret_floors_at_zero() {
+        let (r, _) = update_regret_i64_mode(
+            0,
+            0,
+            1_000_000,
+            i64::MIN / 2,
+            false,
+        );
+        assert_eq!(r, 0);
+    }
+
+    /// A3: warmup (t < TAU) is identity on `current_i64`; result is max(0, cur+delta).
+    #[test]
+    fn update_regret_warmup_is_plain_add() {
+        let (r, m) = update_regret_i64_mode(1_000, 0, 3, 250, false);
+        assert_eq!(r, 1_250);
+        assert_eq!(m, 250); // momentum field = delta during warmup
+    }
+}

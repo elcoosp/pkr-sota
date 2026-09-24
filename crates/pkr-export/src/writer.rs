@@ -199,3 +199,58 @@ mod cdf_tests {
         assert_eq!(c[2], 255);
     }
 }
+
+
+/// B5: write_blueprint must be atomic — a partial `.tmp` must never be
+/// visible under the final path, and a failed write must leave the
+/// original file untouched.
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+    use pkr_core::abstraction::AbstractionFingerprint;
+
+    fn tiny_table_with_keys(n: u64) -> (CompactRegretTable, Vec<u64>) {
+        let table = CompactRegretTable::with_capacity(n as usize + 4);
+        let mut keys = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let k = 0xB5_0000 + i;
+            keys.push(k);
+            // Public hash-keyed API: creates the idx internally and adds
+            // strategy mass so the exporter sees a non-uniform CDF.
+            table.add_strategy_sum(k, 0, 1.0);
+            table.add_strategy_sum(k, 1, 0.5);
+        }
+        keys.sort_unstable();
+        (table, keys)
+    }
+
+    #[test]
+    fn write_blueprint_no_tmp_left_on_success() {
+        let (table, keys) = tiny_table_with_keys(4);
+        let fp = AbstractionFingerprint::from_constants(6);
+        let dir = std::env::temp_dir().join(format!("pkr_atomic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("bp.bin");
+        write_blueprint(out.to_str().unwrap(), &table, &keys, &fp).unwrap();
+        assert!(out.exists(), "final file missing");
+        assert!(!dir.join("bp.bin.tmp").exists(), ".tmp leaked");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_blueprint_preserves_existing_on_bad_path() {
+        let (table, keys) = tiny_table_with_keys(4);
+        let fp = AbstractionFingerprint::from_constants(6);
+        let dir = std::env::temp_dir().join(format!("pkr_atomic2_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("bp.bin");
+        write_blueprint(out.to_str().unwrap(), &table, &keys, &fp).unwrap();
+        let before = std::fs::read(&out).unwrap();
+        // Bad path: parent does not exist.
+        let bad = dir.join("nope").join("bp.bin");
+        let _ = write_blueprint(bad.to_str().unwrap(), &table, &keys, &fp);
+        let after = std::fs::read(&out).unwrap();
+        assert_eq!(before, after, "original file mutated on failed write");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

@@ -722,4 +722,22 @@ mod tests {
         assert_eq!(hit[3], 0);
         assert_eq!(hit[5], 0);
     }
+
+
+    // ---- E3: forced-move node helper ----
+    #[test]
+    fn skip_forced_nodes_reads_env_off_by_default() {
+        // Note: skip_forced_nodes() uses a OnceLock; this test only
+        // asserts the default is "off" when the env var is not set.
+        // The env var is not modified here because OnceLock caches on
+        // first call and would poison later tests in this binary.
+        if std::env::var("PKR_SKIP_FORCED").is_ok() {
+            eprintln!("SKIP: PKR_SKIP_FORCED is set in the test env");
+            return;
+        }
+        // Fresh process default: off.
+        // (OnceLock means we can't call this twice with different env.)
+        assert!(!skip_forced_nodes(), "default must be false");
+    }
+
 }
