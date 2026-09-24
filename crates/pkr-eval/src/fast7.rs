@@ -99,29 +99,50 @@ impl Evaluator for Fast7Evaluator {
 
         // At most one suit can have >= 5 cards in a 7-card hand, so break
         // after the first match.
+        //
+        // NOTE: taking the top-5-by-card-id gives the best FLUSH, but the
+        // best FLUSH-or-STRAIGHT-FLUSH may be a different 5-card subset
+        // of the suited cards (e.g. spades A T 5 4 3 2 -> the top-5 by id
+        // is the Ace-high flush, but A 5 4 3 2 is a wheel straight flush,
+        // which is a strictly stronger hand). Enumerate every C(m,5)
+        // subset of the suited cards and take the min (best) LUT rank.
         for s in 0..4u8 {
             if suit_counts[s as usize] < 5 {
                 continue;
             }
-            let mut flush_cards = [0u8; 7];
+            let mut suited = [0u8; 7];
             let mut m = 0usize;
             for i in 0..n {
                 if (cards[i] / 13) == s {
-                    flush_cards[m] = cards[i];
+                    suited[m] = cards[i];
                     m += 1;
                 }
             }
-            flush_cards[..m].sort_unstable_by(|a, b| b.cmp(a));
-            let top5 = [
-                flush_cards[0],
-                flush_cards[1],
-                flush_cards[2],
-                flush_cards[3],
-                flush_cards[4],
+            // m in 5..=7; sort descending so subset indices preserve order.
+            suited[..m].sort_unstable_by(|a, b| b.cmp(a));
+
+            // 5-card-subsets of m by index; reused pattern from slow.rs.
+            const COMBOS_7_5: [[u8; 5]; 21] = [
+                [0,1,2,3,4],[0,1,2,3,5],[0,1,2,3,6],[0,1,2,4,5],[0,1,2,4,6],[0,1,2,5,6],
+                [0,1,3,4,5],[0,1,3,4,6],[0,1,3,5,6],[0,1,4,5,6],[0,2,3,4,5],[0,2,3,4,6],
+                [0,2,3,5,6],[0,2,4,5,6],[0,3,4,5,6],[1,2,3,4,5],[1,2,3,4,6],[1,2,3,5,6],
+                [1,2,4,5,6],[1,3,4,5,6],[2,3,4,5,6],
             ];
-            let flush_rank = self.lut_rank(&top5);
-            if flush_rank < best {
-                best = flush_rank;
+            // COMBOS_7_5 assumes 7 slots. For m=6, entries referencing
+            // index 6 must be skipped (they would read zero-initialized
+            // slots and duplicate cards). Filter by index < m.
+            for combo in COMBOS_7_5.iter() {
+                if combo.iter().any(|&i| (i as usize) >= m) {
+                    continue;
+                }
+                let mut sel = [0u8; 5];
+                for (j, &ci) in combo.iter().enumerate() {
+                    sel[j] = suited[ci as usize];
+                }
+                let r = self.lut_rank(&sel);
+                if r < best {
+                    best = r;
+                }
             }
             break;
         }
@@ -217,7 +238,9 @@ fn eval_5_avoid_flush(sel: &[u8; 5], mmap: &Mmap) -> u32 {
     // two cards share any suit, so the resulting hand cannot form a flush.
     for i in 0..5 {
         let suit = (i as u8) & 3;
-        cards[i] = sel[i] * 13 + suit;
+        // Canonical encoding (matches slow.rs and hand_ranks.bin):
+        // card = suit * 13 + rank.
+        cards[i] = suit * 13 + sel[i];
     }
     cards.sort_unstable_by(|a, b| b.cmp(a));
     let idx = combinadic_rank(&cards) as usize;
