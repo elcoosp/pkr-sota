@@ -194,6 +194,21 @@ fn export_blueprint(
 }
 
 
+/// True when the eval should fire at the current iteration.
+///
+/// Fires on the regular schedule (done advanced by >= eval_every since
+/// the last eval) AND on the final iteration. The final-iteration case
+/// matters because `done` advances in `iters_per_sync` batches, so the
+/// observed `last_eval_iter` can be a few hundred iters past the
+/// theoretical multiple; without this clause, a run that stops exactly
+/// at `max_iters` loses its final data point entirely (v23a bug: 5M
+/// run with eval_every=2.5M only produced the 2.5M row).
+#[inline]
+fn should_eval(done: u32, last_eval_iter: u32, eval_every: u32, max_iters: u32) -> bool {
+    eval_every > 0
+        && (done >= last_eval_iter.saturating_add(eval_every) || done == max_iters)
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
@@ -579,7 +594,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Sampled best-response exploitability check.
             // Fire when done has advanced by at least eval_every since the
             // last eval (done increments by ITERS_PER_SYNC, not by 1).
-            if cli.eval_every > 0 && done >= last_eval_iter.saturating_add(cli.eval_every) {
+            if should_eval(done, last_eval_iter, cli.eval_every, max_iters) {
                 let br = pkr_exploit::best_response::sampled_exploitability(
                     trainer.get_table(),
                     abstraction_for_eval.as_ref(),
@@ -836,4 +851,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod should_eval_tests {
+    use super::should_eval;
+
+    #[test]
+    fn fires_on_regular_schedule() {
+        assert!(should_eval(5_000_000, 0, 5_000_000, 20_000_000));
+        assert!(should_eval(10_000_000, 5_000_000, 5_000_000, 20_000_000));
+    }
+
+    #[test]
+    fn does_not_fire_early() {
+        assert!(!should_eval(4_999_999, 0, 5_000_000, 20_000_000));
+        assert!(!should_eval(9_999_999, 5_000_000, 5_000_000, 20_000_000));
+    }
+
+    #[test]
+    fn fires_on_final_iteration_even_if_batch_misaligned() {
+        // Reproduces the v23a bug: eval fired at 2_501_120 (a multiple of 512),
+        // so last_eval_iter=2_501_120 and the next threshold is 5_001_120,
+        // but the run stops at max_iters=5_000_000.
+        assert!(should_eval(5_000_000, 2_501_120, 2_500_000, 5_000_000));
+    }
+
+    #[test]
+    fn disabled_when_eval_every_is_zero() {
+        assert!(!should_eval(5_000_000, 0, 0, 20_000_000));
+        assert!(!should_eval(20_000_000, 0, 0, 20_000_000));
+    }
+
+    #[test]
+    fn fires_at_very_first_iteration_when_max_is_zero() {
+        // Degenerate; must not panic.
+        assert!(!should_eval(0, 0, 0, 0));
+    }
 }
