@@ -37,6 +37,30 @@ benches/*/target/criterion
 
 # other-agent scratch file (not ours)
 # other-agent scratch file (not ours)
-worklog.md
-worklog.md
 .env
+
+# local scratch scripts
+wr*.sh
+==================================================
+=== Push race: harmless, already synced
+==================================================
+
+  d84f859 is on origin/main. The rejected-push message was
+  a race with the other agent pushing the same ref.
+  Nothing to fix.
+
+==================================================
+=== Precompute + watcher status (read-only)
+==================================================
+  river_buckets: not yet
+
+==================================================
+=== Clean up the wr1.sh scratch file
+==================================================
+
+  wr1.sh is user scratch (like wr.sh). Don't commit;
+  add to .gitignore so future git status is clean.
+
+
+# local scratch scripts
+wr*.sh
