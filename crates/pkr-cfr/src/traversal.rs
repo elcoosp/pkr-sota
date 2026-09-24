@@ -28,6 +28,35 @@ const MAX_DEPTH: u32 = 50;
 /// reachability. EPSILON=0.05 keeps the sampled distribution close to the
 /// intended strategy while ensuring every legal action has nonzero
 /// probability. Override via PKR_EXPLORE_EPSILON for A/B testing.
+/// PKR_AVG_POWER=p -> strategy-sum weight t^p (0 = uniform, 1 = linear, 2 = DCFR gamma).
+/// Default 0 reproduces the current behaviour exactly.
+fn avg_weight_power() -> f32 {
+    use std::sync::OnceLock;
+    static P: OnceLock<f32> = OnceLock::new();
+    *P.get_or_init(|| {
+        std::env::var("PKR_AVG_POWER")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|p| (0.0..=4.0).contains(p))
+            .unwrap_or(0.0)
+    })
+}
+
+#[inline]
+fn avg_weight(t: u32) -> f32 {
+    let p = avg_weight_power();
+    if p == 0.0 {
+        1.0
+    } else if p == 1.0 {
+        t as f32
+    } else if p == 2.0 {
+        let x = t as f32;
+        x * x
+    } else {
+        (t as f32).powf(p)
+    }
+}
+
 fn exploration_epsilon() -> f32 {
     use std::sync::OnceLock;
     static E: OnceLock<f32> = OnceLock::new();
@@ -264,6 +293,7 @@ pub fn traverse(
     }
 
     if let Some(idx) = traverser_idx {
+        let w_avg = avg_weight(global_iteration);
         for a in 0..K {
             if strategy[a] <= 0.0 {
                 continue;
@@ -271,7 +301,7 @@ pub fn traverse(
             strategy_batch.push(StrategyOp {
                 index: idx as u32,
                 action: a as u8,
-                prob: strategy[a] * reach_prob,
+                prob: strategy[a] * reach_prob * w_avg,
             });
         }
     }
