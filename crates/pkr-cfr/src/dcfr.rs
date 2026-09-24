@@ -197,6 +197,62 @@ pub struct DcfrStep {
     pub identity: bool,
 }
 
+/// Schedule lookup. Returns `(alpha, beta, gamma)` for a given
+/// progress fraction `t/T` under HS-DCFR. Default = fixed (1.5, 0, 2).
+/// When `PKR_HS_DCFR=1`, alpha anneals 2.0 -> 1.5 and gamma 2.0 -> 1.0
+/// over the training horizon. See docs/experiments/sota-ab-plan.md.
+#[inline]
+fn hs_dcfr_enabled() -> bool {
+    use std::sync::OnceLock;
+    static E: OnceLock<bool> = OnceLock::new();
+    *E.get_or_init(|| std::env::var("PKR_HS_DCFR").as_deref() == Ok("1"))
+}
+
+/// Schedule for `alpha` at training progress `p in [0, 1]`.
+/// HS mode:   2.0 -> 1.5 (anneal)
+/// Default:   fixed 1.5 (DCFR canonical)
+#[inline]
+fn schedule_alpha(p: f64) -> f64 {
+    if hs_dcfr_enabled() {
+        2.0 - 0.5 * p
+    } else {
+        ALPHA as f64
+    }
+}
+
+/// Schedule for `gamma` (average-strategy weight exponent).
+/// HS mode:   2.0 -> 1.0
+/// Default:   fixed 2.0 (via PKR_AVG_POWER=2)
+///
+/// NOT yet plumbed into `traversal.rs::avg_weight`; that's a follow-up
+/// once HS-DCFR alpha shows promise in the A/B.
+#[allow(dead_code)]
+#[inline]
+fn schedule_gamma(p: f64) -> f64 {
+    if hs_dcfr_enabled() {
+        2.0 - 1.0 * p
+    } else {
+        GAMMA as f64
+    }
+}
+
+/// Wrapper used by `dcfr_step` when HS mode is on. `total_iterations`
+/// is read from `PKR_HS_DCFR_TOTAL` (set by the trainer from
+/// `--iterations`). If unset, falls back to 200M.
+#[inline]
+fn hs_progress(iteration: u32) -> f64 {
+    use std::sync::OnceLock;
+    static T: OnceLock<f64> = OnceLock::new();
+    let total = *T.get_or_init(|| {
+        std::env::var("PKR_HS_DCFR_TOTAL")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|&v| v > 0.0)
+            .unwrap_or(200_000_000.0)
+    });
+    (iteration as f64 / total).clamp(0.0, 1.0)
+}
+
 #[inline]
 pub fn dcfr_step(iteration: u32) -> DcfrStep {
     // Only t == 0 is the identity case (matches the original
@@ -214,7 +270,9 @@ pub fn dcfr_step(iteration: u32) -> DcfrStep {
         return DcfrStep { w_pos: 1.0, w_neg: 1.0, gamma, identity: false };
     }
     let t = iteration as f64;
-    let tp = t.powf(ALPHA as f64);
+    let p = hs_progress(iteration);
+    let alpha = schedule_alpha(p);
+    let tp = t.powf(alpha);
     let tn = t.powf(BETA as f64);
     let w_pos = tp / (tp + 1.0);
     let w_neg = tn / (tn + 1.0);
