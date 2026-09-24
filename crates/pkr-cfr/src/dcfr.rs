@@ -155,8 +155,13 @@ pub fn strategy_sum_discount_factor(t: f32) -> f32 {
 // integer p ∈ {0, 1, 2}, then apply it with i128 arithmetic on the i64
 // regret accumulator. No f32 anywhere in the discount path.
 //
-// α=1.5 is the DCFR paper's default but is irrational. Per the paper,
-// any α ∈ [1, 2] gives similar results; we round to 2 which is exact.
+// NOTE (2026-09-24): The production regret update no longer uses
+// `discount_num_den`. It computes `t^α/(t^α + 1)` in f64 (see
+// `dcfr_step` above) and applies the result as a single i64 multiply.
+// This is required because the DCFR paper's recommended α=1.5 is
+// irrational; the old integer path rounded to α=2 which is NOT the
+// paper's default. `discount_num_den` is kept for the reference test
+// in `fast_path_equivalence`.
 
 /// Exact discount factor w_p(t) = t^p / (t^p + 1) as a rational num/den.
 /// Returns (1, 1) during warmup (t < TAU).
@@ -175,14 +180,89 @@ pub fn discount_num_den(t: u32, p: u32) -> (i128, i128) {
     (tp, tp + 1)
 }
 
-/// Exact `floor(r * t^2 / (t^2 + 1))` for `r >= 0`, `t >= TAU`; identity for warmup.
+/// Precomputed per-iteration discount constants for the production
+/// update path. All regret groups inside one flush batch share the same
+/// iteration number, so the powf/sqrt evaluations are hoisted out of
+/// the per-group loop.
+///
+/// DCFR paper (Brown & Sandholm 2019) recommends (α, β, γ) = (1.5, 0, 2).
+/// We compute `w_pos = t^1.5 / (t^1.5 + 1)` in f64 (t^1.5 is irrational),
+/// then apply it as a single i64 multiply in the hot path. The old
+/// integer formula computed t²/(t²+1) — that's α=2, not the paper's 1.5.
+#[derive(Debug, Clone, Copy)]
+pub struct DcfrStep {
+    pub w_pos: f64,
+    pub w_neg: f64,
+    pub gamma: f64,
+    pub identity: bool,
+}
+
+#[inline]
+pub fn dcfr_step(iteration: u32) -> DcfrStep {
+    // Only t == 0 is the identity case (matches the original
+    // `update_regret_i64` behaviour: first-ever update returns delta
+    // unmodified). During warmup (0 < t < TAU) the discount is 1.0 and
+    // the standard `r' = max(0, r + delta)` applies.
+    if iteration == 0 {
+        return DcfrStep { w_pos: 1.0, w_neg: 1.0, gamma: 1.0, identity: true };
+    }
+    if iteration < TAU {
+        // Warmup: discount = 1, but gamma (used only by the momentum
+        // path) is still 1/sqrt(t+1) so PCFR+ momentum behaves the same
+        // as the pre-refactor `update_regret_full`.
+        let gamma = 1.0 / ((iteration as f64) + 1.0).sqrt();
+        return DcfrStep { w_pos: 1.0, w_neg: 1.0, gamma, identity: false };
+    }
+    let t = iteration as f64;
+    let tp = t.powf(ALPHA as f64);
+    let tn = t.powf(BETA as f64);
+    let w_pos = tp / (tp + 1.0);
+    let w_neg = tn / (tn + 1.0);
+    // The momentum gamma was used by the (now-disabled) PCFR+ path.
+    // We keep it for API compatibility; production uses PKR_MOMENTUM=0.
+    let gamma = 1.0 / (t + 1.0).sqrt();
+    DcfrStep { w_pos, w_neg, gamma, identity: false }
+}
+
+/// Apply the precomputed discounts. `momentum_on=false` (production)
+/// means `predicted = delta`, matching plain CFR+/DCFR.
+#[inline]
+pub fn update_regret_with_step(
+    current_i64: i64,
+    _prev_momentum_i64: i64,
+    delta_i64: i64,
+    step: &DcfrStep,
+    momentum_on: bool,
+) -> (i64, i64) {
+    if step.identity {
+        return (delta_i64, delta_i64);
+    }
+    let predicted_i64 = if momentum_on {
+        // Not exercised in production; kept for API symmetry.
+        let g = step.gamma;
+        let prev = _prev_momentum_i64 as f64;
+        let d = delta_i64 as f64;
+        ((1.0 - g) * prev + g * d).round() as i64
+    } else {
+        delta_i64
+    };
+    let discounted = if current_i64 >= 0 {
+        (current_i64 as f64 * step.w_pos) as i64
+    } else {
+        (current_i64 as f64 * step.w_neg) as i64
+    };
+    let new_r = discounted.saturating_add(predicted_i64).max(0);
+    (new_r, predicted_i64)
+}
+
+/// Legacy α=2 integer floor, kept for tests and reference comparison.
+#[allow(dead_code)]
 #[inline(always)]
-fn discount_pos_i64(r: i64, t: u32) -> i64 {
+fn discount_pos_i64_alpha2(r: i64, t: u32) -> i64 {
     debug_assert!(r >= 0);
     if t < TAU || r == 0 {
         return r;
     }
-    // (2^32 - 1)^2 + 1 < 2^64: no overflow for any u32 t.
     let d = (t as u64) * (t as u64) + 1;
     let ru = r as u64;
     let q = ru / d;
@@ -191,6 +271,9 @@ fn discount_pos_i64(r: i64, t: u32) -> i64 {
 }
 
 /// β = 0 discount for negative regret: exactly 1/2 (truncated toward zero).
+/// Superseded by `dcfr_step().w_neg` in the production path; kept for
+/// the equivalence test.
+#[allow(dead_code)]
 #[inline(always)]
 fn discount_neg_i64(r: i64, t: u32) -> i64 {
     if t < TAU {
@@ -214,23 +297,8 @@ pub fn update_regret_i64_mode(
     delta_i64: i64,
     momentum_on: bool,
 ) -> (i64, i64) {
-    let t = iteration;
-    if t == 0 {
-        return (delta_i64, delta_i64);
-    }
-    let predicted_i64 = if momentum_on {
-        let gamma = 1.0 / ((t as f64) + 1.0).sqrt();
-        ((1.0 - gamma) * (prev_momentum_i64 as f64) + gamma * (delta_i64 as f64)).round() as i64
-    } else {
-        delta_i64
-    };
-    let discounted = if current_i64 >= 0 {
-        discount_pos_i64(current_i64, t)
-    } else {
-        discount_neg_i64(current_i64, t)
-    };
-    let new_r = discounted.saturating_add(predicted_i64).max(0);
-    (new_r, predicted_i64)
+    let step = dcfr_step(iteration);
+    update_regret_with_step(current_i64, prev_momentum_i64, delta_i64, &step, momentum_on)
 }
 
 /// Production entry point (momentum on).
