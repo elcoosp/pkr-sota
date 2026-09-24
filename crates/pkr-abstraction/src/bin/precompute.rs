@@ -132,8 +132,12 @@ fn main() {
             // (the 10-dim histogram is smooth) at ~1/10 the cost.
             // Respect an explicit EHS_SAMPLES env if the caller set one.
             if std::env::var("EHS_SAMPLES").is_err() {
-                std::env::set_var("EHS_SAMPLES", "100");
-                println!("  (river default EHS_SAMPLES=100; override with env)");
+                std::env::set_var("EHS_SAMPLES", "30");
+                println!("  (river default EHS_SAMPLES=30; override with env)");
+            }
+            if std::env::var("RIVER_OUTER_SAMPLES").is_err() {
+                std::env::set_var("RIVER_OUTER_SAMPLES", "50");
+                println!("  (river default RIVER_OUTER_SAMPLES=50; override with env)");
             }
             let _ = generate_river_buckets(k, rank_table_path, output);
             println!("Done.");
@@ -620,7 +624,15 @@ fn generate_river_buckets(
                     d_idx += 1;
                 }
             }
-            for _ in 0..200 {
+            // Outer MC loop count. Was hardcoded at 200; now env-driven
+            // because 200x EHS_SAMPLES is massive overkill for the k-means
+            // quantization at k <= 255. Each outer sample contributes one
+            // histogram count; 50 samples give <5% centroid drift at k=128.
+            let outer: usize = std::env::var("RIVER_OUTER_SAMPLES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50);
+            for _ in 0..outer {
                 // Distinct, uniform hole cards (audit F12) — see flop path.
                 let a = rng.random_range(0..47);
                 let b = rng.random_range(1..47);
