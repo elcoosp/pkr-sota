@@ -130,16 +130,17 @@ pub fn save_centroids_6d(
     Ok(())
 }
 
-/// Card encoding convention (confirmed by `flat_index_preflop` tests):
-/// `card = rank * 4 + suit`, with `rank in 0..=12` (0 = deuce, 12 = ace)
-/// and `suit in 0..=3`. Golden vector: `[48, 49]` decodes to A-spades /
-/// A-hearts, i.e. the hand "AA".
+/// Card encoding convention: `card = suit * 13 + rank`, with
+/// `rank in 0..=12` (0 = deuce, 12 = ace) and `suit in 0..=3`. This is
+/// the layout `combinadic_unrank_2` produces (per the 2026-09-25 session
+/// handoff: "returns cards in `suit*13 + rank` format, sorted
+/// descending"). `rank = c % 13`, `suit = c / 13`.
 fn card_rank(card: u8) -> u8 {
-    card / 4
+    card % 13
 }
 
 fn card_suit(card: u8) -> u8 {
-    card % 4
+    card / 13
 }
 
 /// Four hand-structure features for the 6D preflop feature space.
@@ -1108,52 +1109,57 @@ mod rich_features_tests {
     use super::*;
 
     #[test]
-    fn card_encoding_is_rank4_plus_suit() {
-        // Golden vector from the existing hash test: [48, 49] is AA.
-        assert_eq!(card_rank(48), 12);
-        assert_eq!(card_rank(49), 12);
-        assert_ne!(card_suit(48), card_suit(49));
-        assert_eq!(card_rank(0), 0);
-        assert_eq!(card_rank(4), 1);
-        assert_eq!(card_suit(4), 0);
-        assert_eq!(card_suit(7), 3);
+    fn card_encoding_is_suit13_plus_rank() {
+        // Encoding: card = suit * 13 + rank. rank in 0..=12 (0=2, 12=A),
+        // suit in 0..=3.
+        assert_eq!(card_rank(0), 0);   // deuce of suit 0
+        assert_eq!(card_rank(12), 12); // ace of suit 0
+        assert_eq!(card_rank(13), 0);  // deuce of suit 1
+        assert_eq!(card_suit(0), 0);
+        assert_eq!(card_suit(12), 0);
+        assert_eq!(card_suit(13), 1);
+        assert_eq!(card_suit(51), 3);
+
+        // AKs: ace (rank 12, suit 0) = 12, king (rank 11, suit 0) = 11.
+        assert_eq!(card_rank(12), 12);
+        assert_eq!(card_rank(11), 11);
+        assert_eq!(card_suit(12), card_suit(11));
     }
 
     #[test]
     fn hand_structure_features_bounds() {
-        // AA = two aces, different suits (a pair can never be suited).
-        let aa = hand_structure_features(&[48, 49]);
-        assert!((aa[0] - 1.0).abs() < 1e-6);
-        assert!((aa[1] - 1.0).abs() < 1e-6);
-        assert_eq!(aa[2], 0.0); // pair -> never suited
+        // Encoding: card = suit * 13 + rank, rank 0..=12 (0=2, 12=A).
+
+        // AA: ace of suit 0 (=12) and ace of suit 1 (=25). Different suits.
+        let aa = hand_structure_features(&[12, 25]);
+        assert!((aa[0] - 1.0).abs() < 1e-6); // rank_high = 12/12
+        assert!((aa[1] - 1.0).abs() < 1e-6); // rank_low = 12/12
+        assert_eq!(aa[2], 0.0); // different suits -> offsuit
         assert_eq!(aa[3], 1.0); // gap 0 -> connector
 
-        // AKs: ace (rank 12) + king (rank 11), same suit 0.
-        // ace-spades = 12*4+0 = 48, king-spades = 11*4+0 = 44.
-        let aks = hand_structure_features(&[48, 44]);
-        assert!((aks[0] - 1.0).abs() < 1e-6);
-        assert!((aks[1] - 11.0 / 12.0).abs() < 1e-6);
-        assert_eq!(aks[2], 1.0);
+        // AKs: ace (12) + king (11), both suit 0.
+        let aks = hand_structure_features(&[12, 11]);
+        assert!((aks[0] - 1.0).abs() < 1e-6);          // rank_high = 12/12
+        assert!((aks[1] - 11.0 / 12.0).abs() < 1e-6);  // rank_low = 11/12
+        assert_eq!(aks[2], 1.0); // suited
         assert_eq!(aks[3], 1.0); // gap 1 -> connector
 
-        // 7-2 offsuit: seven (rank 5, suit 0) + deuce (rank 0, suit 1).
-        // seven-spades = 5*4+0 = 20, deuce-hearts = 0*4+1 = 1.
-        let seven_two_offsuit = hand_structure_features(&[20, 1]);
+        // 7-2 offsuit: seven (rank 5, suit 0) = 5, deuce (rank 0, suit 1) = 13.
+        let seven_two_offsuit = hand_structure_features(&[5, 13]);
         assert!((seven_two_offsuit[0] - 5.0 / 12.0).abs() < 1e-6);
         assert!((seven_two_offsuit[1] - 0.0).abs() < 1e-6);
-        assert_eq!(seven_two_offsuit[2], 0.0);
+        assert_eq!(seven_two_offsuit[2], 0.0); // offsuit
         assert_eq!(seven_two_offsuit[3], 0.0); // gap 5 -> no connector
 
-        // 5-3 suited (one-gapper): five (rank 3, suit 0) + three (rank 1, suit 0).
-        // five-spades = 3*4+0 = 12, three-spades = 1*4+0 = 4.
-        let five_three_suited = hand_structure_features(&[12, 4]);
-        assert_eq!(five_three_suited[2], 1.0);
-        assert_eq!(five_three_suited[3], 1.0); // gap 2 is inside
+        // 5-3 suited (one-gapper): five (rank 3, suit 0) = 3, three (rank 1, suit 0) = 1.
+        let five_three_suited = hand_structure_features(&[3, 1]);
+        assert_eq!(five_three_suited[2], 1.0); // suited
+        assert_eq!(five_three_suited[3], 1.0); // gap 2 -> inside
 
-        // 5-2 suited (two-gapper): five (rank 3, suit 0) + deuce (rank 0, suit 0).
-        let five_two_suited = hand_structure_features(&[12, 0]);
-        assert_eq!(five_two_suited[2], 1.0);
-        assert_eq!(five_two_suited[3], 0.0); // gap 3 is outside
+        // 5-2 suited (two-gapper): five (rank 3, suit 0) = 3, deuce (rank 0, suit 0) = 0.
+        let five_two_suited = hand_structure_features(&[3, 0]);
+        assert_eq!(five_two_suited[2], 1.0); // suited
+        assert_eq!(five_two_suited[3], 0.0); // gap 3 -> outside
     }
 
     #[test]
