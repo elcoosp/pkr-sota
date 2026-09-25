@@ -11,7 +11,15 @@ use pkr_contracts::Evaluator;
 ///
 /// Default: OFF. The v2 helpers are landed and tested but not wired
 /// into the traverser, so this commit is a no-op for training.
-pub const SIG_V2_STREET_MONEY: bool = false;
+/// SOTA signature v2: include SPR and last-bet-fraction bucket in the
+/// infoset hash, so "facing 0.5x pot" is a different infoset than
+/// "facing 2x pot", and short-stack play differs from deep-stack play.
+///
+/// ENABLED 2026-09-25. Previous sessions had this off (v1 signature),
+/// which collapsed those dimensions and forced the model to average
+/// over strategically distinct situations. The fingerprint captures
+/// this via `sig_version`, so old checkpoints are rejected on load.
+pub const SIG_V2_STREET_MONEY: bool = true;
 
 /// Version tag stored in bits 60..64 of `history_signature_v2()`.
 pub const SIG_V2_VERSION: u64 = 2;
