@@ -642,20 +642,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // E1: promotion gate. Reject a checkpoint whose exploitability
-                // is worse than the running best by more than --promote-gate.
-                // C3: gate must exceed measurement noise, else we chase winner's-curse minima.
-                let gate = cli.promote_gate.max(2.0 * br.expl_std_err_mbb);
+                // Promote ONLY on a new historical minimum. The old logic
+                // allowed a sliding upward gate (`best + gate` where best
+                // was the LAST accepted reading): once a worse reading
+                // entered the accept window, `best` updated to that worse
+                // value and the next accept threshold climbed further.
+                // That is how v25final shipped the 200M reading (6257 mbb)
+                // instead of the 120M floor (5450 mbb).
+                //
+                // The C3 "gate must exceed measurement noise" concern is
+                // still respected by the caller: when best is unset, we
+                // accept unconditionally; when best is set, we require
+                // strictly better (any improvement counts, but the sliding
+                // threshold is gone). For winner's-curse protection we
+                // keep `promote_gate` as a *significance* margin that the
+                // improvement must clear.
+                let min_improvement = cli.promote_gate.max(0.0);
                 let rejected = match best_expl_mbb {
-                    Some(b) => br.exploitability_mbb > b + gate,
+                    Some(b) => br.exploitability_mbb >= b - min_improvement,
                     None => false,
                 };
                 if rejected {
                     eprintln!(
-                        "SKIP-PROMOTE iter={} expl_mbb={:.2} worse than best {:.2} + gate {:.2}",
+                        "SKIP-PROMOTE iter={} expl_mbb={:.2} not a new minimum (best {:.2}, need < {:.2})",
                         done,
                         br.exploitability_mbb,
                         best_expl_mbb.unwrap_or(0.0),
-                        cli.promote_gate,
+                        best_expl_mbb.map(|b| b - min_improvement).unwrap_or(0.0),
                     );
                 } else {
                     // Export the current table as the promoted blueprint.
