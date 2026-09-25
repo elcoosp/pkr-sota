@@ -682,6 +682,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 cli.output.display(),
                                 n,
                             );
+                            // Defensive: also write a "best-ever" copy. If a
+                            // later run or a bug overwrites `cli.output`,
+                            // `best.bin` remains the historical minimum.
+                            let best_path = cli.output.with_file_name(format!(
+                                "{}.best.bin",
+                                cli.output
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("blueprint")
+                            ));
+                            if let Err(e) = export_blueprint(
+                                &trainer,
+                                &best_path,
+                                cli.min_visits,
+                                &fingerprint,
+                            ) {
+                                eprintln!(
+                                    "WARNING: best-blueprint export failed at iter {done}: {e}"
+                                );
+                            } else {
+                                eprintln!("         (also saved to {})", best_path.display());
+                            }
                             best_expl_mbb = Some(br.exploitability_mbb);
                             promoted = true;
                         }
