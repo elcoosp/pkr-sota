@@ -1,6 +1,9 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
-use pkr_abstraction::{calculate_ehs, load_centroids, save_centroids, CentroidStore};
+use pkr_abstraction::{
+    calculate_ehs, hand_structure_features, load_centroids, load_centroids_6d,
+    nearest_centroid_6d, save_centroids, save_centroids_6d, CentroidStore, CentroidStore6D,
+};
 use pkr_contracts::Evaluator;
 use pkr_eval::lookup::choose;
 use pkr_eval::lookup_fast::{
@@ -22,6 +25,15 @@ fn evaluator_kind() -> String {
     std::env::var("PKR_EVALUATOR").unwrap_or_else(|_| "table".to_string())
 }
 
+/// When `PKR_RICH_CENTROIDS=1`, the `centroids` subcommand builds a 6D
+/// feature space (EHS, EHS^2, rank_high/12, rank_low/12, suited, connector)
+/// and writes a `CentroidStore6D` instead of the 2D `CentroidStore`.
+/// The matching `preflop-rich` subcommand consumes that file. All other
+/// subcommands ignore this flag (default 2D behaviour).
+fn rich_centroids_enabled() -> bool {
+    std::env::var("PKR_RICH_CENTROIDS").as_deref() == Ok("1")
+}
+
 /// Construct the configured evaluator backend for a given rank-table path.
 /// Returns a boxed trait object so callers do not need to be generic.
 fn make_evaluator(rank_table_path: &str) -> Result<Box<dyn Evaluator>, Box<dyn std::error::Error>> {
@@ -40,7 +52,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: precompute <command> [args...]");
-        eprintln!("Commands: flow, turn, preflop, flop, river, all7, abs5, abs6, all4, all6, all8");
+        eprintln!(
+            "Commands: flow, turn, preflop, preflop-rich, flop, river, \
+             all7, abs5, abs6, all4, all6, all8"
+        );
         std::process::exit(1);
     }
     match args[1].as_str() {
@@ -105,6 +120,23 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("preflop_table.bin");
             let _ = generate_preflop_table(centroids_path, rank_table_path, output);
+            println!("Done.");
+        }
+        "preflop-rich" => {
+            let centroids_path = args
+                .get(2)
+                .map(|s| s.as_str())
+                .unwrap_or("centroids_6d.bin");
+            let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            let output = args
+                .get(4)
+                .map(|s| s.as_str())
+                .unwrap_or("preflop_rich_abstraction.bin");
+            println!(
+                "preflop-rich | centroids(6D): {} | rank table: {} | output: {}",
+                centroids_path, rank_table_path, output
+            );
+            let _ = generate_preflop_rich_table(centroids_path, rank_table_path, output);
             println!("Done.");
         }
         "flop" => {
@@ -248,6 +280,9 @@ fn generate_centroids(
     rank_table_path: &str,
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if rich_centroids_enabled() {
+        return generate_centroids_6d(num_samples, k, rank_table_path, output);
+    }
     let evaluator = make_evaluator(rank_table_path)?;
     let total = choose(52, 2) as usize;
     let data: Vec<(f32, f32)> = (0..total)
@@ -808,6 +843,133 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
                     moved = true;
                 }
                 centroids[c_idx] = (new_x, new_y);
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    centroids
+}
+
+// ---------------------------------------------------------------------------
+// Rich 6D preflop pipeline (v33 experiment).
+//
+// Feature vector per hand: (EHS, EHS^2, rank_high/12, rank_low/12,
+// suited_bit, connector_bit). The 2D (EHS, EHS^2) space collapses
+// strategically distinct hands onto the same cluster (e.g. 22, A5s,
+// KJo all sit near 0.5); the four extra dims spread them into a
+// strategic neighbourhood. Same k (~200), same u8 table layout, same
+// runtime hash — only the contents of `preflop_abstraction.bin` change.
+// ---------------------------------------------------------------------------
+
+fn generate_centroids_6d(
+    num_samples: usize,
+    k: usize,
+    rank_table_path: &str,
+    output: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let evaluator = make_evaluator(rank_table_path)?;
+    let total = choose(52, 2) as usize;
+    let data: Vec<[f32; 6]> = (0..total)
+        .into_par_iter()
+        .map(|idx| {
+            let hole = combinadic_unrank_2(idx as u32);
+            let (ehs, ehs_sq) = calculate_ehs(&hole, &[], evaluator.as_ref());
+            let s = hand_structure_features(&hole);
+            [ehs, ehs_sq, s[0], s[1], s[2], s[3]]
+        })
+        .collect();
+    let mut rng = StdRng::seed_from_u64(42);
+    let sample: Vec<[f32; 6]> = if data.len() > num_samples {
+        data.sample(&mut rng, num_samples).cloned().collect()
+    } else {
+        data
+    };
+    let centroids = kmeans_6d(&sample, k, 50);
+    let store = CentroidStore6D { centroids };
+    save_centroids_6d(output, &store)?;
+    println!("Generated {} rich 6D centroids -> {}", k, output);
+    Ok(())
+}
+
+fn generate_preflop_rich_table(
+    centroids_path: &str,
+    rank_table_path: &str,
+    output: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_centroids_6d(centroids_path).map_err(|e| format!("centroids_6d: {}", e))?;
+    assert!(
+        store.centroids.len() <= 255,
+        "rich preflop table uses u8 ids; keep centroid count <= 255"
+    );
+    let centroids = &store.centroids;
+    let evaluator = make_evaluator(rank_table_path)?;
+    let total = choose(52, 2) as usize;
+    let mut table: Vec<u8> = vec![0u8; total];
+    table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
+        let hole = combinadic_unrank_2(idx as u32);
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &[], evaluator.as_ref());
+        let s = hand_structure_features(&hole);
+        let feat: [f32; 6] = [ehs, ehs_sq, s[0], s[1], s[2], s[3]];
+        *slot = nearest_centroid_6d(&feat, centroids) as u8;
+    });
+    let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
+    file.write_all(&table).map_err(|e| format!("write: {}", e))?;
+    println!(
+        "Generated rich preflop table with {} entries ({} centroids) -> {}",
+        total,
+        centroids.len(),
+        output
+    );
+    Ok(())
+}
+
+fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
+    let n = data.len();
+    if n == 0 || k == 0 {
+        return vec![];
+    }
+    let k = k.min(n);
+    let mut centroids: Vec<[f32; 6]> = data.sample(&mut rand::rng(), k).cloned().collect();
+
+    for _ in 0..max_iters {
+        let mut assignments: Vec<usize> = vec![0; n];
+        let mut counts: Vec<usize> = vec![0; k];
+        let mut sums: Vec<[f32; 6]> = vec![[0f32; 6]; k];
+
+        for (i, point) in data.iter().enumerate() {
+            let mut best_dist = f32::MAX;
+            let mut best_idx = 0;
+            for (c_idx, c) in centroids.iter().enumerate() {
+                let dist = point
+                    .iter()
+                    .zip(c.iter())
+                    .map(|(p, c)| (p - c) * (p - c))
+                    .sum::<f32>();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = c_idx;
+                }
+            }
+            assignments[i] = best_idx;
+            counts[best_idx] += 1;
+            for j in 0..6 {
+                sums[best_idx][j] += point[j];
+            }
+        }
+
+        let mut moved = false;
+        for c_idx in 0..k {
+            if counts[c_idx] > 0 {
+                let mut new_c = [0f32; 6];
+                for j in 0..6 {
+                    new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
+                }
+                if (new_c[0] - centroids[c_idx][0]).abs() > 1e-6 {
+                    moved = true;
+                }
+                centroids[c_idx] = new_c;
             }
         }
         if !moved {
