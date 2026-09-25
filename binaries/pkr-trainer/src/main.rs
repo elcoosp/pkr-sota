@@ -81,7 +81,12 @@ struct Cli {
     #[arg(long)]
     checkpoint: Option<PathBuf>,
 
-    #[arg(long, default_value_t = 10000)]
+    /// Iterations between rolling checkpoint saves. Default is 500,000
+    /// (~5-10 minutes at typical throughput). A 186 MB checkpoint every
+    /// 10,000 iterations is ~6 MB/s sustained I/O which triggers macOS
+    /// Spotlight / Time Machine resource storms on full disks (see
+    /// docs/experiments/v33-rich-preflop-confirmed.md §recommendations).
+    #[arg(long, default_value_t = 500_000)]
     checkpoint_every: u32,
 
     #[arg(long, default_value_t = 5_000_000)]
@@ -763,7 +768,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("Checkpoint written at iteration {}", done);
                         last_ckpt_iter = done;
                     }
-                    Err(e) => eprintln!("WARNING: checkpoint failed: {}", e),
+                    Err(e) => {
+                        // Do NOT silently continue. If a checkpoint save
+                        // fails (typically ENOSPC on a full disk) and we
+                        // retry every 10K iterations, we fill the disk with
+                        // partial .tmp files and can trigger a macOS
+                        // resource storm. Abort on first failure so the
+                        // operator can free space and resume from the
+                        // previous good checkpoint.
+                        eprintln!(
+                            "FATAL: checkpoint failed at iteration {} ({}); aborting to preserve disk",
+                            done, e
+                        );
+                        return Err(format!(
+                            "checkpoint failed at iteration {}: {}",
+                            done, e
+                        )
+                        .into());
+                    }
                 }
             }
         }
