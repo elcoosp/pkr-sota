@@ -96,6 +96,79 @@ pub fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn s
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 6D "rich" centroids for the preflop feature experiment (v33).
+//
+// The classic 2D (EHS, EHS^2) feature space collapses strategically
+// distinct hands onto the same point: EHS(22) ~= EHS(A5s) ~= EHS(KJo)
+// ~= 0.50, so AA, 22, A5s, KJo all hash to the same infoset. The 6D
+// space appends four hand-structure dims (rank_high, rank_low, suited,
+// connector) so each cluster becomes a *strategic* neighbourhood rather
+// than a pure *equity* neighbourhood.
+//
+// Persisted separately from CentroidStore so existing 2D pipelines
+// (flop/turn/river centroids, existing blueprints) are untouched.
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentroidStore6D {
+    pub centroids: Vec<[f32; 6]>,
+}
+
+pub fn load_centroids_6d(path: &str) -> Result<CentroidStore6D, Box<dyn std::error::Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let store: CentroidStore6D = bincode::deserialize_from(reader)?;
+    Ok(store)
+}
+
+pub fn save_centroids_6d(
+    path: &str,
+    store: &CentroidStore6D,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file = File::create(path)?;
+    bincode::serialize_into(file, store)?;
+    Ok(())
+}
+
+/// Card encoding convention (confirmed by `flat_index_preflop` tests):
+/// `card = rank * 4 + suit`, with `rank in 0..=12` (0 = deuce, 12 = ace)
+/// and `suit in 0..=3`. Golden vector: `[48, 49]` decodes to A-spades /
+/// A-hearts, i.e. the hand "AA".
+fn card_rank(card: u8) -> u8 {
+    card / 4
+}
+
+fn card_suit(card: u8) -> u8 {
+    card % 4
+}
+
+/// Four hand-structure features for the 6D preflop feature space.
+/// Ranges: `rank_high / 12` and `rank_low / 12` in `[0, 1]`,
+/// `suited_bit` and `connector_bit` in `{0.0, 1.0}`.
+///
+/// "Connector" means the two ranks are within 2 of each other
+/// (i.e. gap <= 2), covering true connectors (54s) and one-gappers
+/// (53s) — the classic playable-suited boundary.
+pub fn hand_structure_features(hole: &[u8]) -> [f32; 4] {
+    debug_assert_eq!(hole.len(), 2, "hand_structure_features: expected 2 cards");
+    let r0 = card_rank(hole[0]);
+    let r1 = card_rank(hole[1]);
+    let (rank_high, rank_low) = if r0 >= r1 { (r0, r1) } else { (r1, r0) };
+    let suited = if card_suit(hole[0]) == card_suit(hole[1]) {
+        1.0f32
+    } else {
+        0.0f32
+    };
+    let gap = rank_high - rank_low;
+    let connector = if gap <= 2 { 1.0f32 } else { 0.0f32 };
+    [
+        rank_high as f32 / 12.0,
+        rank_low as f32 / 12.0,
+        suited,
+        connector,
+    ]
+}
+
 pub struct KMeansAbstraction {
     centroids: HashMap<u8, Vec<(f32, f32)>>,
     default_centroids: Vec<(f32, f32)>,
@@ -564,6 +637,29 @@ fn nearest_centroid(ehs: f32, ehs_sq: f32, centroids: &[(f32, f32)]) -> u64 {
         .unwrap_or(0)
 }
 
+/// Nearest-centroid lookup in the 6D (EHS, EHS^2, rank_high, rank_low,
+/// suited, connector) feature space. Mirrors `nearest_centroid` but
+/// consumes a full feature vector so callers can add dims without
+/// rewriting the runtime dispatcher. Returns 0 on an empty centroid list.
+pub fn nearest_centroid_6d(feat: &[f32; 6], centroids: &[[f32; 6]]) -> u64 {
+    centroids
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            let mut d1 = 0.0f32;
+            let mut d2 = 0.0f32;
+            for k in 0..6 {
+                let da = feat[k] - a.1[k];
+                let db = feat[k] - b.1[k];
+                d1 += da * da;
+                d2 += db * db;
+            }
+            d1.total_cmp(&d2)
+        })
+        .map(|(idx, _)| idx as u64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1004,5 +1100,93 @@ mod sortnet_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod rich_features_tests {
+    use super::*;
+
+    #[test]
+    fn card_encoding_is_rank4_plus_suit() {
+        // Golden vector from the existing hash test: [48, 49] is AA.
+        assert_eq!(card_rank(48), 12);
+        assert_eq!(card_rank(49), 12);
+        assert_ne!(card_suit(48), card_suit(49));
+        assert_eq!(card_rank(0), 0);
+        assert_eq!(card_rank(4), 1);
+        assert_eq!(card_suit(4), 0);
+        assert_eq!(card_suit(7), 3);
+    }
+
+    #[test]
+    fn hand_structure_features_bounds() {
+        // AA = two aces, different suits (a pair can never be suited).
+        let aa = hand_structure_features(&[48, 49]);
+        assert!((aa[0] - 1.0).abs() < 1e-6);
+        assert!((aa[1] - 1.0).abs() < 1e-6);
+        assert_eq!(aa[2], 0.0); // pair -> never suited
+        assert_eq!(aa[3], 1.0); // gap 0 -> connector
+
+        // AKs: ace (rank 12) + king (rank 11), same suit 0.
+        // ace-spades = 12*4+0 = 48, king-spades = 11*4+0 = 44.
+        let aks = hand_structure_features(&[48, 44]);
+        assert!((aks[0] - 1.0).abs() < 1e-6);
+        assert!((aks[1] - 11.0 / 12.0).abs() < 1e-6);
+        assert_eq!(aks[2], 1.0);
+        assert_eq!(aks[3], 1.0); // gap 1 -> connector
+
+        // 7-2 offsuit: seven (rank 5, suit 0) + deuce (rank 0, suit 1).
+        // seven-spades = 5*4+0 = 20, deuce-hearts = 0*4+1 = 1.
+        let seven_two_offsuit = hand_structure_features(&[20, 1]);
+        assert!((seven_two_offsuit[0] - 5.0 / 12.0).abs() < 1e-6);
+        assert!((seven_two_offsuit[1] - 0.0).abs() < 1e-6);
+        assert_eq!(seven_two_offsuit[2], 0.0);
+        assert_eq!(seven_two_offsuit[3], 0.0); // gap 5 -> no connector
+
+        // 5-3 suited (one-gapper): five (rank 3, suit 0) + three (rank 1, suit 0).
+        // five-spades = 3*4+0 = 12, three-spades = 1*4+0 = 4.
+        let five_three_suited = hand_structure_features(&[12, 4]);
+        assert_eq!(five_three_suited[2], 1.0);
+        assert_eq!(five_three_suited[3], 1.0); // gap 2 is inside
+
+        // 5-2 suited (two-gapper): five (rank 3, suit 0) + deuce (rank 0, suit 0).
+        let five_two_suited = hand_structure_features(&[12, 0]);
+        assert_eq!(five_two_suited[2], 1.0);
+        assert_eq!(five_two_suited[3], 0.0); // gap 3 is outside
+    }
+
+    #[test]
+    fn nearest_centroid_6d_picks_identical_point() {
+        let c: Vec<[f32; 6]> = vec![
+            [0.0; 6],
+            [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+            [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        ];
+        let probe = [0.51, 0.51, 0.51, 0.51, 0.51, 0.51];
+        assert_eq!(nearest_centroid_6d(&probe, &c), 1);
+    }
+
+    #[test]
+    fn nearest_centroid_6d_handles_empty() {
+        let empty: Vec<[f32; 6]> = vec![];
+        let probe = [0.5; 6];
+        assert_eq!(nearest_centroid_6d(&probe, &empty), 0);
+    }
+
+    #[test]
+    fn centroid_store_6d_round_trip() {
+        let store = CentroidStore6D {
+            centroids: vec![
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.5, 0.25, 0.5, 0.5, 1.0, 0.0],
+            ],
+        };
+        let tmp = std::env::temp_dir().join("test_centroids6d.bin");
+        save_centroids_6d(tmp.to_str().unwrap(), &store).unwrap();
+        let loaded = load_centroids_6d(tmp.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.centroids.len(), 2);
+        assert!((loaded.centroids[1][4] - 1.0).abs() < 1e-6);
+        std::fs::remove_file(tmp).ok();
     }
 }
