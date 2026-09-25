@@ -395,18 +395,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => 0,
     };
 
+    // Metrics CSV: append on resume, truncate on --fresh. Before v33 this
+    // used File::create unconditionally, which silently erased the CSV
+    // history on every resume (observed during the seed-43 A OOM recovery).
     let mut csv_writer: Option<std::io::BufWriter<std::fs::File>> = match &cli.metrics_csv {
         Some(path) => {
-            let f = std::fs::File::create(path)?;
+            let is_new = cli.fresh
+                || !path.exists()
+                || std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
+            let f = if cli.fresh {
+                std::fs::File::create(path)?
+            } else {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?
+            };
             let mut w = std::io::BufWriter::new(f);
-            writeln!(
-                w,
-                "iter,wall_s,it_per_s,infosets,cap_pct,max_abs_regret,\
-                 mean_abs_regret,nonfinite,strat_mass,\
-                 nodes,nodes_per_iter,avg_depth,max_depth,cache_hit_rate,\
-                 regret_in,regret_out,regret_dedup,strategy_applied,\
-                 traverse_ms,merge_ms,flush_ms,wall_ms"
-            )?;
+            if is_new {
+                writeln!(
+                    w,
+                    "iter,wall_s,it_per_s,infosets,cap_pct,max_abs_regret,\
+                     mean_abs_regret,nonfinite,strat_mass,\
+                     nodes,nodes_per_iter,avg_depth,max_depth,cache_hit_rate,\
+                     regret_in,regret_out,regret_dedup,strategy_applied,\
+                     traverse_ms,merge_ms,flush_ms,wall_ms"
+                )?;
+            }
             w.flush()?;
             Some(w)
         }
@@ -473,14 +488,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut prev_deck_overflows: u64 = 0;
 
     // E1: exploitability CSV writer + promotion-gate state.
+    // Exploitability CSV: same append-on-resume semantics as the metrics
+    // CSV. Before v33 this also used File::create unconditionally, which
+    // erased the seed-43 A readings when the run was resumed after OOM.
     let mut expl_writer: Option<std::io::BufWriter<std::fs::File>> = if cli.eval_every > 0 {
         let path = cli
             .exploitability_csv
             .clone()
             .unwrap_or_else(|| cli.output.with_file_name("exploitability.csv"));
-        let f = std::fs::File::create(&path)?;
+        let is_new = cli.fresh
+            || !path.exists()
+            || std::fs::metadata(&path).map(|m| m.len() == 0).unwrap_or(true);
+        let f = if cli.fresh {
+            std::fs::File::create(&path)?
+        } else {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?
+        };
         let mut w = std::io::BufWriter::new(f);
-        writeln!(w, "iter,expl_mbb,expl_stderr_mbb,br0,br1,deals")?;
+        if is_new {
+            writeln!(w, "iter,expl_mbb,expl_stderr_mbb,br0,br1,deals")?;
+        }
         w.flush()?;
         eprintln!("exploitability CSV: {}", path.display());
         Some(w)

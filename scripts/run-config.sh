@@ -23,6 +23,12 @@ FLOP_BUCKETS="${FLOP_BUCKETS:-200}"
 RIVER_BUCKETS="${RIVER_BUCKETS:-200}"
 EHS_SAMPLES="${EHS_SAMPLES:-100}"
 EHS_SAMPLES_TURN="${EHS_SAMPLES_TURN:-200}"
+# Preflop feature space. 1 = rich 6D (EHS, EHS^2, rank_high, rank_low,
+# suited, connector), the confirmed-win configuration from
+# docs/experiments/v33-rich-preflop-confirmed.md. 0 = legacy 2D.
+# Requires PKR_RICH_CENTROIDS=1 at centroid-precompute time and the
+# `preflop-rich` subcommand; run.sh handles both automatically.
+PREFLOP_RICH="${PREFLOP_RICH:-1}"
 
 # ---------- training budget ----------
 # 40M is the first checkpoint of a run that will be extended if the

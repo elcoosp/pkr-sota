@@ -74,7 +74,25 @@ pre flop "$OUT/hand_ranks.bin" "$OUT/flop_buckets.bin" "$FLOP_BUCKETS"
 echo "==> [4/8] river_buckets"
 pre river "$OUT/hand_ranks.bin" "$OUT/river_buckets.bin" "$RIVER_BUCKETS"
 echo "==> [5/8] preflop"
-pre preflop "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/preflop_abstraction.bin"
+if [ "${PREFLOP_RICH:-1}" = "1" ]; then
+    # Rich 6D pipeline: (EHS, EHS^2, rank_high/12, rank_low/12, suited,
+    # connector). Same k, same table size, ~425 mbb better exploitability
+    # than the 2D baseline in the v33 experiment.
+    if [ "${REBUILD:-0}" != "1" ] && [ -s "$OUT/preflop_abstraction.bin" ] \
+       && [ -s "$OUT/centroids_6d.bin" ]; then
+        echo "  [cached] preflop_abstraction.bin (rich 6D)"
+    else
+        PKR_RICH_CENTROIDS=1 PKR_EVALUATOR="$EVALUATOR" EHS_SAMPLES="$EHS_SAMPLES" \
+            $PRE centroids "$CENTROID_SAMPLES" "$CENTROID_K" \
+                "$OUT/hand_ranks.bin" "$OUT/centroids_6d.bin"
+        PKR_EVALUATOR="$EVALUATOR" EHS_SAMPLES="$EHS_SAMPLES" \
+            $PRE preflop-rich "$OUT/centroids_6d.bin" "$OUT/hand_ranks.bin" \
+                "$OUT/preflop_abstraction.bin"
+    fi
+else
+    echo "  (legacy 2D path; set PREFLOP_RICH=1 to use rich 6D)"
+    pre preflop "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/preflop_abstraction.bin"
+fi
 echo "==> [6/8] flop"
 pre abs5 "$OUT/centroids.bin" "$OUT/hand_ranks.bin" "$OUT/abstraction.bin"
 echo "==> [7/8] turn"
