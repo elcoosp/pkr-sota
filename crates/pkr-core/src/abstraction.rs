@@ -399,9 +399,13 @@ mod fingerprint_tests {
 
     #[test]
     fn describe_mismatch_sig_version() {
+        // Force a mismatch regardless of the current default value of
+        // SIG_V2_STREET_MONEY. Pick a value different from the one
+        // `from_constants` produces for `b`, without assuming which
+        // value that is.
         let mut a = AbstractionFingerprint::from_constants(200);
         let b = AbstractionFingerprint::from_constants(200);
-        a.sig_version = 2;
+        a.sig_version = if b.sig_version == 1 { 2 } else { 1 };
         let msg = a.describe_mismatch(&b);
         assert!(msg.contains("sig_version"), "msg: {msg}");
     }
