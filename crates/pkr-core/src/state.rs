@@ -11,15 +11,17 @@ use pkr_contracts::Evaluator;
 ///
 /// Default: OFF. The v2 helpers are landed and tested but not wired
 /// into the traverser, so this commit is a no-op for training.
-/// SOTA signature v2: include SPR and last-bet-fraction bucket in the
-/// infoset hash, so "facing 0.5x pot" is a different infoset than
-/// "facing 2x pot", and short-stack play differs from deep-stack play.
+/// Signature v2 adds SPR bucket and (optionally) last-bet-fraction to
+/// the infoset hash. Tested 2026-09-25: enabling it produced 3.6x more
+/// infosets, and 20M eval jumped to 11170 mbb vs 5735 baseline. The
+/// extra dimensions split strategically-similar situations into
+/// distinct infosets faster than the fixed iteration budget can fill
+/// them — same failure mode as T2.2 (finer discrete splits).
 ///
-/// ENABLED 2026-09-25. Previous sessions had this off (v1 signature),
-/// which collapsed those dimensions and forced the model to average
-/// over strategically distinct situations. The fingerprint captures
-/// this via `sig_version`, so old checkpoints are rejected on load.
-pub const SIG_V2_STREET_MONEY: bool = true;
+/// The code path is kept (fingerprint still has `sig_version`, the v2
+/// function still exists) but production default is OFF. Do not enable
+/// without a corresponding 10-100x iteration budget increase.
+pub const SIG_V2_STREET_MONEY: bool = false;
 
 /// Version tag stored in bits 60..64 of `history_signature_v2()`.
 pub const SIG_V2_VERSION: u64 = 2;

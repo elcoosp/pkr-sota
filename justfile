@@ -33,12 +33,13 @@ versions:
     @ls -1 outputs/ 2>/dev/null | grep -E "^v[0-9]" || echo "(none yet)"
 
 manifest v="v1":
-    @cat "outputs/{{v}}/manifest.txt"
+    @cat "outputs/{{ v }}/manifest.txt"
 
 drop v:
-    rm -rf "outputs/{{v}}"
-    @echo "dropped outputs/{{v}}"
-
+    rm -rf "outputs/{{ v }}"
+    @echo "dropped outputs/{{ v }}"
 
 wr:
     watchexec -w ./wr.sh --clear -r "./wr.sh"
+wr1:
+    watchexec -w ./wr1.sh --clear -r "./wr1.sh"

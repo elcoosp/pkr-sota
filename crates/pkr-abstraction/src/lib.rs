@@ -38,6 +38,21 @@ static FALLBACK_COUNTS: [AtomicU64; 4] = [
 ];
 
 /// Total EHS fallbacks across all streets since process start.
+
+/// Env-gated soft-kmeans blending. When `PKR_SOFT_KMEANS=1`, hands whose
+/// river hand_rank falls within `SOFT_BOUNDARY_FRAC` of a tier boundary
+/// get a soft assignment (primary tier + adjacent tier, weighted blend).
+/// Default off — training path is bit-identical when this is unset.
+#[inline]
+fn soft_kmeans_enabled() -> bool {
+    use std::sync::OnceLock;
+    static E: OnceLock<bool> = OnceLock::new();
+    *E.get_or_init(|| std::env::var("PKR_SOFT_KMEANS").as_deref() == Ok("1"))
+}
+
+/// Fraction of a river tier width that counts as "near boundary".
+const SOFT_BOUNDARY_FRAC: f64 = 0.15;
+
 pub fn fallback_count() -> u64 {
     FALLBACK_COUNTS
         .iter()
@@ -346,6 +361,60 @@ fn combinadic_rank_6(cards: &[u8; 6]) -> u64 {
 }
 
 impl AbstractionBuilder for KMeansAbstraction {
+    fn get_infoset_hash_soft(
+        &self,
+        hole: &[u8],
+        board: &[u8],
+        history: &[u8],
+        street: u8,
+    ) -> pkr_contracts::SoftHash {
+        let primary = self.get_infoset_hash(hole, board, history, street);
+        if !soft_kmeans_enabled() || street != 5 {
+            return pkr_contracts::SoftHash::hard(primary);
+        }
+        // River only. Recompute hand_bucket/board_bucket to find boundary distance.
+        let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
+        let tier_bits = pkr_core::abstraction::RIVER_TIER_SHIFT as u32;
+        let tier_size: u64 = 1u64 << tier_bits; // = 32768
+        let low = hand_rank & (tier_size - 1);
+        let hand_bucket = hand_rank >> tier_bits;
+        let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
+            Some(table) => {
+                let idx = Self::flat_index_river_board(board);
+                if idx < table.len() { table[idx] as u64 } else { 0 }
+            }
+            None => 0,
+        };
+
+        let threshold = (tier_size as f64 * SOFT_BOUNDARY_FRAC) as u64;
+        let (adj_bucket, weight_primary) = if hand_bucket > 0 && low < threshold {
+            // Near lower boundary: blend with tier below.
+            let w = 0.5 + 0.5 * (low as f64 / threshold as f64);
+            (hand_bucket - 1, w as f32)
+        } else if low > tier_size - threshold {
+            // Near upper boundary: blend with tier above.
+            let dist = low - (tier_size - threshold);
+            let w = 1.0 - 0.5 * (dist as f64 / threshold as f64);
+            (hand_bucket + 1, w as f32)
+        } else {
+            return pkr_contracts::SoftHash::hard(primary);
+        };
+
+        // Recompute the FNV hash with the adjacent cluster_id.
+        let adj_cluster_id = (adj_bucket << 8) | (board_bucket & 0xff);
+        let mut h: u64 = pkr_contracts::FNV_OFFSET;
+        pkr_contracts::fnv1a(&mut h, std::slice::from_ref(&street));
+        pkr_contracts::fnv1a(&mut h, &[history.len() as u8]);
+        pkr_contracts::fnv1a(&mut h, history);
+        pkr_contracts::fnv1a(&mut h, &adj_cluster_id.to_le_bytes());
+
+        pkr_contracts::SoftHash {
+            primary,
+            secondary: h,
+            weight_primary,
+        }
+    }
+
     fn get_infoset_hash(&self, hole: &[u8], board: &[u8], history: &[u8], street: u8) -> u64 {
         // INVARIANT: the board slice must contain exactly the cards dealt for
         // `street`. A caller passing the raw [u8;5] array silently routes every
