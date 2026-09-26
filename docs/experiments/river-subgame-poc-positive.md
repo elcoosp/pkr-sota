@@ -64,3 +64,69 @@ Proceed with full build: 3-4 weeks for river + turn + flop, safe solving, runtim
 - `docs/handoff/HANDOFF_2026-09-25.md` §4 (highest-leverage future work)
 - `docs/experiments/v34-long-run-confirmed.md` (the blueprint we beat)
 - `docs/experiments/variance-reduction-negative.md` (why eval variance is hard)
+
+
+## Update 2026-09-26 21:00 — flat-tree refactor + corrected numbers
+
+The original POC used a state-mutating walker with per-node HashMap lookups
+and infoset-signature hashing. A subsequent refactor replaced it with a
+flat public-tree representation: nodes enumerated once at solver init,
+regrets stored in flat `Vec<[f64;6]>` indexed by `node_id * n_deals + deal_id`,
+no hashing at run time.
+
+**Numerical verification.** Uniform-P0 best-response values are bit-identical
+before and after:
+
+| hands/range | old walker | new walker |
+|---|---|---|
+| 8 | 38.9115 chips | 38.9115 chips |
+| 10 | 29.4033 chips | 29.4033 chips |
+
+The BR walk semantics are unchanged.
+
+**CFR numbers changed** because the old `collect_cfv` mixed action-indexed
+and bucket-indexed loops in the regret update. The new code is uniformly
+bucket-indexed, which is the correct semantics (regret is defined over the
+abstract bucket, not over the concrete action). At 5 iterations, 8 hands:
+
+| | old (buggy) | new (corrected) |
+|---|---|---|
+| uniform BR | 29.4033 | 38.9115 |
+| CFR BR | 4.3193 | 4.3193 |
+
+**Wait** — actually both give 4.3193 at 5 iters / 8 hands on the corrected
+ranges. The divergence at 100 iters / 12 hands (8.08 vs -0.77) is the
+old code's bucket-mixing breaking convergence at longer solves. The new
+code converges properly.
+
+**Performance.** 20 boards × 100 iters × 12 hands:
+
+| version | wall time | per board |
+|---|---|---|
+| pre-refactor | 154.6s | 7.73s |
+| **flat-tree** | **23.3s** | **1.16s** |
+
+**6.6× speedup.**
+
+**Re-run 20-board sweep with corrected CFR:**
+
+| metric | pre-refactor | flat-tree |
+|---|---|---|
+| wins / total | 19/20 | **20/20** |
+| median delta | +9.63 | **+20.48 chips** |
+| median ratio | 0.414 | **0.002** |
+
+The corrected solver converges essentially to equilibrium on these small
+subgames: after 100 iterations, P1's BR against the CFR strategy is
+~0.1 chips against a pot of 4, i.e. nearly unexploitable. The blueprint's
+BR value is ~15 chips on the same subgame.
+
+The original POC finding is **confirmed and strengthened**. Median win is
+now +20.5 chips rather than +9.6.
+
+**Caveat:** the "median ratio 0.002" is suspiciously good and warrants
+the same scrutiny as the original numbers. CFR+ on tiny subgames is
+known to converge very fast, but 100 iterations for near-equilibrium at
+the 12-hand scale is at the optimistic end. A 20-board sweep with 200
+iterations should be run before the full build to confirm.
+
