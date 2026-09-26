@@ -87,6 +87,61 @@ pub struct POCResult {
     pub nodes_visited: u64,
 }
 
+pub struct AdversarialResult {
+    pub cfr_br_per_deal: Vec<f64>,
+    pub blueprint_br_per_deal: Option<Vec<f64>>,
+    pub cfr_mean: f64,
+    pub cfr_max: f64,
+    pub cfr_p95: f64,
+    pub blueprint_mean: Option<f64>,
+    pub blueprint_max: Option<f64>,
+    pub blueprint_p95: Option<f64>,
+}
+
+pub fn adversarial_safety_test(cfg: &POCConfig) -> AdversarialResult {
+    let mut solver = Solver::new(cfg);
+    solver.solve();
+    let cfr_strat = solver.p0_strategy();
+
+    let cfr_br = solver.br_per_deal(&cfr_strat);
+    let cfr_mean = cfr_br.iter().sum::<f64>() / cfr_br.len() as f64;
+    let cfr_max = cfr_br.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let cfr_p95 = p95(&cfr_br);
+
+    let (bp_br, bp_mean, bp_max, bp_p95) = match cfg.blueprint {
+        None => (None, None, None, None),
+        Some((abs, tbl)) => {
+            let strat = solver.build_blueprint_strategy(abs, tbl);
+            let v = solver.br_per_deal(&strat);
+            let m = v.iter().sum::<f64>() / v.len() as f64;
+            let mx = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let p = p95_of(&v);
+            (Some(v), Some(m), Some(mx), Some(p))
+        }
+    };
+
+    AdversarialResult {
+        cfr_br_per_deal: cfr_br,
+        blueprint_br_per_deal: bp_br,
+        cfr_mean,
+        cfr_max,
+        cfr_p95,
+        blueprint_mean: bp_mean,
+        blueprint_max: bp_max,
+        blueprint_p95: bp_p95,
+    }
+}
+
+fn p95(v: &[f64]) -> f64 { p95_of(v) }
+
+fn p95_of(v: &[f64]) -> f64 {
+    if v.is_empty() { return 0.0; }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let idx = ((s.len() as f64) * 0.95) as usize;
+    s[idx.min(s.len() - 1)]
+}
+
 pub fn run_poc(cfg: &POCConfig) -> POCResult {
     let mut solver = Solver::new(cfg);
     solver.solve();
@@ -453,6 +508,23 @@ impl<'a> Solver<'a> {
         }
         total / sum
     }
+
+    /// Per-deal P1 BR value against a fixed P0 strategy. The max of this
+    /// vec is the "adversarial" value: what P1 achieves if they could pick
+    /// which deal to play.
+    pub fn br_per_deal(
+        &self,
+        p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>],
+    ) -> Vec<f64> {
+        (0..self.n_deals)
+            .map(|i| {
+                let v_p0 = self.br_walk(self.tree.root, i as u32, p0_strategy);
+                -v_p0
+            })
+            .collect()
+    }
+
+    pub fn n_deals(&self) -> usize { self.n_deals }
 
     fn build_blueprint_strategy(
         &self,
