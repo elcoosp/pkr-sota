@@ -170,6 +170,140 @@ pub fn hand_structure_features(hole: &[u8]) -> [f32; 4] {
     ]
 }
 
+// ---------------------------------------------------------------------------
+// 10D "hand+board" feature space for flop/turn tables.
+//
+// The preflop 6D space (EHS, EHS^2, rank_high, rank_low, suited,
+// connector) captures hand structure. For flop/turn the natural
+// extension adds 4 board-structure features, giving a 10D vector:
+//
+//   (EHS, EHS^2,
+//    rank_high/12, rank_low/12, suited, connector,
+//    board_high/12, board_paired, board_flush_draw, board_connected)
+//
+// Rationale: the preflop experiment (docs/experiments/v33-*) showed
+// that EHS alone collapses strategically distinct hands onto the same
+// bucket. The same collapse applies to (hole, board) pairs:
+// EHS(hole, flop) does not distinguish "drawing to a flush" from
+// "drawing to a straight" from "top pair on a dry board" when their
+// equities coincide. The 4 board features capture those differences.
+//
+// Persisted separately from CentroidStore and CentroidStore6D so the
+// preflop pipeline is untouched.
+// ---------------------------------------------------------------------------
+
+/// 4 board-structure features for a flop (3 cards) or turn (4 cards).
+/// Ranges: `board_high/12` in [0, 1]; the other three are 0/1 flags.
+pub fn board_structure_features(board: &[u8]) -> [f32; 4] {
+    debug_assert!(
+        board.len() == 3 || board.len() == 4,
+        "board_structure_features: expected 3 or 4 board cards, got {}",
+        board.len()
+    );
+
+    // Ranks of the board cards, descending.
+    let mut ranks: Vec<u8> = board.iter().map(|&c| card_rank(c)).collect();
+    ranks.sort_unstable_by(|a, b| b.cmp(a));
+
+    let high = ranks[0];
+    let board_high = high as f32 / 12.0;
+
+    // Paired: any two board cards share a rank.
+    let paired = if ranks.windows(2).any(|w| w[0] == w[1]) {
+        1.0
+    } else {
+        0.0
+    };
+
+    // Flush draw: 2+ cards of the same suit. On the flop 3-of-suit means a
+    // made flush; either way the strategic dimension is "flush matters".
+    let mut suit_counts = [0u8; 4];
+    for &c in board {
+        suit_counts[card_suit(c) as usize] += 1;
+    }
+    let flush_draw = if suit_counts.iter().any(|&n| n >= 2) {
+        1.0
+    } else {
+        0.0
+    };
+
+    // Connected: any three board ranks with both gaps <= 2. Uses the
+    // sorted-descending rank vector, so ranks[i] >= ranks[j] >= ranks[k].
+    let mut connected = 0.0f32;
+    if ranks.len() >= 3 {
+        'outer: for i in 0..ranks.len() {
+            for j in (i + 1)..ranks.len() {
+                for k in (j + 1)..ranks.len() {
+                    let gap_ij = ranks[i] - ranks[j];
+                    let gap_jk = ranks[j] - ranks[k];
+                    if gap_ij <= 2 && gap_jk <= 2 {
+                        connected = 1.0;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    [board_high, paired, flush_draw, connected]
+}
+
+/// Compose the 10D feature vector from EHS, EHS^2, hole structure and
+/// board structure. Centralized so precompute and any future runtime
+/// path use the exact same layout.
+pub fn hand_and_board_features(
+    ehs: f32,
+    ehs_sq: f32,
+    hole: &[u8],
+    board: &[u8],
+) -> [f32; 10] {
+    let h = hand_structure_features(hole);
+    let b = board_structure_features(board);
+    [ehs, ehs_sq, h[0], h[1], h[2], h[3], b[0], b[1], b[2], b[3]]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentroidStore10D {
+    pub centroids: Vec<[f32; 10]>,
+}
+
+pub fn load_centroids_10d(path: &str) -> Result<CentroidStore10D, Box<dyn std::error::Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let store: CentroidStore10D = bincode::deserialize_from(reader)?;
+    Ok(store)
+}
+
+pub fn save_centroids_10d(
+    path: &str,
+    store: &CentroidStore10D,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file = File::create(path)?;
+    bincode::serialize_into(file, store)?;
+    Ok(())
+}
+
+/// Nearest centroid in 10D. Returns 0 on empty input (mirrors the
+/// nearest_centroid / nearest_centroid_6d behaviour).
+pub fn nearest_centroid_10d(feat: &[f32; 10], centroids: &[[f32; 10]]) -> u64 {
+    centroids
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            let mut d1 = 0.0f32;
+            let mut d2 = 0.0f32;
+            for k in 0..10 {
+                let da = feat[k] - a.1[k];
+                let db = feat[k] - b.1[k];
+                d1 += da * da;
+                d2 += db * db;
+            }
+            d1.total_cmp(&d2)
+        })
+        .map(|(idx, _)| idx as u64)
+        .unwrap_or(0)
+}
+
 pub struct KMeansAbstraction {
     centroids: HashMap<u8, Vec<(f32, f32)>>,
     default_centroids: Vec<(f32, f32)>,
@@ -1193,6 +1327,119 @@ mod rich_features_tests {
         let loaded = load_centroids_6d(tmp.to_str().unwrap()).unwrap();
         assert_eq!(loaded.centroids.len(), 2);
         assert!((loaded.centroids[1][4] - 1.0).abs() < 1e-6);
+        std::fs::remove_file(tmp).ok();
+    }
+}
+
+#[cfg(test)]
+mod hand_board_features_tests {
+    use super::*;
+
+    #[test]
+    fn board_structure_flop_dry_high_card() {
+        // Ks Qd 2h (as flop): 12*4+0=48? No: encoding suit*13+rank.
+        // K-spades = 0*13 + 11 = 11. Q-diamonds = 1*13 + 10 = 23.
+        // 2-hearts = 2*13 + 0 = 26.
+        // board_high = 11/12; unpaired; not flush-drawn (all distinct suits);
+        // not connected (K-Q gap 1, Q-2 gap 8).
+        let f = board_structure_features(&[11, 23, 26]);
+        assert!((f[0] - 11.0/12.0).abs() < 1e-6);
+        assert_eq!(f[1], 0.0); // not paired
+        assert_eq!(f[2], 0.0); // not flush draw
+        assert_eq!(f[3], 0.0); // not connected
+    }
+
+    #[test]
+    fn board_structure_flop_wet_connected_flushy() {
+        // Js Ts 9s (as flop): J-spades = 0*13+9 = 9, T-spades = 0*13+8 = 8,
+        // 9-spades = 0*13+7 = 7.
+        // board_high = 9/12; unpaired; flush draw (3 spades); connected (J-T-9).
+        let f = board_structure_features(&[9, 8, 7]);
+        assert!((f[0] - 9.0/12.0).abs() < 1e-6);
+        assert_eq!(f[1], 0.0); // not paired
+        assert_eq!(f[2], 1.0); // 3 spades -> flush draw bit
+        assert_eq!(f[3], 1.0); // J-T-9 -> connected
+    }
+
+    #[test]
+    fn board_structure_flop_paired() {
+        // Ah As Kd on the flop. Encoding: card = suit * 13 + rank,
+        // rank 0..12 (0=deuce, 12=ace), suits 0,1,2,3 distinct.
+        //   Ah: suit 2, rank 12 -> 2*13 + 12 = 38
+        //   As: suit 3, rank 12 -> 3*13 + 12 = 51
+        //   Kd: suit 1, rank 11 -> 1*13 + 11 = 24
+        // Board ranks: [12, 12, 11]; high = 12; paired (two aces);
+        // three distinct suits -> no flush draw;
+        // AAK counts as "connected" under the gap <= 2 rule (intentional:
+        // the flag means "ranks are clustered", not "straight is possible").
+        let f = board_structure_features(&[38, 51, 24]);
+        assert!((f[0] - 12.0/12.0).abs() < 1e-6);
+        assert_eq!(f[1], 1.0); // paired
+        assert_eq!(f[2], 0.0); // three different suits
+        assert_eq!(f[3], 1.0); // clustered ranks (gap 0 and gap 1)
+    }
+
+    #[test]
+    fn board_structure_turn_four_cards() {
+        // 4-card board: Ah Kh Qh Jh -- all hearts.
+        // A-hearts = 25, K-hearts = 24, Q-hearts = 23, J-hearts = 22.
+        // board_high = 12/12; unpaired; flush draw (4 hearts); connected.
+        let f = board_structure_features(&[25, 24, 23, 22]);
+        assert!((f[0] - 1.0).abs() < 1e-6);
+        assert_eq!(f[1], 0.0);
+        assert_eq!(f[2], 1.0);
+        assert_eq!(f[3], 1.0);
+    }
+
+    #[test]
+    fn hand_and_board_features_layout() {
+        // AA on KQ2 rainbow flop.
+        // A-spades = 12, A-hearts = 25. K-spades = 11, Q-diamonds = 23, 2-hearts = 26.
+        let feat = hand_and_board_features(0.5, 0.25, &[12, 25], &[11, 23, 26]);
+        // [EHS, EHS^2, rank_high, rank_low, suited, connector, board_high, paired, flush_draw, connected]
+        assert!((feat[0] - 0.5).abs() < 1e-6);
+        assert!((feat[1] - 0.25).abs() < 1e-6);
+        assert!((feat[2] - 1.0).abs() < 1e-6);  // A rank_high
+        assert!((feat[3] - 1.0).abs() < 1e-6);  // A rank_low (pair)
+        assert_eq!(feat[4], 0.0);               // AA offsuit
+        assert_eq!(feat[5], 1.0);               // gap 0 -> connector
+        assert!((feat[6] - 11.0/12.0).abs() < 1e-6); // K-high board
+        assert_eq!(feat[7], 0.0);               // unpaired board
+        assert_eq!(feat[8], 0.0);               // rainbow
+        assert_eq!(feat[9], 0.0);               // not connected (K-Q-2)
+    }
+
+    #[test]
+    fn nearest_centroid_10d_picks_identity() {
+        let c: Vec<[f32; 10]> = vec![
+            [0.0; 10],
+            [0.5; 10],
+            [1.0; 10],
+        ];
+        // Probe is offset in every dim, so it stays closest to the
+        // [0.5; 10] centroid under squared L2. Any near-[0.5] probe
+        // works here; all-dims-set avoids accidentally landing closer
+        // to the origin centroid.
+        let probe = [0.51f32; 10];
+        assert_eq!(nearest_centroid_10d(&probe, &c), 1);
+    }
+
+    #[test]
+    fn nearest_centroid_10d_empty() {
+        let empty: Vec<[f32; 10]> = vec![];
+        assert_eq!(nearest_centroid_10d(&[0.5; 10], &empty), 0);
+    }
+
+    #[test]
+    fn centroid_store_10d_round_trip() {
+        let store = CentroidStore10D {
+            centroids: vec![[0.0; 10], [1.0; 10]],
+        };
+        let tmp = std::env::temp_dir().join("test_centroids10d.bin");
+        save_centroids_10d(tmp.to_str().unwrap(), &store).unwrap();
+        let loaded = load_centroids_10d(tmp.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.centroids.len(), 2);
+        assert!((loaded.centroids[1][9] - 1.0).abs() < 1e-6);
         std::fs::remove_file(tmp).ok();
     }
 }
