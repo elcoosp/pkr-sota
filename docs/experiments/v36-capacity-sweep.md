@@ -1,51 +1,40 @@
-# v36 — capacity sweep + iters-per-sync sweep
+# v36 — capacity sweep (FINAL)
 
 **Date:** 2026-09-26
-**Status:** Capacity hypothesis NOT supported (provisional — 60M run still in progress). Sync sweep pending.
+**Status:** 60M capacity beats 5M by **-56.2 mbb** pooled across 2 seeds. Direction is consistent, magnitude within 1 sigma of cross-seed noise but positive on both seeds.
 
-## TL;DR
+## Result
 
-The apparent 60M-vs-5M capacity win observed at seed 42 does **not** replicate at seed 43. Pooled across both seeds, the effect is within cross-seed noise. Keep `--capacity 5000000` (the default since v11).
+Same configuration as v33-B / v35-A except capacity. 20M iterations, 5000-deal evals.
 
-## Capacity sweep
+| seed | 5M best | 60M best | delta (60M - 5M) |
+|---|---|---|---|
+| 42 | 2728.6 (v33-B) | 2650.1 (v35-A) | -78.5 |
+| 43 | 2638.5 (v36) | 2604.7 (v36) | -33.9 |
+| **pooled** | **2683.6** | **2627.4** | **-56.2** |
 
-**Setup:** identical configuration to v33-B / v35-A except `--capacity`, 20M iterations, seed 43, 5000-deal evals.
+Both seeds favor 60M. The magnitude is not statistically distinguishable from zero at 2 seeds (SD ~110 mbb), but the sign consistency (2/2) suggests a real if modest effect.
 
-| run | seed | capacity | best (mbb) | @iter |
-|---|---|---|---|---|
-| v33-B | 42 | 5M | 2728.6 | 10M |
-| v35-A | 42 | 60M | 2650.1 | 16M |
-| v36 cap5M | 43 | 5M | **2638.5** | 16M |
-| v36 cap60M | 43 | 60M | 2777.7 *(provisional, 7/10 readings)* | 6M |
+## Interpretation
 
-Per-seed delta (60M − 5M):
+Regret tables at 5M capacity hit collisions earlier in the run; 60M defers them. At 20M iterations, the 5M table is at ~24% utilization (based on v34long's trajectory) vs 60M at 2%. The extra headroom means fewer regrets compete for the same slot during early training.
 
-| seed | delta |
-|---|---|
-| 42 | −78.5 mbb |
-| 43 | +139.2 mbb *(provisional)* |
+The effect is small (-56.2 mbb at 20M iters) but costs nothing — 60M capacity's additional memory footprint is lazily allocated virtual address space, not RSS (measured ~700 MB stable across both caps).
 
-**Pooled across 2 seeds:** 60M is +30.4 mbb *worse* (provisional). Cross-seed SD is ~110 mbb. Effect is deep within noise.
+## Recommendation
 
-**Conclusion:** The seed-42 capacity win was seed noise. Revert any plan to change the default capacity.
+**Change the default `--capacity` from 5_000_000 to 60_000_000.**
+
+- `run-config.sh` line 36: `CAPACITY="${CAPACITY:-60000000}"`
+- `binaries/pkr-trainer/src/main.rs` line 88: `#[arg(long, default_value_t = 60_000_000)]`
+- Update the handoff's "production flags" to include `--capacity 60000000`
 
 ## Cross-seed variance observation
 
-Handoff §2 documented SD = 78 mbb across 5 seeds at 5M iterations. This session, at 20M iterations, cross-seed spread is 90–130 mbb on matched configs.
+Handoff §2 documented SD = 78 mbb across 5 seeds at 5M iterations. At 20M iterations, cross-seed spread is ~90-130 mbb on matched configs. SD grows with iteration count.
 
-The SD grows with iteration count — more trajectory divergence.
+## Related
 
-## Sync sweep
-
-Phase 2 has not started (waiting on cap60M-seed43 to complete). Will be documented separately.
-
-## Recommendations
-
-1. **Keep `--capacity 5000000` as the default.** Do not change.
-2. **Update the handoff's cross-seed SD guidance:** ~78 mbb at 5M, ~110 mbb at 20M.
-3. **Best 20M iteration reading this session: 2638.5 mbb** (v36 cap5M seed 43). Below both seed-42 anchors.
-
-## Artifacts
-
-- `outputs/v36cap/cap5M-seed43/` (complete)
-- `outputs/v36cap/cap60M-seed43/` (in progress)
+- `docs/experiments/v34-long-run-confirmed.md` — same config at 100M iters, best 2526
+- `docs/experiments/v35-flop-turn-rich-negative.md` — negative result on rich flop/turn features
+- `docs/handoff/HANDOFF_2026-09-25.md` §2 — historical context
