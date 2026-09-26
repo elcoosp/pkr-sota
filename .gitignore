@@ -64,3 +64,10 @@ wr*.sh
 
 # local scratch scripts
 wr*.sh
+=== gitignore launchers ===
+
+
+# Local experiment launchers (not committed).
+# Local experiment launchers (not committed).
+launcher-*.sh
+launcher-*.sh
