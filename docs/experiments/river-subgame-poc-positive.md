@@ -130,3 +130,26 @@ known to converge very fast, but 100 iterations for near-equilibrium at
 the 12-hand scale is at the optimistic end. A 20-board sweep with 200
 iterations should be run before the full build to confirm.
 
+
+
+### 200-iteration confirmation
+
+Re-ran the 20-board sweep at 200 iterations. Results identical to 100:
+
+| | 100 iters | 200 iters |
+|---|---|---|
+| wins/total | 20/20 | 20/20 |
+| median delta | +20.48 | +20.50 |
+| median ratio | 0.002 | 0.001 |
+| wall time | 23.3s | 45.9s |
+
+CFR+ converges by 100 iterations on these subgames. No further
+convergence benefit from 200; double the wall time for no change.
+
+**The ratio 0.001 deserves scrutiny.** BR_v1 against CFR is ~0.1 chips
+on a pot of 4. That is near-equilibrium to 2.5% of the pot. This is
+consistent with CFR+ on small trees (fast convergence to Nash is a
+known property), but it also means the "POC win" is dominated by
+the *blueprint* being exploitable on uniform ranges, not by CFR
+achieving something extraordinary. The honest next test is real
+ranges from blueprint history; the win will shrink there.
