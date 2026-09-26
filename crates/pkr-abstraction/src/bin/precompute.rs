@@ -1,8 +1,9 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 use pkr_abstraction::{
-    calculate_ehs, hand_structure_features, load_centroids, load_centroids_6d,
-    nearest_centroid_6d, save_centroids, save_centroids_6d, CentroidStore, CentroidStore6D,
+    calculate_ehs, hand_and_board_features, hand_structure_features, load_centroids,
+    load_centroids_6d, nearest_centroid_10d, nearest_centroid_6d, save_centroids,
+    save_centroids_10d, save_centroids_6d, CentroidStore, CentroidStore10D, CentroidStore6D,
 };
 use pkr_contracts::Evaluator;
 use pkr_eval::lookup::choose;
@@ -53,8 +54,8 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Usage: precompute <command> [args...]");
         eprintln!(
-            "Commands: flow, turn, preflop, preflop-rich, flop, river, \
-             all7, abs5, abs6, all4, all6, all8"
+            "Commands: flow, turn, preflop, preflop-rich, flop, flop-rich, \
+             turn-rich, river, all7, abs5, abs6, all4, all6, all8"
         );
         std::process::exit(1);
     }
@@ -137,6 +138,42 @@ fn main() {
                 centroids_path, rank_table_path, output
             );
             let _ = generate_preflop_rich_table(centroids_path, rank_table_path, output);
+            println!("Done.");
+        }
+        "flop-rich" => {
+            let rank_table_path = args.get(2).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            let centroids_out = args
+                .get(3)
+                .map(|s| s.as_str())
+                .unwrap_or("flop_centroids_10d.bin");
+            let table_out = args
+                .get(4)
+                .map(|s| s.as_str())
+                .unwrap_or("flop_abstraction_rich.bin");
+            let k = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
+            println!(
+                "flop-rich | rank: {} | centroids: {} | table: {} | k={}",
+                rank_table_path, centroids_out, table_out, k
+            );
+            let _ = generate_flop_rich_table(rank_table_path, centroids_out, table_out, k);
+            println!("Done.");
+        }
+        "turn-rich" => {
+            let rank_table_path = args.get(2).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            let centroids_out = args
+                .get(3)
+                .map(|s| s.as_str())
+                .unwrap_or("turn_centroids_10d.bin");
+            let table_out = args
+                .get(4)
+                .map(|s| s.as_str())
+                .unwrap_or("turn_abstraction_rich.bin");
+            let k = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
+            println!(
+                "turn-rich | rank: {} | centroids: {} | table: {} | k={}",
+                rank_table_path, centroids_out, table_out, k
+            );
+            let _ = generate_turn_rich_table(rank_table_path, centroids_out, table_out, k);
             println!("Done.");
         }
         "flop" => {
@@ -977,6 +1014,391 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
         }
     }
     centroids
+}
+
+
+// ===========================================================================
+// Rich flop / turn precompute (v35 experiment).
+//
+// Feature space (10D): (EHS, EHS^2, rank_high/12, rank_low/12, suited,
+// connector, board_high/12, board_paired, board_flush_draw,
+// board_connected). Same k as the 2D baseline, same u8 table layout,
+// same runtime consumption path. Only the table *contents* change.
+//
+// Sampling: `sample_size` (default 200,000) random (hole, board) pairs
+// give the k-means centroids. Assignment: every (hole, board) entry in
+// the full combo × mask table gets the nearest 10D centroid.
+//
+// Determinism: the sampling RNG is seeded via PKR_RICH_SAMPLE_SEED so
+// repeated runs produce byte-identical centroid files. (The existing
+// kmeans_10d helper uses the ambient thread RNG, which is why we
+// introduce kmeans_10d_seeded here.)
+// ===========================================================================
+
+fn sample_size() -> usize {
+    std::env::var("PKR_RICH_SAMPLE_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200_000)
+}
+
+fn sample_seed() -> u64 {
+    std::env::var("PKR_RICH_SAMPLE_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0x5EED_10D0_0000_0001)
+}
+
+/// K-means with explicit seed. Same math as `kmeans_10d`, but the
+/// initial centroid selection uses a seeded RNG so the result is
+/// reproducible across runs.
+fn kmeans_10d_seeded(
+    data: &[[f32; 10]],
+    k: usize,
+    max_iters: usize,
+    seed: u64,
+) -> Vec<[f32; 10]> {
+    use rand::SeedableRng;
+    let n = data.len();
+    if n == 0 || k == 0 {
+        return vec![];
+    }
+    let k = k.min(n);
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut centroids: Vec<[f32; 10]> =
+        data.sample(&mut rng, k).cloned().collect();
+
+    for _ in 0..max_iters {
+        let mut counts: Vec<usize> = vec![0; k];
+        let mut sums: Vec<[f32; 10]> = vec![[0f32; 10]; k];
+
+        for point in data.iter() {
+            let mut best_dist = f32::MAX;
+            let mut best_idx = 0;
+            for (c_idx, c) in centroids.iter().enumerate() {
+                let dist = point
+                    .iter()
+                    .zip(c.iter())
+                    .map(|(p, c)| (p - c) * (p - c))
+                    .sum::<f32>();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = c_idx;
+                }
+            }
+            counts[best_idx] += 1;
+            for j in 0..10 {
+                sums[best_idx][j] += point[j];
+            }
+        }
+
+        let mut moved = false;
+        for c_idx in 0..k {
+            if counts[c_idx] > 0 {
+                let mut new_c = [0f32; 10];
+                for j in 0..10 {
+                    new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
+                }
+                if (new_c[0] - centroids[c_idx][0]).abs() > 1e-6 {
+                    moved = true;
+                }
+                centroids[c_idx] = new_c;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    centroids
+}
+
+/// Sample 10D features from the 5-card (hole, flop) space. Each sample
+/// is a random 5-card combo paired with a random 2-of-5 mask as the hole.
+fn sample_flop_features(
+    n: usize,
+    evaluator: &dyn Evaluator,
+    seed: u64,
+) -> Vec<[f32; 10]> {
+    use rand::Rng;
+    const MASKS: [[usize; 2]; 10] = [
+        [0, 1], [0, 2], [0, 3], [0, 4], [1, 2],
+        [1, 3], [1, 4], [2, 3], [2, 4], [3, 4],
+    ];
+    let total = choose(52, 5) as u32;
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut out: Vec<[f32; 10]> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let combo_idx = rng.random_range(0..total);
+        let mask_idx = rng.random_range(0..10usize);
+        let cards = pkr_eval::lookup_fast::combinadic_unrank_5(combo_idx);
+        let pos = MASKS[mask_idx];
+        let hole: [u8; 2] = [cards[pos[0]], cards[pos[1]]];
+        let mut board = [0u8; 3];
+        let mut bi = 0;
+        for j in 0..5 {
+            if j != pos[0] && j != pos[1] {
+                board[bi] = cards[j];
+                bi += 1;
+            }
+        }
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator);
+        out.push(hand_and_board_features(ehs, ehs_sq, &hole, &board));
+    }
+    out
+}
+
+/// Sample 10D features from the 6-card (hole, turn) space.
+fn sample_turn_features(
+    n: usize,
+    evaluator: &dyn Evaluator,
+    seed: u64,
+) -> Vec<[f32; 10]> {
+    use rand::Rng;
+    const MASKS: [[usize; 2]; 15] = [
+        [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
+        [1, 2], [1, 3], [1, 4], [1, 5],
+        [2, 3], [2, 4], [2, 5],
+        [3, 4], [3, 5],
+        [4, 5],
+    ];
+    let total = choose(52, 6) as u32;
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut out: Vec<[f32; 10]> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let combo_idx = rng.random_range(0..total);
+        let mask_idx = rng.random_range(0..15usize);
+        let cards = combinadic_unrank_6(combo_idx);
+        let pos = MASKS[mask_idx];
+        let hole: [u8; 2] = [cards[pos[0]], cards[pos[1]]];
+        let mut board = [0u8; 4];
+        let mut bi = 0;
+        for j in 0..6 {
+            if j != pos[0] && j != pos[1] {
+                board[bi] = cards[j];
+                bi += 1;
+            }
+        }
+        let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator);
+        out.push(hand_and_board_features(ehs, ehs_sq, &hole, &board));
+    }
+    out
+}
+
+fn generate_flop_rich_table(
+    rank_table_path: &str,
+    centroids_out: &str,
+    table_out: &str,
+    k: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(
+        k <= 255,
+        "flop rich table uses u8 centroid ids; k must be <= 255"
+    );
+    let evaluator = make_evaluator(rank_table_path)?;
+
+    // Phase 1: sample + k-means.
+    let n = sample_size();
+    let seed = sample_seed();
+    eprintln!(
+        "  flop-rich: sampling {} (hole, flop) pairs (seed {:#x})",
+        n, seed
+    );
+    let samples = sample_flop_features(n, evaluator.as_ref(), seed);
+    eprintln!("  flop-rich: k-means k={} (max 50 iters)", k);
+    let centroids = kmeans_10d_seeded(&samples, k, 50, seed ^ 0xA5A5_0000_0000_0000);
+    let store = CentroidStore10D {
+        centroids: centroids.clone(),
+    };
+    save_centroids_10d(centroids_out, &store)?;
+    eprintln!("  flop-rich: saved {} centroids -> {}", k, centroids_out);
+
+    // Phase 2: assign all 26M entries.
+    const MASKS: [[usize; 2]; 10] = [
+        [0, 1], [0, 2], [0, 3], [0, 4], [1, 2],
+        [1, 3], [1, 4], [2, 3], [2, 4], [3, 4],
+    ];
+    let total_combos = choose(52, 5) as usize;
+    let entries = total_combos * 10;
+    let mut table: Vec<u8> = vec![0u8; entries];
+    eprintln!(
+        "  flop-rich: assigning {} entries ({} combos × 10 masks)",
+        entries, total_combos
+    );
+    let t0 = std::time::Instant::now();
+    table
+        .par_chunks_mut(10)
+        .enumerate()
+        .for_each(|(combo_idx, chunk)| {
+            let cards = pkr_eval::lookup_fast::combinadic_unrank_5(combo_idx as u32);
+            for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+                let pos = MASKS[mask_idx];
+                let hole: [u8; 2] = [cards[pos[0]], cards[pos[1]]];
+                let mut board = [0u8; 3];
+                let mut bi = 0;
+                for j in 0..5 {
+                    if j != pos[0] && j != pos[1] {
+                        board[bi] = cards[j];
+                        bi += 1;
+                    }
+                }
+                let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator.as_ref());
+                let feat = hand_and_board_features(ehs, ehs_sq, &hole, &board);
+                *slot = nearest_centroid_10d(&feat, &centroids) as u8;
+            }
+        });
+    let mut file = File::create(table_out).map_err(|e| format!("create {}: {}", table_out, e))?;
+    file.write_all(&table)
+        .map_err(|e| format!("write: {}", e))?;
+    let dt = t0.elapsed().as_secs_f64();
+    eprintln!(
+        "  flop-rich: wrote {} entries ({} bytes) to {} in {:.1}s",
+        entries,
+        entries,
+        table_out,
+        dt
+    );
+    Ok(())
+}
+
+fn generate_turn_rich_table(
+    rank_table_path: &str,
+    centroids_out: &str,
+    table_out: &str,
+    k: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(
+        k <= 255,
+        "turn rich table uses u8 centroid ids; k must be <= 255"
+    );
+    let evaluator = make_evaluator(rank_table_path)?;
+
+    // Phase 1: sample + k-means.
+    let n = sample_size();
+    let seed = sample_seed();
+    eprintln!(
+        "  turn-rich: sampling {} (hole, turn) pairs (seed {:#x})",
+        n, seed
+    );
+    let samples = sample_turn_features(n, evaluator.as_ref(), seed);
+    eprintln!("  turn-rich: k-means k={} (max 50 iters)", k);
+    let centroids = kmeans_10d_seeded(&samples, k, 50, seed ^ 0xB6B6_0000_0000_0000);
+    let store = CentroidStore10D {
+        centroids: centroids.clone(),
+    };
+    save_centroids_10d(centroids_out, &store)?;
+    eprintln!("  turn-rich: saved {} centroids -> {}", k, centroids_out);
+
+    // Phase 2: assign all entries with checkpoint/resume (305 MB output).
+    const MASKS: [[usize; 2]; 15] = [
+        [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
+        [1, 2], [1, 3], [1, 4], [1, 5],
+        [2, 3], [2, 4], [2, 5],
+        [3, 4], [3, 5],
+        [4, 5],
+    ];
+    let total_combos = choose(52, 6) as usize;
+    let entries = total_combos * 15;
+    let tmp_path = format!("{}.tmp", table_out);
+    let prog_path = format!("{}.progress", table_out);
+    let mut table: Vec<u8> = vec![0u8; entries];
+    let mut resume_from: usize = 0;
+    if let Ok(prog_bytes) = std::fs::read(&prog_path) {
+        if prog_bytes.len() == 8 {
+            let p = u64::from_le_bytes(prog_bytes.try_into().unwrap()) as usize;
+            if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
+                if let Ok(disk) = std::fs::read(&tmp_path) {
+                    let copy = disk.len().min(table.len());
+                    table[..copy].copy_from_slice(&disk[..copy]);
+                    resume_from = p;
+                    eprintln!(
+                        "  turn-rich: resuming from combo {} / {} ({:.1}%)",
+                        p,
+                        total_combos,
+                        100.0 * p as f64 / total_combos as f64
+                    );
+                }
+            }
+        }
+    }
+
+    let checkpoint_every: usize = 5_000_000;
+    let t_start = std::time::Instant::now();
+    let mut done = resume_from;
+    eprintln!(
+        "  turn-rich: assigning {} entries ({} combos × 15 masks)",
+        entries, total_combos
+    );
+    while done < total_combos {
+        let end = (done + checkpoint_every).min(total_combos);
+        let lo_off = done * 15;
+        let hi_off = end * 15;
+
+        table[lo_off..hi_off]
+            .par_chunks_mut(15)
+            .enumerate()
+            .for_each(|(rel_idx, chunk)| {
+                let combo_idx = done + rel_idx;
+                let cards = combinadic_unrank_6(combo_idx as u32);
+                for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+                    let pos = MASKS[mask_idx];
+                    let hole: [u8; 2] = [cards[pos[0]], cards[pos[1]]];
+                    let mut board = [0u8; 4];
+                    let mut bi = 0;
+                    for j in 0..6 {
+                        if j != pos[0] && j != pos[1] {
+                            board[bi] = cards[j];
+                            bi += 1;
+                        }
+                    }
+                    let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator.as_ref());
+                    let feat = hand_and_board_features(ehs, ehs_sq, &hole, &board);
+                    *slot = nearest_centroid_10d(&feat, &centroids) as u8;
+                }
+            });
+
+        done = end;
+
+        let mut f = File::create(&tmp_path).map_err(|e| format!("create {}: {}", tmp_path, e))?;
+        f.write_all(&table)
+            .map_err(|e| format!("write {}: {}", tmp_path, e))?;
+        f.sync_all().ok();
+        let mut pf = File::create(&prog_path)
+            .map_err(|e| format!("create {}: {}", prog_path, e))?;
+        pf.write_all(&(done as u64).to_le_bytes())
+            .map_err(|e| format!("write {}: {}", prog_path, e))?;
+        pf.sync_all().ok();
+
+        let elapsed = t_start.elapsed().as_secs_f64();
+        let eta = if done > resume_from {
+            elapsed * (total_combos - done) as f64 / (done - resume_from).max(1) as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "  turn-rich: {}/{} combos ({:.1}%), {:.0}s elapsed, ETA {:.0}s",
+            done,
+            total_combos,
+            100.0 * done as f64 / total_combos as f64,
+            elapsed,
+            eta,
+        );
+    }
+
+    let mut file = File::create(table_out).map_err(|e| format!("create {}: {}", table_out, e))?;
+    file.write_all(&table)
+        .map_err(|e| format!("write {}: {}", table_out, e))?;
+    file.sync_all().ok();
+    let _ = std::fs::remove_file(&tmp_path);
+    let _ = std::fs::remove_file(&prog_path);
+    let dt = t_start.elapsed().as_secs_f64();
+    eprintln!(
+        "  turn-rich: wrote {} entries ({} bytes) to {} in {:.1}s",
+        entries,
+        entries,
+        table_out,
+        dt
+    );
+    Ok(())
 }
 
 #[cfg(test)]
