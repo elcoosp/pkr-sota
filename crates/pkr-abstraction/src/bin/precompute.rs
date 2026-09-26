@@ -1035,6 +1035,18 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
 // introduce kmeans_10d_seeded here.)
 // ===========================================================================
 
+/// Ensure EHS_SAMPLES is set. The production pipeline (scripts/run-config.sh)
+/// uses 100. If unset, we default to 100 here so the rich tables are built
+/// with the same EHS precision as the 2D baseline they're compared against.
+/// Otherwise the ambient ehs.rs default (1000) makes table build ~10x slower
+/// with no benefit — the extra samples don't change 200-bucket assignments.
+fn ensure_ehs_samples() {
+    if std::env::var("EHS_SAMPLES").is_err() {
+        std::env::set_var("EHS_SAMPLES", "100");
+        eprintln!("  (EHS_SAMPLES unset -> default 100 for rich table generation)");
+    }
+}
+
 fn sample_size() -> usize {
     std::env::var("PKR_RICH_SAMPLE_SIZE")
         .ok()
@@ -1119,7 +1131,6 @@ fn sample_flop_features(
     evaluator: &dyn Evaluator,
     seed: u64,
 ) -> Vec<[f32; 10]> {
-    use rand::Rng;
     const MASKS: [[usize; 2]; 10] = [
         [0, 1], [0, 2], [0, 3], [0, 4], [1, 2],
         [1, 3], [1, 4], [2, 3], [2, 4], [3, 4],
@@ -1153,7 +1164,6 @@ fn sample_turn_features(
     evaluator: &dyn Evaluator,
     seed: u64,
 ) -> Vec<[f32; 10]> {
-    use rand::Rng;
     const MASKS: [[usize; 2]; 15] = [
         [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
         [1, 2], [1, 3], [1, 4], [1, 5],
@@ -1194,6 +1204,7 @@ fn generate_flop_rich_table(
         k <= 255,
         "flop rich table uses u8 centroid ids; k must be <= 255"
     );
+    ensure_ehs_samples();
     let evaluator = make_evaluator(rank_table_path)?;
 
     // Phase 1: sample + k-means.
@@ -1270,6 +1281,7 @@ fn generate_turn_rich_table(
         k <= 255,
         "turn rich table uses u8 centroid ids; k must be <= 255"
     );
+    ensure_ehs_samples();
     let evaluator = make_evaluator(rank_table_path)?;
 
     // Phase 1: sample + k-means.
