@@ -5,6 +5,7 @@ members = [
     "crates/pkr-cfr",
     "crates/pkr-eval",
     "crates/pkr-abstraction",
+    "crates/pkr-subgame",
     "crates/pkr-export",
     "crates/pkr-runtime",
     "crates/pkr-fuzz",
@@ -31,6 +32,7 @@ pkr-core = { path = "crates/pkr-core" }
 pkr-cfr = { path = "crates/pkr-cfr" }
 pkr-eval = { path = "crates/pkr-eval" }
 pkr-abstraction = { path = "crates/pkr-abstraction" }
+pkr-subgame = { path = "crates/pkr-subgame" }
 pkr-export = { path = "crates/pkr-export" }
 pkr-runtime = { path = "crates/pkr-runtime" }
 pkr-fuzz = { path = "crates/pkr-fuzz" }
