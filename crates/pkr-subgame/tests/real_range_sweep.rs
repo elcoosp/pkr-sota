@@ -161,11 +161,14 @@ fn real_range_sweep() {
 
         let p0_hands: Vec<[u8; 2]> = p0_samples.iter().map(|(h, _)| *h).collect();
         let p1_hands: Vec<[u8; 2]> = p1_samples.iter().map(|(h, _)| *h).collect();
+        // TRUE posterior weights — not renormalized to uniform over sample.
+        let p0_weights: Vec<f64> = p0_samples.iter().map(|(_, p)| *p).collect();
+        let p1_weights: Vec<f64> = p1_samples.iter().map(|(_, p)| *p).collect();
 
         let cfg_cfr = POCConfig {
             root: tracker.state().clone(),
-            p0_range: Range::uniform(p0_hands.clone()),
-            p1_range: Range::uniform(p1_hands.clone()),
+            p0_range: Range::weighted(p0_hands.clone(), p0_weights.clone()),
+            p1_range: Range::weighted(p1_hands.clone(), p1_weights.clone()),
             iterations: iters,
             evaluator: ev_ref,
             blueprint: None,
@@ -174,8 +177,8 @@ fn real_range_sweep() {
 
         let cfg_bp = POCConfig {
             root: tracker.state().clone(),
-            p0_range: Range::uniform(p0_hands),
-            p1_range: Range::uniform(p1_hands),
+            p0_range: Range::weighted(p0_hands, p0_weights),
+            p1_range: Range::weighted(p1_hands, p1_weights),
             iterations: 0,
             evaluator: ev_ref,
             blueprint: Some((abs_ref, tbl_ref)),

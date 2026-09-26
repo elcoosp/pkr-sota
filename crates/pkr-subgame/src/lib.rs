@@ -35,6 +35,15 @@ impl Range {
         let probs = vec![1.0 / n; hands.len()];
         Range { hands, probs }
     }
+
+    /// Range with caller-supplied per-hand weights. Weights are stored
+    /// as-is (not normalized). The solver builds joint priors as
+    /// `p0.probs[i] * p1.probs[j]` and normalizes per-solve, so absolute
+    /// scale is irrelevant but relative scale is preserved.
+    pub fn weighted(hands: Vec<[u8; 2]>, probs: Vec<f64>) -> Self {
+        assert_eq!(hands.len(), probs.len(), "Range::weighted len mismatch");
+        Range { hands, probs }
+    }
 }
 
 pub struct POCConfig<'a> {

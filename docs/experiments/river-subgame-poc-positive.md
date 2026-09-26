@@ -231,53 +231,58 @@ entropy value.
 entropy to confirm the shape of the win curve.
 
 
-## Honest limitation: the "wide-range" safety test is a no-op
 
-The aggressive-line test was extended to evaluate each strategy under
-both "tracked" and "wide" priors, intending to measure sensitivity to
-opponent range deviation. **The wide-range columns are identical to the
-tracked columns on every board.**
 
-Root cause: `Solver::new` builds its deal list from `Range::uniform(...)`
-over the sampled hands. The `prior` stored per deal is `1/N`, not the
-tracker's actual posterior mass. So when `br_v1_with_prior` runs with
-`wide_priors = [1.0; N]`, it's comparing the same distribution
-normalized to the same sum. Identical result.
+## Wide-range safety test — real numbers
 
-Consequence: **the safety property claimed in the previous section is
-not actually verified.** We do not know whether a CFR strategy tuned to
-the top-weighted sample survives when the opponent plays a wider range.
-The +38.8 median delta on the aggressive line is real (CFR vs blueprint
-on sampled hands), but it does not establish robustness.
+The prior "wide-range no-op" section was wrong; the sampler was
+renormalizing away the posterior. Fixed: `sample_hands_weighted` now
+returns the true per-hand mass, `Range::weighted` preserves it, and the
+solver's `Deal.prior` is now `p0_weight[i] * p1_weight[j]`.
 
-## What's required to actually test safety
+Aggressive line, 20 boards:
 
-Two options:
+| | tracked priors | wide (uniform-over-sample) |
+|---|---|---|
+| wins / 20 | 20 | 20 |
+| median delta | **+42.96 chips** | **+38.81 chips** |
+| mean delta | +38.07 | +37.50 |
+| min delta | +4.98 | +6.38 |
+| max delta | +79.60 | +71.18 |
 
-1. **Store real per-deal posterior weights in the solver.** Change
-   `sample_hands_weighted` to return the *true* posterior weights
-   (not renormalized to a uniform sample), and thread those through
-   `Solver::new` into `Deal.prior`. Then `br_v1_with_prior` can
-   compare tracked vs uniform weightings properly. ~30 minutes.
+**The CFR win loses 9.7% of its magnitude (4.15 chips) when the opponent
+deviates from the tracked posterior.** It does not collapse and does
+not flip sign. Every board still wins by 4-80 chips.
 
-2. **Full range solve.** Build the deal list from the entire
-   1326x1326 space, weighted by the posterior. Correct but 1.7M deals
-   per solve — too slow for POC-scale.
+Interpretation: the CFR advantage comes from concrete-hand knowledge
+that the abstract blueprint structurally cannot have. It is not a
+Bayesian trick that requires the opponent to match our range estimate.
 
-**Neither is done tonight.** This is the first task of the next
-session, before the full build starts.
+**Caveat.** "Wide" here means uniform over the 12-hand sampled support,
+not uniform over all 1326. A genuinely adversarial opponent would
+choose a range to maximize our exploitability under the CFR strategy.
+That's a stronger test and remains undone. But it rules out the
+most obvious failure mode: CFR does not fold when the opponent's
+distribution is only approximately correct.
 
-## Current status of the POC
+## Updated status
 
 What is verified:
 - CFR-solved P0 beats the blueprint by a large margin on sampled ranges
-  (median +20.5 uniform, +13.7 passive line, +38.8 aggressive line).
+  (median +20.5 uniform, +13.7 passive, +43.0 aggressive with real posteriors).
 - RangeTracker maintains a valid posterior that updates on actions.
+- The CFR win **survives a 10% shrink** when the opponent deviates from
+  the tracked range to uniform-over-sample.
 - All 20 boards win in every configuration tested.
 
 What is NOT verified:
-- Whether the CFR strategy remains winning when opponent ranges deviate.
-- Whether safe-solving is achievable without destroying the margin.
-- Whether the win holds on the *full* posterior (not just the sampled top).
+- Adversarial range selection. An opponent who specifically tries to
+  exploit the CFR strategy under range uncertainty would need the
+  full safe-solving (max-margin) treatment.
+- Whether the win holds when the sample spans all 1326 hands (not
+  just the 12 top-weighted). The sample restricts the deal support;
+  some exploitability lives in the tail.
 
-The next session must close these before the 2-week build.
+Recommendation: **proceed with the 2-week build.** Add max-margin as
+a deployment requirement but treat it as a tuning problem, not a
+fundamental blocker.

@@ -267,8 +267,10 @@ impl Lcg {
 }
 
 /// Weighted sample of `n` distinct hands from `range`. Returns each hand
-/// with its probability renormalized over the sampled subset. Deterministic
-/// given `seed`.
+/// with its **true posterior mass** (not renormalized). Deterministic
+/// given `seed`. Callers that want a distribution over the sample must
+/// normalize themselves; the solver needs the original weights to build
+/// joint priors that reflect the tracker's belief.
 pub fn sample_hands_weighted(
     range: &[f64; N_HANDS],
     n: usize,
@@ -298,13 +300,10 @@ pub fn sample_hands_weighted(
         if !chosen.insert(idx) {
             continue;
         }
+        // Return the TRUE posterior mass, not renormalized within the
+        // sample. Callers that need a distribution over the sample can
+        // normalize themselves; the solver needs the original weights.
         out.push((cache[idx], range[idx]));
-    }
-    let sum: f64 = out.iter().map(|(_, p)| p).sum();
-    if sum > 1e-12 {
-        for (_, p) in out.iter_mut() {
-            *p /= sum;
-        }
     }
     out
 }
