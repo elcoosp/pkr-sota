@@ -187,3 +187,45 @@ out of a maximum of `ln(1326) ≈ 7.19` means the posterior carries only
 0.8 nats of information — barely tighter than uniform. A raisier line
 (bet-3bet-call) would concentrate ranges much more and is the harder
 test. Should be run before committing to the full 2-week build.
+
+
+## Aggressive-line gate (2026-09-26, later)
+
+Parameterized the forced line via `PKR_POC_LINE` and re-ran with a
+raisier sequence: preflop SB raise, BB call; flop SB bet, BB call; turn
+check-check; river root.
+
+| line | h_p1 (nats) | median delta | median ratio |
+|---|---|---|---|
+| uniform | 7.19 | +20.50 | 0.001 |
+| passive (cc / cc / cc) | 6.4 | +13.71 | -0.101 |
+| **aggressive (rc / bc / cc)** | **4.7** | **+36.66** | **-0.079** |
+
+**The win grew by 2.7x under tighter ranges.** This contradicts the
+initial hypothesis that range concentration would reduce the CFR
+advantage.
+
+**Working theory:** the blueprint plays *abstract buckets*, not concrete
+hands. Under tight ranges, the conditional distribution over which hands
+are actually present in a bucket has shifted far from the training
+distribution. The blueprint's bucket-level strategy is badly calibrated
+for the specific hands reaching the subgame. Concrete-card CFR sees the
+exact hands and exploits the mis-calibration.
+
+Prediction: the CFR win should be largest when the current line is
+furthest from the abstraction's training centroid. To test, sweep over
+intermediate lines (e.g. raise-fold preflop, call-check flop) and see
+whether the delta is monotone in entropy or peaks at some middle
+entropy value.
+
+**Implications for the build:**
+1. The 2-week build is fully justified — margin is an order of magnitude
+   above the STRONG threshold.
+2. Safe solving is now mandatory, not optional. A solution that beats
+   the blueprint by 36 chips on some lines is a solution that a
+   well-informed opponent can exploit by forcing those lines.
+3. The right model is "CFR exploits abstraction mis-calibration on
+   narrow lines," not "CFR does a bit better than the blueprint."
+
+**Next test (before the full build):** sweep over 5-6 lines of varying
+entropy to confirm the shape of the win curve.

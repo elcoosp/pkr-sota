@@ -48,25 +48,50 @@ fn play_to_river<'a>(
     abs: &'a dyn AbstractionBuilder,
     tbl: &'a pkr_cfr::table::CompactRegretTable,
     evaluator: &'a dyn pkr_contracts::Evaluator,
+    line: &str,
 ) -> Option<RangeTracker<'a>> {
     let root = GameState::new(200.0, 1.0, 2.0);
     let mut tracker = RangeTracker::new(root, abs, tbl, evaluator);
 
-    // Preflop: SB call, BB check
-    tracker.apply_action(Action { player: 0, kind: ActionKind::Call }).ok()?;
-    tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+    // Pot-sized bet relative to current street. The exact sizing doesn't
+    // matter for the tracker — only the resulting bucket, which is
+    // controlled by the blueprint's action_bucket mapping.
+    let bet = |s: &GameState| Action {
+        player: s.actor,
+        kind: ActionKind::Bet(s.pot * 0.75),
+    };
 
-    // Flop
-    tracker.advance_street(&board[0..3]).ok()?;
-    tracker.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
-    tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+    match line {
+        "passive" => {
+            // call-check / check-check / check-check
+            tracker.apply_action(Action { player: 0, kind: ActionKind::Call }).ok()?;
+            tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+            tracker.advance_street(&board[0..3]).ok()?;
+            tracker.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
+            tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+            tracker.advance_street(&board[3..4]).ok()?;
+            tracker.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
+            tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+        }
+        "aggressive" => {
+            // preflop: SB raise, BB call
+            let s0 = tracker.state().clone();
+            tracker.apply_action(bet(&s0)).ok()?;
+            tracker.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+            // flop: SB bet, BB call
+            tracker.advance_street(&board[0..3]).ok()?;
+            let s1 = tracker.state().clone();
+            tracker.apply_action(bet(&s1)).ok()?;
+            tracker.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+            // turn: check-check
+            tracker.advance_street(&board[3..4]).ok()?;
+            tracker.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
+            tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+        }
+        other => panic!("unknown line: {}", other),
+    }
 
-    // Turn
-    tracker.advance_street(&board[3..4]).ok()?;
-    tracker.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
-    tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
-
-    // River
+    // River root
     tracker.advance_street(&board[4..5]).ok()?;
     Some(tracker)
 }
@@ -93,6 +118,10 @@ fn real_range_sweep() {
     let ev_ref: &dyn pkr_contracts::Evaluator = evaluator.as_ref();
     let tbl_ref = trainer.get_table();
 
+    let line: String = std::env::var("PKR_POC_LINE")
+        .unwrap_or_else(|_| "passive".to_string());
+    println!("  line = {}", line);
+
     let n_boards: u64 = std::env::var("PKR_POC_BOARDS")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(20);
     let n_hands: usize = std::env::var("PKR_POC_HANDS")
@@ -111,7 +140,7 @@ fn real_range_sweep() {
 
     for seed in 0..n_boards {
         let b = board_for(seed);
-        let tracker = match play_to_river(&b, abs_ref, tbl_ref, ev_ref) {
+        let tracker = match play_to_river(&b, abs_ref, tbl_ref, ev_ref, &line) {
             Some(t) => t,
             None => { fails += 1; continue; }
         };
