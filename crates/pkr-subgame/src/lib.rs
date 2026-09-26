@@ -526,6 +526,19 @@ impl<'a> Solver<'a> {
 
     pub fn n_deals(&self) -> usize { self.n_deals }
 
+    /// P0's strategy at the root for each deal, as a flat vec.
+    /// Used by the diagnostic to check whether the CFR solution
+    /// distinguishes hands (Nash) or plays a fixed action (artefact).
+    pub fn root_p0_strategies(&self) -> Vec<[f64; ABSTRACT_BUCKETS]> {
+        let i_root = self.tree.root as usize * self.n_deals;
+        (0..self.n_deals)
+            .map(|d| self.sum0[i_root + d])
+            .collect()
+    }
+
+    /// Root node id.
+    pub fn root_id(&self) -> u32 { self.tree.root }
+
     fn build_blueprint_strategy(
         &self,
         abs: &dyn AbstractionBuilder,
