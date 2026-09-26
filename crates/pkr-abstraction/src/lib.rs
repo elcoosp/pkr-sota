@@ -85,14 +85,16 @@ pub struct CentroidStore {
 
 pub fn load_centroids(path: &str) -> Result<CentroidStore, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let store: CentroidStore = bincode::deserialize_from(reader)?;
+    let mut reader = BufReader::new(file);
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    let store: CentroidStore = postcard::from_bytes(&buf)?;
     Ok(store)
 }
 
 pub fn save_centroids(path: &str, store: &CentroidStore) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::create(path)?;
-    bincode::serialize_into(file, store)?;
+    postcard::to_io(store, file)?;
     Ok(())
 }
 
@@ -116,8 +118,10 @@ pub struct CentroidStore6D {
 
 pub fn load_centroids_6d(path: &str) -> Result<CentroidStore6D, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let store: CentroidStore6D = bincode::deserialize_from(reader)?;
+    let mut reader = BufReader::new(file);
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    let store: CentroidStore6D = postcard::from_bytes(&buf)?;
     Ok(store)
 }
 
@@ -126,7 +130,7 @@ pub fn save_centroids_6d(
     store: &CentroidStore6D,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::create(path)?;
-    bincode::serialize_into(file, store)?;
+    postcard::to_io(store, file)?;
     Ok(())
 }
 
@@ -269,8 +273,10 @@ pub struct CentroidStore10D {
 
 pub fn load_centroids_10d(path: &str) -> Result<CentroidStore10D, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let store: CentroidStore10D = bincode::deserialize_from(reader)?;
+    let mut reader = BufReader::new(file);
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    let store: CentroidStore10D = postcard::from_bytes(&buf)?;
     Ok(store)
 }
 
@@ -279,7 +285,7 @@ pub fn save_centroids_10d(
     store: &CentroidStore10D,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::create(path)?;
-    bincode::serialize_into(file, store)?;
+    postcard::to_io(store, file)?;
     Ok(())
 }
 
