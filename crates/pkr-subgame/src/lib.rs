@@ -48,7 +48,12 @@ pub struct POCConfig<'a> {
 
 pub struct POCResult {
     pub br_v1_vs_cfr: f64,
+    /// CFR strategy evaluated against a *widened* P1 range (uniform over
+    /// the same deal support, ignoring the tracked posterior weights).
+    /// Tests whether CFR's win depends on the specific tracked range.
+    pub br_v1_vs_cfr_wide: f64,
     pub br_v1_vs_blueprint: Option<f64>,
+    pub br_v1_vs_blueprint_wide: Option<f64>,
     pub iterations: u32,
     pub nodes_visited: u64,
 }
@@ -56,13 +61,30 @@ pub struct POCResult {
 pub fn run_poc(cfg: &POCConfig) -> POCResult {
     let mut solver = Solver::new(cfg);
     solver.solve();
-    let br_v1_vs_cfr = solver.compute_br_v1(None);
-    let br_v1_vs_blueprint = cfg
-        .blueprint
-        .map(|(abs, tbl)| solver.compute_br_v1(Some((abs, tbl))));
+
+    // CFR strategy on tracked priors and wide priors (uniform over deals).
+    let cfr_strat = solver.p0_strategy();
+    let tracked_priors: Vec<f64> = solver.deals.iter().map(|d| d.prior).collect();
+    let wide_priors: Vec<f64> = vec![1.0; solver.n_deals];
+
+    let br_v1_vs_cfr = solver.br_v1_with_prior(&cfr_strat, &tracked_priors);
+    let br_v1_vs_cfr_wide = solver.br_v1_with_prior(&cfr_strat, &wide_priors);
+
+    let (br_v1_vs_blueprint, br_v1_vs_blueprint_wide) = match cfg.blueprint {
+        None => (None, None),
+        Some((abs, tbl)) => {
+            let bp_strat = solver.build_blueprint_strategy(abs, tbl);
+            let t = solver.br_v1_with_prior(&bp_strat, &tracked_priors);
+            let w = solver.br_v1_with_prior(&bp_strat, &wide_priors);
+            (Some(t), Some(w))
+        }
+    };
+
     POCResult {
         br_v1_vs_cfr,
+        br_v1_vs_cfr_wide,
         br_v1_vs_blueprint,
+        br_v1_vs_blueprint_wide,
         iterations: cfg.iterations,
         nodes_visited: solver.nodes_visited,
     }
@@ -347,15 +369,44 @@ impl<'a> Solver<'a> {
     }
 
     fn br_v1(&self, p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>]) -> f64 {
-        // br_walk returns value to P0; we want P1's best-response value
-        // (the number that goes into exploitability), so negate once here.
-        let mut total = 0.0f64;
-        for deal_idx in 0..self.n_deals {
-            let prior = self.deals[deal_idx].prior;
-            let v_p0 = self.br_walk(self.tree.root, deal_idx as u32, p0_strategy);
-            total += prior * (-v_p0);
+        let priors: Vec<f64> = self.deals.iter().map(|d| d.prior).collect();
+        self.br_v1_with_prior(p0_strategy, &priors)
+    }
+
+    /// br_walk returns value to P0; we want P1's BR value (for
+    /// exploitability), so negate once. `priors` is a per-deal weight
+    /// list, normalized inside.
+    fn br_v1_with_prior(
+        &self,
+        p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>],
+        priors: &[f64],
+    ) -> f64 {
+        let sum: f64 = priors.iter().sum();
+        if sum <= 1e-12 {
+            return 0.0;
         }
-        total
+        let mut total = 0.0f64;
+        for i in 0..self.n_deals {
+            let w = priors[i];
+            if w <= 0.0 {
+                continue;
+            }
+            let v_p0 = self.br_walk(self.tree.root, i as u32, p0_strategy);
+            total += w * (-v_p0);
+        }
+        total / sum
+    }
+
+    fn build_blueprint_strategy(
+        &self,
+        abs: &dyn AbstractionBuilder,
+        tbl: &CompactRegretTable,
+    ) -> Vec<Option<[f64; ABSTRACT_BUCKETS]>> {
+        let mut strat: Vec<Option<[f64; ABSTRACT_BUCKETS]>> =
+            vec![None; self.n_nodes * self.n_deals];
+        let mut state = self.cfg.root.clone();
+        self.fill_blueprint_strat(self.tree.root, &mut state, &mut strat, abs, tbl);
+        strat
     }
 
     fn br_walk(
@@ -400,26 +451,15 @@ impl<'a> Solver<'a> {
         }
     }
 
+    #[allow(dead_code)]
     fn compute_br_v1(
         &self,
         blueprint: Option<(&dyn AbstractionBuilder, &CompactRegretTable)>,
     ) -> f64 {
         match blueprint {
-            None => {
-                let strat = self.p0_strategy();
-                self.br_v1(&strat)
-            }
+            None => self.br_v1(&self.p0_strategy()),
             Some((abs, tbl)) => {
-                let mut strat: Vec<Option<[f64; ABSTRACT_BUCKETS]>> =
-                    vec![None; self.n_nodes * self.n_deals];
-                let mut state = self.cfg.root.clone();
-                self.fill_blueprint_strat(
-                    self.tree.root,
-                    &mut state,
-                    &mut strat,
-                    abs,
-                    tbl,
-                );
+                let strat = self.build_blueprint_strategy(abs, tbl);
                 self.br_v1(&strat)
             }
         }

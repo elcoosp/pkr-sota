@@ -229,3 +229,55 @@ entropy value.
 
 **Next test (before the full build):** sweep over 5-6 lines of varying
 entropy to confirm the shape of the win curve.
+
+
+## Honest limitation: the "wide-range" safety test is a no-op
+
+The aggressive-line test was extended to evaluate each strategy under
+both "tracked" and "wide" priors, intending to measure sensitivity to
+opponent range deviation. **The wide-range columns are identical to the
+tracked columns on every board.**
+
+Root cause: `Solver::new` builds its deal list from `Range::uniform(...)`
+over the sampled hands. The `prior` stored per deal is `1/N`, not the
+tracker's actual posterior mass. So when `br_v1_with_prior` runs with
+`wide_priors = [1.0; N]`, it's comparing the same distribution
+normalized to the same sum. Identical result.
+
+Consequence: **the safety property claimed in the previous section is
+not actually verified.** We do not know whether a CFR strategy tuned to
+the top-weighted sample survives when the opponent plays a wider range.
+The +38.8 median delta on the aggressive line is real (CFR vs blueprint
+on sampled hands), but it does not establish robustness.
+
+## What's required to actually test safety
+
+Two options:
+
+1. **Store real per-deal posterior weights in the solver.** Change
+   `sample_hands_weighted` to return the *true* posterior weights
+   (not renormalized to a uniform sample), and thread those through
+   `Solver::new` into `Deal.prior`. Then `br_v1_with_prior` can
+   compare tracked vs uniform weightings properly. ~30 minutes.
+
+2. **Full range solve.** Build the deal list from the entire
+   1326x1326 space, weighted by the posterior. Correct but 1.7M deals
+   per solve — too slow for POC-scale.
+
+**Neither is done tonight.** This is the first task of the next
+session, before the full build starts.
+
+## Current status of the POC
+
+What is verified:
+- CFR-solved P0 beats the blueprint by a large margin on sampled ranges
+  (median +20.5 uniform, +13.7 passive line, +38.8 aggressive line).
+- RangeTracker maintains a valid posterior that updates on actions.
+- All 20 boards win in every configuration tested.
+
+What is NOT verified:
+- Whether the CFR strategy remains winning when opponent ranges deviate.
+- Whether safe-solving is achievable without destroying the margin.
+- Whether the win holds on the *full* posterior (not just the sampled top).
+
+The next session must close these before the 2-week build.

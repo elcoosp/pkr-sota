@@ -130,12 +130,14 @@ fn real_range_sweep() {
         .ok().and_then(|s| s.parse().ok()).unwrap_or(100);
 
     let mut deltas: Vec<f64> = Vec::new();
+    let mut wide_deltas: Vec<f64> = Vec::new();
     let mut ratios: Vec<f64> = Vec::new();
     let mut fails = 0usize;
 
     println!();
-    println!("{:>6} {:>24} {:>10} {:>10} {:>10} {:>8} {:>6}",
-             "board", "cards", "cfr", "bp", "delta", "ratio", "h_p1");
+    println!("{:>6} {:>24} {:>10} {:>10} {:>10} {:>8} {:>6} {:>10} {:>10} {:>10}",
+             "board", "cards", "cfr", "bp", "delta", "ratio", "h_p1",
+             "cfr_w", "bp_w", "delta_w");
     println!("{}", "-".repeat(80));
 
     for seed in 0..n_boards {
@@ -187,8 +189,14 @@ fn real_range_sweep() {
         deltas.push(delta);
         ratios.push(ratio);
 
-        println!("{:>6} {:>24} {:>10.4} {:>10.4} {:>+10.4} {:>8.3} {:>6.2}",
-                 seed, format!("{:?}", b), r_cfr.br_v1_vs_cfr, bp_val, delta, ratio, p1_entropy);
+        let cfr_wide = r_cfr.br_v1_vs_cfr_wide;
+        let bp_wide = r_bp.br_v1_vs_blueprint_wide.unwrap_or(f64::NAN);
+        let delta_wide = bp_wide - cfr_wide;
+        wide_deltas.push(delta_wide);
+        println!("{:>6} {:>24} {:>10.4} {:>10.4} {:>+10.4} {:>8.3} {:>6.2} {:>10.4} {:>10.4} {:>+10.4}",
+                 seed, format!("{:?}", b),
+                 r_cfr.br_v1_vs_cfr, bp_val, delta, ratio, p1_entropy,
+                 cfr_wide, bp_wide, delta_wide);
     }
 
     println!("{}", "-".repeat(80));
@@ -213,6 +221,31 @@ fn real_range_sweep() {
     println!("  mean ratio:     {:.4}", mean_ratio);
     println!("  min delta:      {:+.4}", deltas[0]);
     println!("  max delta:      {:+.4}", deltas[n - 1]);
+    if !wide_deltas.is_empty() {
+        wide_deltas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let nw = wide_deltas.len();
+        let wmean: f64 = wide_deltas.iter().sum::<f64>() / nw as f64;
+        let wmed = if nw % 2 == 1 { wide_deltas[nw/2] } else { (wide_deltas[nw/2-1] + wide_deltas[nw/2]) / 2.0 };
+        let wwins = wide_deltas.iter().filter(|&&d| d > 0.0).count();
+        println!();
+        println!("=== WIDE-RANGE (opponent deviates to uniform prior) ===");
+        println!("  wins:          {}/{}", wwins, nw);
+        println!("  mean delta:    {:+.4}", wmean);
+        println!("  median delta:  {:+.4}", wmed);
+        println!("  min delta:     {:+.4}", wide_deltas[0]);
+        println!("  max delta:     {:+.4}", wide_deltas[nw-1]);
+        println!();
+        if wmed > 10.0 {
+            println!("  -> CFR win is ROBUST to opponent range deviation.");
+            println!("     No safe-solving gadget needed for these lines.");
+        } else if wmed > 0.0 {
+            println!("  -> CFR win weakens under deviation; gadget advisable.");
+        } else {
+            println!("  -> CFR can be EXPLOITED by opponent deviation;");
+            println!("     max-margin gadget is mandatory before deployment.");
+        }
+    }
+
     println!();
     println!("  Compare to uniform-range POC:");
     println!("    uniform median delta:  +20.50 chips");
