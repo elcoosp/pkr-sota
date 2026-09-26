@@ -18,6 +18,26 @@ use pkr_core::state::{Action, ActionKind, GameState};
 
 pub const MAX_ACTIONS: usize = 8;
 pub const ABSTRACT_BUCKETS: usize = 6;
+/// Number of hand-strength classes shared across deals. Deals in the same
+/// class share CFR regrets, so strategies generalize to hands never seen
+/// during the solve. 64 gives fine strength resolution without losing
+/// the cross-deal generalization benefit.
+pub const N_CLASSES: usize = 64;
+
+/// Minimum valid `!raw` value from `evaluate_hand`. The inverted-bit
+/// encoding occupies `[MIN_RANK, u32::MAX]`.
+const MIN_RANK: u64 = (u32::MAX as u64) - (9u64 << 20) + 1;
+
+#[inline]
+pub fn class_of(rank: u32) -> usize {
+    // Linear scaling of the inverted-bit rank across N_CLASSES. Preserves
+    // strength ordering (higher !raw = weaker hand) and gives ~equal-mass
+    // bins over the valid range.
+    let r = (rank as u64).max(MIN_RANK);
+    let span = (u32::MAX as u64) - MIN_RANK + 1;
+    let idx = ((r - MIN_RANK) * N_CLASSES as u64) / span;
+    (idx as usize).min(N_CLASSES - 1)
+}
 const MAX_TREE_DEPTH: u32 = 50;
 
 // ---------------------------------------------------------------------------
@@ -292,6 +312,8 @@ impl<'a> Solver<'a> {
         node_id as usize * self.n_deals + deal_idx as usize
     }
 
+    pub fn root(&self) -> u32 { self.tree.root }
+
     fn walk(&mut self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64) -> f64 {
         self.nodes_visited += 1;
         let node = self.tree.nodes[node_id as usize];
@@ -300,7 +322,7 @@ impl<'a> Solver<'a> {
                 self.term_val[self.idx(node_id, deal_idx)]
             }
             PublicNode::Decision { actor, bucket_child } => {
-                let i = self.idx(node_id, deal_idx);
+                let i = node_id as usize * self.n_deals + deal_idx as usize;
                 let prior = self.deals[deal_idx as usize].prior;
 
                 let regrets = if actor == 0 { &self.reg0[i] } else { &self.reg1[i] };
@@ -354,7 +376,9 @@ impl<'a> Solver<'a> {
         }
     }
 
-    /// P0 strategy at every node. None => uniform fallback.
+    /// P0 strategy at every (node, deal). None => uniform fallback.
+    /// Derived from per-class regrets so a new deal inherits the strategy
+    /// of its class.
     fn p0_strategy(&self) -> Vec<Option<[f64; ABSTRACT_BUCKETS]>> {
         let mut out = vec![None; self.n_nodes * self.n_deals];
         for node_id in 0..self.n_nodes {
@@ -375,6 +399,30 @@ impl<'a> Solver<'a> {
             }
         }
         out
+    }
+
+    /// P0 strategy for an arbitrary P0 hand class at a given public node.
+    /// Used by the adversarial test to score P1 hands never seen during
+    /// the solve. Returns None => uniform fallback.
+    pub fn p0_strategy_for_class(
+        &self,
+        node_id: u32,
+        class: usize,
+    ) -> Option<[f64; ABSTRACT_BUCKETS]> {
+        if let PublicNode::Decision { actor: 0, bucket_child } = self.tree.nodes[node_id as usize] {
+            let src = node_id as usize * N_CLASSES + class;
+            let sum: f64 = self.sum0[src].iter().sum();
+            if sum > 1e-12 {
+                let mut s = [0.0; ABSTRACT_BUCKETS];
+                for b in 0..ABSTRACT_BUCKETS {
+                    if bucket_child[b] >= 0 {
+                        s[b] = self.sum0[src][b] / sum;
+                    }
+                }
+                return Some(s);
+            }
+        }
+        None
     }
 
     fn br_v1(&self, p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>]) -> f64 {
