@@ -89,7 +89,11 @@ struct Cli {
     #[arg(long, default_value_t = 500_000)]
     checkpoint_every: u32,
 
-    #[arg(long, default_value_t = 5_000_000)]
+    /// Regret-table capacity (number of infosets). v36 capacity sweep
+    /// (docs/experiments/v36-capacity-sweep.md) showed 60M beats 5M by
+    /// ~56 mbb pooled across 2 seeds. The extra memory is virtual address
+    /// space only (lazily allocated), not RSS.
+    #[arg(long, default_value_t = 60_000_000)]
     capacity: usize,
 
     #[arg(long, default_value_t = 0)]
