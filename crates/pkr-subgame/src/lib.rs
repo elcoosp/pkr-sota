@@ -142,6 +142,79 @@ fn p95_of(v: &[f64]) -> f64 {
     s[idx.min(s.len() - 1)]
 }
 
+pub struct RootStrategies {
+    pub p0_hands: Vec<[u8; 2]>,
+    pub p1_hands: Vec<[u8; 2]>,
+    /// Normalized strategy at the river root for each deal's P0 hand.
+    pub strategies: Vec<[f64; ABSTRACT_BUCKETS]>,
+    /// Which actions are legal at the root.
+    pub legal: [bool; ABSTRACT_BUCKETS],
+}
+
+pub fn root_strategies(cfg: &POCConfig) -> RootStrategies {
+    let mut solver = Solver::new(cfg);
+    solver.solve();
+    let root = solver.tree.root as usize;
+    let legal = match solver.tree.nodes[root] {
+        PublicNode::Decision { bucket_child, .. } => {
+            let mut l = [false; ABSTRACT_BUCKETS];
+            for b in 0..ABSTRACT_BUCKETS {
+                if bucket_child[b] >= 0 { l[b] = true; }
+            }
+            l
+        }
+        _ => [false; ABSTRACT_BUCKETS],
+    };
+    let hands = solver.deal_hands();
+    RootStrategies {
+        p0_hands: hands.iter().map(|(a, _)| *a).collect(),
+        p1_hands: hands.iter().map(|(_, b)| *b).collect(),
+        strategies: solver.root_p0_strategies(),
+        legal,
+    }
+}
+
+pub struct StrategyDiagnostics {
+    pub p0_decision_nodes: usize,
+    pub distinct_strategies: usize,
+    pub total_variance: f64,
+    pub first_node_strategies: Option<(u32, Vec<[f64; ABSTRACT_BUCKETS]>)>,
+    pub p0_hands: Vec<[u8; 2]>,
+}
+
+pub fn diagnose_strategy_variance(cfg: &POCConfig) -> StrategyDiagnostics {
+    let mut solver = Solver::new(cfg);
+    solver.solve();
+
+    let p0_dec = solver.p0_decision_count();
+    let var = solver.strategy_variance_across_deals();
+    let first = solver.first_p0_decision_strategies();
+    let hands = solver.deal_hands();
+
+    // Count distinct strategies at the first P0 node
+    let distinct = match &first {
+        None => 0,
+        Some((_, s)) => {
+            let mut uniq: Vec<[f64; ABSTRACT_BUCKETS]> = Vec::new();
+            for st in s {
+                let is_new = !uniq.iter().any(|o| {
+                    o.iter().zip(st.iter()).all(|(a, b)| (a - b).abs() < 1e-4)
+                });
+                if is_new { uniq.push(*st); }
+            }
+            uniq.len()
+        }
+    };
+
+    StrategyDiagnostics {
+        p0_decision_nodes: p0_dec,
+        distinct_strategies: distinct,
+        total_variance: var,
+        first_node_strategies: first,
+        p0_hands: hands.iter().map(|(a, _)| *a).collect(),
+    }
+}
+
 pub fn run_poc(cfg: &POCConfig) -> POCResult {
     let mut solver = Solver::new(cfg);
     solver.solve();
@@ -526,18 +599,103 @@ impl<'a> Solver<'a> {
 
     pub fn n_deals(&self) -> usize { self.n_deals }
 
-    /// P0's strategy at the root for each deal, as a flat vec.
-    /// Used by the diagnostic to check whether the CFR solution
-    /// distinguishes hands (Nash) or plays a fixed action (artefact).
+    /// P0's normalized root strategy for each deal. Used by the
+    /// strategy-diversity diagnostic.
     pub fn root_p0_strategies(&self) -> Vec<[f64; ABSTRACT_BUCKETS]> {
-        let i_root = self.tree.root as usize * self.n_deals;
+        let root = self.tree.root as usize;
+        let i_root = root * self.n_deals;
+        let bucket_child = match self.tree.nodes[root] {
+            PublicNode::Decision { bucket_child, .. } => bucket_child,
+            _ => return vec![[0.0; ABSTRACT_BUCKETS]; self.n_deals],
+        };
         (0..self.n_deals)
-            .map(|d| self.sum0[i_root + d])
+            .map(|d| {
+                let raw = self.sum0[i_root + d];
+                let sum: f64 = raw.iter().sum();
+                let mut out = [0.0; ABSTRACT_BUCKETS];
+                if sum > 1e-12 {
+                    for b in 0..ABSTRACT_BUCKETS {
+                        if bucket_child[b] >= 0 {
+                            out[b] = raw[b] / sum;
+                        }
+                    }
+                }
+                out
+            })
             .collect()
     }
 
-    /// Root node id.
     pub fn root_id(&self) -> u32 { self.tree.root }
+
+    /// First P0 decision node (tree order) with non-zero strategy for at
+    /// least one deal. Returns (node_id, per-deal normalized strategies).
+    /// `None` if P0 has no reachable decision node with learning.
+    pub fn first_p0_decision_strategies(
+        &self,
+    ) -> Option<(u32, Vec<[f64; ABSTRACT_BUCKETS]>)> {
+        let full = self.p0_strategy();
+        for node_id in 0..self.n_nodes {
+            if let PublicNode::Decision { actor: 0, bucket_child } =
+                self.tree.nodes[node_id]
+            {
+                let mut any_nonzero = false;
+                let mut out = Vec::with_capacity(self.n_deals);
+                for d in 0..self.n_deals {
+                    let s = full[node_id * self.n_deals + d]
+                        .unwrap_or([0.0; ABSTRACT_BUCKETS]);
+                    if s.iter().any(|&p| p > 1e-9) {
+                        any_nonzero = true;
+                    }
+                    out.push(s);
+                }
+                if any_nonzero {
+                    let _ = bucket_child;
+                    return Some((node_id as u32, out));
+                }
+            }
+        }
+        None
+    }
+
+    /// Total P0 decision-node count in the tree.
+    pub fn p0_decision_count(&self) -> usize {
+        self.tree
+            .nodes
+            .iter()
+            .filter(|n| matches!(n, PublicNode::Decision { actor: 0, .. }))
+            .count()
+    }
+
+    /// Aggregate variance of P0's strategy across deals, summed over all
+    /// P0 decision nodes. Zero -> CFR played one strategy for every hand.
+    /// Non-zero -> CFR distinguishes hands.
+    pub fn strategy_variance_across_deals(&self) -> f64 {
+        let full = self.p0_strategy();
+        let mut total = 0.0f64;
+        for node_id in 0..self.n_nodes {
+            if let PublicNode::Decision { actor: 0, .. } = self.tree.nodes[node_id] {
+                // For each bucket, compute variance of probability across deals.
+                for b in 0..ABSTRACT_BUCKETS {
+                    let mut vals: Vec<f64> = Vec::with_capacity(self.n_deals);
+                    for d in 0..self.n_deals {
+                        if let Some(s) = full[node_id * self.n_deals + d] {
+                            vals.push(s[b]);
+                        }
+                    }
+                    if vals.is_empty() { continue; }
+                    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+                    let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+                        / vals.len() as f64;
+                    total += var;
+                }
+            }
+        }
+        total
+    }
+
+    pub fn deal_hands(&self) -> Vec<([u8; 2], [u8; 2])> {
+        self.deals.iter().map(|d| (d.h0, d.h1)).collect()
+    }
 
     fn build_blueprint_strategy(
         &self,
