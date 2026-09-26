@@ -42,7 +42,7 @@ BENCH_SECONDS="${BENCH_SECONDS:-0}"
 CAPACITY="${CAPACITY:-60000000}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-5000000}"
 REPORT_EVERY="${REPORT_EVERY:-1000000}"
-ITERS_PER_SYNC="${ITERS_PER_SYNC:-512}"
+ITERS_PER_SYNC="${ITERS_PER_SYNC:-2048}"
 
 # ---------- evaluation / promotion (r3 E1) ----------
 # Fire the sampled-BR exploitability check every EVAL_EVERY iterations

@@ -116,7 +116,12 @@ struct Cli {
     /// merge/flush work across more logical iterations; smaller reduces
     /// staleness of the regrets each traversal sees. 512 measured best
     /// on M1 in v11 (55K it/s vs 38K at 256).
-    #[arg(long, default_value_t = 512)]
+    /// Iterations per rayon dispatch. Larger amortizes the serial
+    /// merge/flush work across more logical iterations; smaller reduces
+    /// staleness of the regrets each traversal sees. v36 sweep (docs/
+    /// experiments/v36-capacity-sweep.md) showed 2048 gives ~20% more
+    /// throughput than 512 with no measurable convergence cost at 5M iters.
+    #[arg(long, default_value_t = 2048)]
     iters_per_sync: u32,
 
     /// After training, run preflop chart sanity checks against the

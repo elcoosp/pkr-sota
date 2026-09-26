@@ -1,40 +1,52 @@
-# v36 — capacity sweep (FINAL)
+# v36 — capacity sweep + iters-per-sync sweep (FINAL)
 
 **Date:** 2026-09-26
-**Status:** 60M capacity beats 5M by **-56.2 mbb** pooled across 2 seeds. Direction is consistent, magnitude within 1 sigma of cross-seed noise but positive on both seeds.
+**Status:** Both sweeps complete.
 
-## Result
+## Capacity sweep (FINAL)
 
-Same configuration as v33-B / v35-A except capacity. 20M iterations, 5000-deal evals.
+Same config as v33-B / v35-A except `--capacity`, 20M iterations, seed 43 (plus existing seed-42 anchors).
 
-| seed | 5M best | 60M best | delta (60M - 5M) |
+| seed | 5M best | 60M best | delta (60M − 5M) |
 |---|---|---|---|
-| 42 | 2728.6 (v33-B) | 2650.1 (v35-A) | -78.5 |
-| 43 | 2638.5 (v36) | 2604.7 (v36) | -33.9 |
+| 42 | 2728.6 | 2650.1 | -78.5 |
+| 43 | 2638.5 | 2604.7 | -33.9 |
 | **pooled** | **2683.6** | **2627.4** | **-56.2** |
 
-Both seeds favor 60M. The magnitude is not statistically distinguishable from zero at 2 seeds (SD ~110 mbb), but the sign consistency (2/2) suggests a real if modest effect.
+Pooled SE ≈ 50.5 mbb → z = -1.11. Direction consistent across both seeds (−78.5 and −33.8), pooled effect -56.2 mbb.
 
-## Interpretation
+**Verdict:** Within noise at 2 seeds, but sign-consistent. **Shipped 60M as the default** (`binaries/pkr-trainer/src/main.rs` 44d3432). The extra capacity costs virtual address space only (RSS measured ~700 MB stable at both capacities).
 
-Regret tables at 5M capacity hit collisions earlier in the run; 60M defers them. At 20M iterations, the 5M table is at ~24% utilization (based on v34long's trajectory) vs 60M at 2%. The extra headroom means fewer regrets compete for the same slot during early training.
+## Iters-per-sync sweep
 
-The effect is small (-56.2 mbb at 20M iters) but costs nothing — 60M capacity's additional memory footprint is lazily allocated virtual address space, not RSS (measured ~700 MB stable across both caps).
+3 fresh runs at seed 42, 60M capacity, 5M iterations, `--iters-per-sync ∈ {256, 1024, 2048}`. Reference: v35-A at 512 (20M iters, take the 5M reading).
 
-## Recommendation
+| sync | best mbb @ 5M | throughput (it/s) |
+|---|---|---|
+| 256 | 2909.6 | 7,767 |
+| 1024 | 2771.1 | 9,091 |
+| 2048 | 2770.9 | **10,228** |
 
-**Change the default `--capacity` from 5_000_000 to 60_000_000.**
+**Throughput:** 2048 is +13% vs 1024, +32% vs 256, +20% vs 512 (v35-A's ~8.5K it/s on the same config). Exploitability at 5M is noisy (2 readings each); the 1024 vs 2048 numbers are effectively identical (2771.1 vs 2770.9), so the throughput gain comes at no measured convergence cost up to 5M iterations.
 
-- `run-config.sh` line 36: `CAPACITY="${CAPACITY:-60000000}"`
-- `binaries/pkr-trainer/src/main.rs` line 88: `#[arg(long, default_value_t = 60_000_000)]`
-- Update the handoff's "production flags" to include `--capacity 60000000`
+**Caveat:** only 2 readings per config, 5M iterations. A longer comparison would strengthen the convergence claim. But 256's 2909 looks worse than 1024/2048's ~2771, which suggests lower sync values hurt convergence at this training scale (more staleness-per-batch actually seems fine — or the ordering is a coincidence).
 
-## Cross-seed variance observation
+**Recommendation:** ship `--iters-per-sync 2048`.
 
-Handoff §2 documented SD = 78 mbb across 5 seeds at 5M iterations. At 20M iterations, cross-seed spread is ~90-130 mbb on matched configs. SD grows with iteration count.
+## Cross-seed variance at 20M iterations
 
-## Related
+Session data:
+- seed 42 vs 43 at 5M capacity, 20M iters: 2728.6 vs 2638.5 → SD ≈ 90 mbb
+- seed 42 vs 43 at 60M capacity, 20M iters: 2650.1 vs 2604.7 → SD ≈ 45 mbb
 
-- `docs/experiments/v34-long-run-confirmed.md` — same config at 100M iters, best 2526
-- `docs/experiments/v35-flop-turn-rich-negative.md` — negative result on rich flop/turn features
-- `docs/handoff/HANDOFF_2026-09-25.md` §2 — historical context
+Smaller than expected. Handoff's "78 mbb at 5M iters" guidance remains conservative. Use **~100 mbb** for A/B decisions at 20M iters.
+
+## Best 20M-iteration reading this session
+
+**2604.7 mbb** (v36 cap60M seed 43). Below both seed-42 anchors.
+
+## Artifacts
+
+- CSVs archived to `outputs/archive/csvs/v36*__*.csv`
+- Checkpoints cleaned from `outputs/v36*` to reclaim disk
+- Commit `44d3432` — capacity default 60M
