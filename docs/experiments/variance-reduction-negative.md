@@ -121,3 +121,74 @@ work. **Low EV on the current setup.**
 - Code: reverted. No VR commits in git history (patches applied to the
   working tree and rolled back via `git checkout --`).
 - Handoff context: `docs/handoff/HANDOFF_2026-09-25.md` §4.
+
+
+## Second attempt: stratified sampling by preflop hand strength
+
+After the baseline-CV failure above, a second variance-reduction method was
+tried: **stratify the deal sample by P0's preflop hand strength**. The
+intuition: weak hands systematically produce low BR values and premium
+hands produce high ones, so binning by hand class should reduce within-
+stratum variance.
+
+### Implementation
+
+- `preflop_strength(a, b) -> i32`: hand-tuned score (pairs > suited >
+  offsuit, high-card bonus).
+- Sort all 1326 preflop combos by strength.
+- For `k` strata, draw `deals/k` P0 holes from each strength band; P1 and
+  board are drawn uniformly.
+- Same BR walker; same report.
+
+Gated by `PKR_EVAL_STRATIFY=K`. Default off.
+
+### Verification
+
+Same checkpoint, 4000 deals, both paths. Ran at 15:46 and 15:56 (while
+v35 Run B was completing in the background — mild CPU contention but no
+functional impact).
+
+| metric | baseline (k=1) | stratified (k=10) |
+|---|---|---|
+| expl_mbb | 3401.43 | 3302.99 |
+| expl_stderr_mbb | 225.40 | 211.34 |
+
+- SE ratio: **1.066x** (225.40 / 211.34)
+- Mean shift: +98.4 mbb, 0.4 sigma
+
+### Verdict
+
+Marginal. The theoretical prediction was 1.4-1.8x; we got 1.07x. Preflop
+hand strength explains very little of the per-deal BR variance — the
+postflop runout dominates. This is consistent with the baseline-CV result
+(`rho = -0.028`): the exploitable-value signal is not concentrated at
+preflop.
+
+### Why this closes the thread
+
+Two independent approaches converge on the same conclusion: **most of the
+eval variance is not where we thought it was**. Neither hand structure
+(preflop) nor blueprint EV captures the per-deal exploitability signal at
+a converged checkpoint. Attempts to reduce variance by projecting onto
+cheap features fail because the cheap features are nearly uncorrelated
+with the target.
+
+The only remaining option is full AIVAT with imaginary observations
+(3-5 days of work, ~40-60% SD reduction per the Burch 2018 paper). Given
+the `rho = -0.028` result, that reduction may not materialize here either.
+Recommend deferring until the blueprint is weaker (i.e. re-train an
+earlier checkpoint for testing) or a production need forces it.
+
+### What we actually adopted
+
+Nothing in the estimator. The one-line CRN change described above
+(shared eval deal seeds across A/B arms) remains the only actionable
+follow-up. It does not reduce per-arm SE but tightens A/B deltas
+directly, which is what most experiments actually need.
+
+### Second-attempt artifacts
+
+- Verification stdout: see the trainer logs at 15:46 and 15:56 in the
+  session transcript. CSVs were not written because `--eval-now` prints
+  to stderr and skips the CSV writer (pre-existing behavior).
+- Code: reverted. No stratified commits in git history.
