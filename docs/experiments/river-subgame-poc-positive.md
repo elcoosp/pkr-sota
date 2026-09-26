@@ -153,3 +153,37 @@ known property), but it also means the "POC win" is dominated by
 the *blueprint* being exploitable on uniform ranges, not by CFR
 achieving something extraordinary. The honest next test is real
 ranges from blueprint history; the win will shrink there.
+
+
+## RangeTracker gate (2026-09-26)
+
+Added `crates/pkr-subgame/src/range_tracker.rs` — a posterior over each
+player's hole cards given a public action history and the blueprint's
+average strategy. Every action multiplies the acting player's range by
+the blueprint's probability of that action at their infoset, then
+renormalizes. Board cards are always zero.
+
+**Integration tests pass:**
+- Range sum = 1.0 ± 1e-6 after every action
+- Aggressive actions upweight strong hands (AA: 0.00075 → 0.00085 after a raise; +12% relative)
+- Entropy drops from 7.19 → 5.83 after a raise
+- 6-street forced line maintains normalization
+
+**Real-range sweep vs uniform:**
+
+| | uniform ranges | real ranges (call-check line) |
+|---|---|---|
+| wins / 20 | 20 | **20** |
+| median delta | +20.50 chips | **+13.71 chips** |
+| median ratio | 0.001 | **-0.101** |
+
+The win shrinks 33% under realistic ranges — expected — and remains
+firmly STRONG (>10 chips). The negative ratio means CFR-solved P0 flips
+from losing money to positive EV; P1's best response cannot even break
+even.
+
+**Caveat:** the tested line is the narrowest path (no raises). `h_p1 ≈ 6.4`
+out of a maximum of `ln(1326) ≈ 7.19` means the posterior carries only
+0.8 nats of information — barely tighter than uniform. A raisier line
+(bet-3bet-call) would concentrate ranges much more and is the harder
+test. Should be run before committing to the full 2-week build.

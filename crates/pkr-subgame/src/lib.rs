@@ -10,6 +10,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
+pub mod range_tracker;
+
 use pkr_cfr::table::CompactRegretTable;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, ActionKind, GameState};
