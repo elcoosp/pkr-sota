@@ -234,3 +234,48 @@ If <100ms becomes required, the paths are:
 | Adversarial range safety | OPEN (2h) |
 | Runtime integration | OPEN (2-3 days) |
 | Flop solver | OPEN (1 week) |
+
+
+## Parallelization (2026-09-27)
+
+`solve()` now runs over deals in parallel. Two failed attempts and
+one fix:
+
+**Attempt 1**: single shared `AtomicU64` for `nodes_visited`.
+Failed — cache-line contention across all cores made parallelism
+slower than sequential (0.91x at 500 iters).
+
+**Attempt 2**: `Vec<AtomicU64>` indexed by `deal_idx`. Each thread
+hits its own cache line. Net 2.6x at production iteration count.
+
+| iters | seq wall | par wall | speedup |
+|---|---|---|---|
+| 25 | 2.996s | 1.153s | 2.60x |
+| 100 | 9.301s | 3.909s | 2.38x |
+| 500 | 40.836s | 18.443s | 2.21x |
+
+**Sub-linear scaling** because:
+- `Solver::new` (tree build + first-visit cache warming) is sequential
+  and takes ~0.4s.
+- `lazy_cache` is `Box<[AtomicU64]>` — one atomic per showdown visit.
+- Rayon dispatch overhead on a 100-deal workload with ~10K nodes each.
+
+**Runtime budget update**:
+
+Original target was <100ms per solve. Realistic floor with this
+architecture:
+
+| iters | parallel wall | notes |
+|---|---|---|
+| 10 | ~0.6s | dominance of Solver::new |
+| 25 | ~1.15s | matches current quality target |
+| 50 | ~2.5s | recommended for turn |
+
+**For <100ms**: need one of
+- Precompute the tree once per position-class; mmap from disk on
+  solve. Removes ~0.4s startup and enables further optimization.
+- Reduce deal count to 8x8 = 64 (vs 100): ~1.5x further.
+- Drop lazy_cache atomics in favor of unsafe direct writes (SAFETY:
+  each (node, deal) is written by exactly one thread).
+
+None of these is required for the POC. They're production optimizations.
