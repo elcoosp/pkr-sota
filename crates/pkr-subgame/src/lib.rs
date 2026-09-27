@@ -101,6 +101,119 @@ pub struct AdversarialResult {
     pub blueprint_p95: Option<f64>,
 }
 
+/// Blend two P0 strategies component-wise. `alpha = 1.0` is pure A,
+/// `alpha = 0.0` is pure B. Missing entries in either default to uniform.
+fn blend_p0_strategy(
+    a: &[Option<[f64; ABSTRACT_BUCKETS]>],
+    b: &[Option<[f64; ABSTRACT_BUCKETS]>],
+    alpha: f64,
+) -> Vec<Option<[f64; ABSTRACT_BUCKETS]>> {
+    let n = a.len().min(b.len());
+    let mut out: Vec<Option<[f64; ABSTRACT_BUCKETS]>> = Vec::with_capacity(n);
+    for i in 0..n {
+        match (a[i], b[i]) {
+            (None, None) => out.push(None),
+            (Some(sa), None) => {
+                let mut s = [0.0; ABSTRACT_BUCKETS];
+                for k in 0..ABSTRACT_BUCKETS {
+                    s[k] = alpha * sa[k] + (1.0 - alpha) * sa[k];
+                }
+                out.push(Some(s));
+            }
+            (None, Some(sb)) => {
+                let mut s = [0.0; ABSTRACT_BUCKETS];
+                for k in 0..ABSTRACT_BUCKETS {
+                    s[k] = (1.0 - alpha) * sb[k];
+                }
+                out.push(Some(s));
+            }
+            (Some(sa), Some(sb)) => {
+                let mut s = [0.0; ABSTRACT_BUCKETS];
+                for k in 0..ABSTRACT_BUCKETS {
+                    s[k] = alpha * sa[k] + (1.0 - alpha) * sb[k];
+                }
+                out.push(Some(s));
+            }
+        }
+    }
+    out
+}
+
+pub struct SafeSolveResult {
+    pub cfr_br: f64,
+    pub blueprint_br: f64,
+    pub final_br: f64,
+    /// Final blend weight on CFR. 1.0 = pure CFR, 0.0 = pure blueprint.
+    pub alpha: f64,
+    pub iters: u32,
+    pub safe: bool,
+}
+
+/// Safe-solving wrapper: solve CFR, then find the largest `alpha` such
+/// that `alpha*CFR + (1-alpha)*blueprint` has BR_v1 <= blueprint's own
+/// BR_v1. This guarantees the shipped strategy is never more exploitable
+/// than the blueprint under adversarial deal selection.
+///
+/// Binary search over alpha in [0, 1]. If pure CFR is already safe
+/// (cfr_br < bp_br), returns alpha = 1.0 immediately.
+pub fn safe_solve(cfg: &POCConfig) -> SafeSolveResult {
+    let (abs, tbl) = cfg
+        .blueprint
+        .expect("safe_solve requires cfg.blueprint = Some(...)");
+
+    let mut solver = Solver::new(cfg);
+    solver.solve();
+
+    let cfr_strat = solver.p0_strategy();
+    let bp_strat = solver.build_blueprint_strategy(abs, tbl);
+
+    let priors: Vec<f64> = solver.deals.iter().map(|d| d.prior).collect();
+    let cfr_br = solver.br_v1_with_prior(&cfr_strat, &priors);
+    let bp_br = solver.br_v1_with_prior(&bp_strat, &priors);
+
+    // Already safe?
+    if cfr_br <= bp_br {
+        return SafeSolveResult {
+            cfr_br,
+            blueprint_br: bp_br,
+            final_br: cfr_br,
+            alpha: 1.0,
+            iters: cfg.iterations,
+            safe: true,
+        };
+    }
+
+    // Binary search for the largest alpha such that blended BR <= bp_br.
+    let mut lo = 0.0f64;
+    let mut hi = 1.0f64;
+    let mut best_alpha = 0.0f64;
+    let mut best_br = bp_br;
+    for _ in 0..20 {
+        let mid = 0.5 * (lo + hi);
+        let mixed = blend_p0_strategy(&cfr_strat, &bp_strat, mid);
+        let br = solver.br_v1_with_prior(&mixed, &priors);
+        if br <= bp_br {
+            best_alpha = mid;
+            best_br = br;
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if (hi - lo) < 1e-4 {
+            break;
+        }
+    }
+
+    SafeSolveResult {
+        cfr_br,
+        blueprint_br: bp_br,
+        final_br: best_br,
+        alpha: best_alpha,
+        iters: cfg.iterations,
+        safe: true,
+    }
+}
+
 pub fn adversarial_safety_test(cfg: &POCConfig) -> AdversarialResult {
     let mut solver = Solver::new(cfg);
     solver.solve();
