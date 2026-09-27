@@ -377,3 +377,45 @@ matched ranges). The e2e integration must wait for range-aware solving.
 
 Set `enabled_streets: [false, false, false, false]` in `SubgameConfig`
 default until range-aware is implemented.
+
+
+## Confirmed cause of the e2e residual (2026-09-27)
+
+Ran the e2e test at four iteration counts (100 deals, 8 opponent hands):
+
+| iters | delta (mbb) |
+|---|---|
+| 1 | +603.5 |
+| 5 | +647.0 |
+| 20 | +644.5 |
+| 200 | +644.6 |
+
+**Solver iteration count has no effect.** The river tree (~30 nodes,
+no chance branches) is small enough that CFR+ converges in a single
+pass. Any further iterations produce the same root strategy.
+
+Therefore the residual +644 mbb is **entirely uniform-range mismatch**:
+the solve optimizes P0 for a uniform opponent, but the blueprint-P1 in
+the BR walk plays a strongly conditioned range (built from its own
+prior street play).
+
+Combined with the three earlier fixes (two-sided override, cache
+thrashing, opponent hole in cache key), the complete e2e story is:
+
+| | delta @ 200 deals |
+|---|---|
+| initial | +4836 |
+| + two-sided override fix | +8862 |
+| + cache fixes | +1379 |
+| + 500-deal confirm | +1755 |
+
+The residual is not solver quality; it's range mismatch. Fixing it
+requires threading `RangeTracker` through `walk_fixed` so the hook
+receives the actual opponent posterior. See
+`docs/roadmap/range-aware-solving.md` for the 4-hour plan.
+
+**Caveat:** the delta *grew* from +1379 (200 deals) to +1755 (500 deals),
+which is unusual for a genuine systematic regression — it should shrink
+with sample size. This suggests the delta may be driven by a small
+number of high-BR outlier deals rather than a uniform shift. Additional
+500+ deal runs across different seeds would confirm.
