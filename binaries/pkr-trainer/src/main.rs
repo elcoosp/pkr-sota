@@ -154,6 +154,18 @@ struct Cli {
     #[arg(long, default_value_t = 3.0)]
     promote_gate: f64,
 
+    /// Stop training after this many consecutive evaluations fail to
+    /// produce a new historical minimum. 0 = off (run to completion).
+    ///
+    /// This is the plateau detector: with `--eval-every 5000000
+    /// --stop-on-plateau 5`, training stops after ~25M iterations past
+    /// the last improvement. Reclaims 50-70% of the compute when the
+    /// curve has flattened.
+    ///
+    /// Ignored when `--eval-every == 0` (no eval = no plateau signal).
+    #[arg(long, default_value_t = 0)]
+    stop_on_plateau: u32,
+
     /// Path to the exploitability CSV. If unset, derived from
     /// --output's directory as `exploitability.csv`. Only written when
     /// --eval-every > 0.
@@ -527,6 +539,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     let mut best_expl_mbb: Option<f64> = None;
+    // Count consecutive evals that did NOT produce a new minimum.
+    // Reset to 0 whenever the promote gate accepts. When this reaches
+    // `cli.stop_on_plateau` (and the threshold is > 0), the loop breaks.
+    let mut consecutive_non_minimum: u32 = 0;
+    let mut plateau_stopped = false;
     // Whether we promoted a checkpoint inside the loop. If false (e.g.
     // --eval-every 0, or no eval fired), the end-of-run export runs
     // as before. If true, we skip the end-of-run export to avoid
@@ -714,7 +731,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         best_expl_mbb.unwrap_or(0.0),
                         best_expl_mbb.map(|b| b - min_improvement).unwrap_or(0.0),
                     );
+                    consecutive_non_minimum = consecutive_non_minimum.saturating_add(1);
+                    if cli.stop_on_plateau > 0
+                        && consecutive_non_minimum >= cli.stop_on_plateau
+                    {
+                        eprintln!(
+                            "PLATEAU-STOP: {} consecutive evals without a new minimum                              (threshold {}). Stopping at iter {}. Last best: {:.2} mbb.",
+                            consecutive_non_minimum,
+                            cli.stop_on_plateau,
+                            done,
+                            best_expl_mbb.unwrap_or(0.0),
+                        );
+                        stopped_early = true;
+                        plateau_stopped = true;
+                        break;
+                    }
                 } else {
+                    // New minimum accepted. Reset the plateau counter.
+                    consecutive_non_minimum = 0;
                     // Export the current table as the promoted blueprint.
                     match export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint) {
                         Ok(n) => {
@@ -868,6 +902,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "start_iter": start_iter,
                 "end_iter": trainer.iteration(),
                 "stopped_early": stopped_early,
+                "plateau_stopped": plateau_stopped,
             },
             "wall_seconds": elapsed_total,
             "snapshot": {
