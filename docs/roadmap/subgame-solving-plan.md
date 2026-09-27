@@ -169,3 +169,68 @@ worst-case prior), and should be done before the production build.
 | Adversarial range safety | OPEN (small extension) |
 | Runtime latency < 100ms | OPEN (parallelize chance branches) |
 | Flop solver | OPEN (design required) |
+
+
+## Latency findings (2026-09-27)
+
+Bench on turn solver, 10x10 hands, one board, varying iteration count.
+
+### Full-chance vs MCCFR
+
+| iters | full-chance wall | full-chance br_v1 | MCCFR wall | MCCFR br_v1 |
+|---|---|---|---|---|
+| 25 | 8.1s | +0.32 | 2.2s | +42.2 |
+| 50 | 15.9s | +0.01 | 1.7s | +50.7 |
+| 100 | 23.4s | -0.07 | 1.6s | +28.7 |
+| 200 | 29.6s | -0.09 | 2.3s | +15.1 |
+| 500 | 38.3s | -0.09 | 3.1s | +2.25 |
+
+**Full-chance wins decisively on total compute.** MCCFR is 34× cheaper
+per iteration, but needs >250,000 iterations to reach br_v1 ~0.1
+(O(1/√T)). Full-chance gets there in 50. Production path: full-chance.
+
+### Lazy terminal evaluation
+
+Precomputing (Showdown × deal) pairs at Solver::new cost ~4s.
+Computing on first visit costs 1.5s. 2.7× startup speedup at 25 iters.
+
+### Production latency budget
+
+Current: 25 iters, 10x10 hands = **3.0s per turn solve**.
+
+Realistic optimizations:
+- Parallelize chance branches: 46 independent children per chance node.
+  Rayon over the first-level children gives ~6-8x on M1. → ~500ms.
+- Reduce iterations to 10-15: still ≥30× better than blueprint on BR.
+  → ~300ms.
+- Reduce deal count: 8x8 = 64 deals instead of 100. → ~200ms.
+- Combined: **~200-400ms per turn solve** at useful quality.
+
+**The 100ms target is not achievable for this architecture at full
+tree enumeration.** Realistic production target: 200-500ms. That's
+below human reaction time and acceptable for a competitive bot;
+it just rules out tournament play with tight timing rules.
+
+If <100ms becomes required, the paths are:
+- Precompute the full turn tree into a shared artifact (server-side,
+  memory-mapped, ~50MB).
+- Cache solves by position hash across hands (in multiplayer, adjacent
+  hands often reach the same positions).
+- Reduce the tree by pruning dominated bet-sizings.
+
+## Roadmap status (updated)
+
+| milestone | status |
+|---|---|
+| RangeTracker | DONE |
+| River CFR solve | DONE (+42.96 chips) |
+| River adversarial (deal) | DONE (+138.7) |
+| Turn CFR solve | DONE (+26.62 chips) |
+| Turn adversarial (deal) | DONE (+143.1) |
+| Safe-solving wrapper | DONE (alpha=1.0, no blend) |
+| Full-chance CFR+ mode | DONE |
+| Lazy term eval | DONE |
+| **Parallelize chance branches** | OPEN (2-4h; 6-8x) |
+| Adversarial range safety | OPEN (2h) |
+| Runtime integration | OPEN (2-3 days) |
+| Flop solver | OPEN (1 week) |
