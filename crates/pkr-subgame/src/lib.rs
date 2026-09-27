@@ -514,6 +514,12 @@ struct Solver<'a> {
     /// per walk, MCCFR convergence O(1/sqrt(T))).
     /// Read from PKR_SUBGAME_FULL_CHANCE (default "1").
     full_chance: bool,
+    /// `true` = defer Showdown terminal evaluation to first visit.
+    /// Cuts Solver::new time from ~6.5s to <500ms at 25 iters.
+    /// Read from PKR_SUBGAME_LAZY_TERM (default "1").
+    lazy_term: bool,
+    /// Lazily-computed showdown values. NaN = not yet computed.
+    lazy_cache: std::cell::RefCell<Vec<f64>>,
 }
 
 impl<'a> Solver<'a> {
@@ -555,6 +561,9 @@ impl<'a> Solver<'a> {
         // For turn subgames, each Showdown node has its own board (the
         // river card differs across chance branches). Re-evaluate hand
         // ranks per showdown node.
+        let lazy_skip_showdown = std::env::var("PKR_SUBGAME_LAZY_TERM")
+            .map(|v| v != "0")
+            .unwrap_or(true);
         let mut term_val = vec![0.0f64; n_nodes * n_deals];
         for node_id in 0..n_nodes {
             match &nodes[node_id] {
@@ -564,6 +573,9 @@ impl<'a> Solver<'a> {
                     }
                 }
                 PublicNode::Showdown { board, board_len, pot, invested_p0 } => {
+                    if lazy_skip_showdown {
+                        continue;
+                    }
                     let b = &board[..*board_len as usize];
                     for deal_idx in 0..n_deals {
                         let r0 = cfg.evaluator.evaluate_hand(&deals[deal_idx].h0, b);
@@ -601,12 +613,51 @@ impl<'a> Solver<'a> {
             full_chance: std::env::var("PKR_SUBGAME_FULL_CHANCE")
                 .map(|v| v != "0")
                 .unwrap_or(true),
+            lazy_term: std::env::var("PKR_SUBGAME_LAZY_TERM")
+                .map(|v| v != "0")
+                .unwrap_or(true),
+            lazy_cache: std::cell::RefCell::new(vec![f64::NAN; n_nodes * n_deals]),
         }
     }
 
     #[inline]
     fn idx(&self, node_id: u32, deal_idx: u32) -> usize {
         node_id as usize * self.n_deals + deal_idx as usize
+    }
+
+    /// Get terminal value. For Showdown nodes with lazy_term, computes
+    /// on first visit and caches. For Fold, reads precomputed value.
+    fn term_value(&self, node_id: u32, deal_idx: u32) -> f64 {
+        let i = self.idx(node_id, deal_idx);
+        if !self.lazy_term {
+            return self.term_val[i];
+        }
+        let cached = self.lazy_cache.borrow()[i];
+        if !cached.is_nan() {
+            return cached;
+        }
+        // Compute on the fly.
+        let (board, board_len, pot, invested_p0) = match &self.tree.nodes[node_id as usize] {
+            PublicNode::Showdown { board, board_len, pot, invested_p0 } => {
+                (*board, *board_len, *pot, *invested_p0)
+            }
+            PublicNode::Fold { to_p0 } => return *to_p0,
+            _ => return 0.0,
+        };
+        let b = &board[..board_len as usize];
+        let h0 = self.deals[deal_idx as usize].h0;
+        let h1 = self.deals[deal_idx as usize].h1;
+        let r0 = self.cfg.evaluator.evaluate_hand(&h0, b);
+        let r1 = self.cfg.evaluator.evaluate_hand(&h1, b);
+        let v = if r0 == r1 {
+            (pot / 2.0 - invested_p0) as f64
+        } else if r0 < r1 {
+            (pot - invested_p0) as f64
+        } else {
+            -(invested_p0 as f64)
+        };
+        self.lazy_cache.borrow_mut()[i] = v;
+        v
     }
 
     pub fn root(&self) -> u32 { self.tree.root }
@@ -623,7 +674,7 @@ impl<'a> Solver<'a> {
         };
 
         match variant_tag {
-            0 | 1 => self.term_val[self.idx(node_id, deal_idx)],
+            0 | 1 => self.term_value(node_id, deal_idx),
             3 => {
                 // Chance node: full expectation OR sample one river.
                 let children = match &self.tree.nodes[node_id as usize] {
@@ -935,7 +986,7 @@ impl<'a> Solver<'a> {
             PublicNode::ChanceRiver { .. } => 3,
         };
         match variant_tag {
-            0 | 1 => self.term_val[self.idx(node_id, deal_idx)],
+            0 | 1 => self.term_value(node_id, deal_idx),
             3 => {
                 let children = match &self.tree.nodes[node_id as usize] {
                     PublicNode::ChanceRiver { children } => children,
