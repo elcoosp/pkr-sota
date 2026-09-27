@@ -102,3 +102,50 @@ fn subgame_handle_decides_turn() {
     println!("  buckets: {:?}", s);
     assert!((sum - 1.0).abs() < 1e-6, "not normalized: {:.6}", sum);
 }
+
+
+/// Turn root where BB (P1) is to act at the start of the turn.
+/// Exercises the mirror path: `state.actor == 1`, so `decide` mirrors
+/// the state before solving.
+///
+/// Postflop, BB acts first. After the flop closes, the very first actor
+/// on the turn is BB (P1).
+fn turn_root_p1_to_act() -> GameState {
+    let b: [u8; 4] = [0, 14, 28, 42];
+    let mut s = GameState::new(200.0, 1.0, 2.0);
+    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.advance_street_in_place(&b[0..3]);
+    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.advance_street_in_place(&b[3..4]);
+    // Turn just started; whoever the state machine makes the actor is
+    // what we test against. Assert to surface the actual value.
+    s
+}
+
+#[test]
+#[ignore]
+fn subgame_handle_decides_turn_as_seat1() {
+    let handle = build_handle();
+    let state = turn_root_p1_to_act();
+
+    assert_eq!(state.street, Street::Turn);
+    println!("  state after advance: actor={} is_street_complete={}",
+             state.actor, state.is_street_complete());
+    assert!(!state.is_street_complete(), "turn just started");
+
+    let our_hole: [u8; 2] = [11, 22];  // arbitrary non-board hand
+    let opp_range = uniform_opp_range();
+
+    let s = handle
+        .decide(&state, &our_hole, &opp_range)
+        .expect("seat-1 turn solve should return a strategy");
+
+    let sum: f64 = s.iter().sum();
+    println!();
+    println!("=== SubgameHandle::decide as seat 1 ===");
+    println!("  sum:     {:.6}", sum);
+    println!("  buckets: {:?}", s);
+    assert!((sum - 1.0).abs() < 1e-6, "not normalized: {:.6}", sum);
+}

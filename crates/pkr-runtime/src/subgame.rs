@@ -79,6 +79,28 @@ pub struct SubgameHandle {
     cfg: SubgameConfig,
 }
 
+/// Mirror a `GameState` so the acting player becomes seat 0. Used to
+/// reuse the P0-only solver for either seat. Swaps per-seat fields;
+/// shared fields (pot, board, street) are unchanged.
+///
+/// SAFETY of the strategy mapping: `action_bucket` computes from
+/// `state.actor` + that player's stack/street_bets + opponent's
+/// street_bets. After mirroring, `actor=0`, `stacks[0]` is the real
+/// actor's stack, `stacks[1]` is the real opponent's. The bucket that
+/// the solver uses for concrete action A is the same bucket the real
+/// actor would compute. So the returned strategy is directly usable
+/// without un-mirroring.
+fn mirror_to_seat0(state: &GameState) -> GameState {
+    let mut m = state.clone();
+    m.stacks.swap(0, 1);
+    m.street_bets.swap(0, 1);
+    m.total_invested.swap(0, 1);
+    m.folded.swap(0, 1);
+    m.hole.swap(0, 1);
+    m.actor = 1 - m.actor;
+    m
+}
+
 impl SubgameHandle {
     pub fn new(cfg: SubgameConfig) -> Self {
         SubgameHandle { cfg }
@@ -96,18 +118,20 @@ impl SubgameHandle {
         our_hole: &[u8; 2],
         opp_range: &[f64; N_HANDS],
     ) -> Option<[f64; SUBGAME_BUCKETS]> {
-        let street_idx = state.street as usize;
-        if street_idx >= 4 || !self.cfg.enabled_streets[street_idx] {
-            return None;
-        }
         if state.is_terminal() {
             return None;
         }
-        // Subgame solving computes P0's strategy. If it's not P0's turn,
-        // the root is either a P1 decision or a chance node, and reading
-        // sum0 gives zeros. Require the caller to pass the state at
-        // P0-to-act.
-        if state.actor != 0 {
+
+        // Subgame solving computes P0's strategy. When the acting player
+        // is seat 1, mirror the state so it becomes seat 0.
+        let work_state = if state.actor != 0 {
+            mirror_to_seat0(state)
+        } else {
+            state.clone()
+        };
+
+        let street_idx = work_state.street as usize;
+        if street_idx >= 4 || !self.cfg.enabled_streets[street_idx] {
             return None;
         }
 
@@ -115,13 +139,18 @@ impl SubgameHandle {
         let opp_samples = pkr_subgame::range_tracker::sample_hands_weighted(
             opp_range,
             self.cfg.hands_per_range,
-            state.pot.to_bits() as u64,
+            work_state.pot.to_bits() as u64,
         );
         if opp_samples.len() < 2 {
             return None;
         }
 
-        // Our range is a point mass on our concrete hand.
+        // Always use the caller-supplied hole for P0's range. The
+        // mirror swaps positions (stacks, street_bets, actor) but the
+        // caller's hole is unchanged by position — it's their actual
+        // cards. `mirror_to_seat0` also swaps `hole[0]` and `hole[1]`,
+        // but the solver's deal list comes from cfg.p0_range, not from
+        // state.hole, so the state-level hole swap is cosmetic.
         let p0_range = Range::weighted(vec![*our_hole], vec![1.0]);
         let p1_range = Range::weighted(
             opp_samples.iter().map(|(h, _)| *h).collect(),
@@ -129,7 +158,7 @@ impl SubgameHandle {
         );
 
         let cfg = POCConfig {
-            root: state.clone(),
+            root: work_state.clone(),
             p0_range,
             p1_range,
             iterations: self.cfg.iters,
