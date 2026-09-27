@@ -386,9 +386,11 @@ enum PublicNode {
         actor: u8,
         bucket_child: [i32; ABSTRACT_BUCKETS],
     },
-    /// Chance node: enumerate the river cards that complete the board.
+    /// Chance node: enumerate the next street's cards.
+    /// At flop-complete, `children` are the 47 turn cards.
+    /// At turn-complete, `children` are the 46 river cards.
     /// Walk samples one child uniformly over the non-blocked children.
-    ChanceRiver {
+    Chance {
         children: Vec<(u8, u32)>,
     },
 }
@@ -423,8 +425,12 @@ fn build_tree(state: &mut GameState, nodes: &mut Vec<PublicNode>, depth: u32) ->
         return idx;
     }
 
-    // NEW: turn betting complete, advance to river with a chance node.
-    if state.is_street_complete() && state.street == Street::Turn {
+    // Flop OR turn betting complete: insert a chance node over the
+    // next street's cards. Flop -> 47 turns; turn -> 46 rivers.
+    // Recursion naturally nests flop chance over turn chance over river.
+    if state.is_street_complete()
+        && matches!(state.street, Street::Flop | Street::Turn)
+    {
         let board_len = state.board_len as usize;
         let mut remaining: Vec<u8> = Vec::with_capacity(46);
         for c in 0..52u8 {
@@ -439,7 +445,7 @@ fn build_tree(state: &mut GameState, nodes: &mut Vec<PublicNode>, depth: u32) ->
             state.undo_action();
             children.push((card, child));
         }
-        nodes[idx as usize] = PublicNode::ChanceRiver { children };
+        nodes[idx as usize] = PublicNode::Chance { children };
         return idx;
     }
 
@@ -602,7 +608,7 @@ impl<'a> Solver<'a> {
                         term_val[node_id * n_deals + deal_idx] = v;
                     }
                 }
-                PublicNode::Decision { .. } | PublicNode::ChanceRiver { .. } => {}
+                PublicNode::Decision { .. } | PublicNode::Chance { .. } => {}
             }
         }
         let _ = &rank0;  // kept for potential future use
@@ -685,7 +691,7 @@ impl<'a> Solver<'a> {
             PublicNode::Fold { .. } => 0u8,
             PublicNode::Showdown { .. } => 1,
             PublicNode::Decision { .. } => 2,
-            PublicNode::ChanceRiver { .. } => 3,
+            PublicNode::Chance { .. } => 3,
         };
 
         match variant_tag {
@@ -693,7 +699,7 @@ impl<'a> Solver<'a> {
             3 => {
                 // Chance node: full expectation OR sample one river.
                 let children = match &self.tree.nodes[node_id as usize] {
-                    PublicNode::ChanceRiver { children } => children.clone(),
+                    PublicNode::Chance { children } => children.clone(),
                     _ => unreachable!(),
                 };
                 let h0 = self.deals[deal_idx as usize].h0;
@@ -1021,13 +1027,13 @@ impl<'a> Solver<'a> {
             PublicNode::Fold { .. } => 0u8,
             PublicNode::Showdown { .. } => 1,
             PublicNode::Decision { .. } => 2,
-            PublicNode::ChanceRiver { .. } => 3,
+            PublicNode::Chance { .. } => 3,
         };
         match variant_tag {
             0 | 1 => self.term_value(node_id, deal_idx),
             3 => {
                 let children = match &self.tree.nodes[node_id as usize] {
-                    PublicNode::ChanceRiver { children } => children,
+                    PublicNode::Chance { children } => children,
                     _ => unreachable!(),
                 };
                 let h0 = self.deals[deal_idx as usize].h0;
@@ -1120,7 +1126,7 @@ impl<'a> Solver<'a> {
     ) {
         // Handle chance nodes: recurse into each non-blocked river branch.
         let children = match &self.tree.nodes[node_id as usize] {
-            PublicNode::ChanceRiver { children } => Some(children.clone()),
+            PublicNode::Chance { children } => Some(children.clone()),
             _ => None,
         };
         if let Some(children) = children {
