@@ -523,6 +523,14 @@ struct Solver<'a> {
     /// per walk, MCCFR convergence O(1/sqrt(T))).
     /// Read from PKR_SUBGAME_FULL_CHANCE (default "1").
     full_chance: bool,
+    /// Depth threshold for full enumeration vs sampling at chance nodes.
+    /// Chance nodes at depth < `chance_enumerate_max_depth` enumerate all
+    /// children exactly; deeper ones sample one child. Enables hybrid
+    /// mode: enumerate the top-level chance, sample deeper.
+    /// Read from PKR_SUBGAME_CHANCE_DEPTH (default u32::MAX = always
+    /// enumerate; set to 0 to force full sampling; set to 5 for the
+    /// flop-hybrid mode that enumerates turns and samples rivers).
+    chance_enumerate_max_depth: u32,
     /// `true` = defer Showdown terminal evaluation to first visit.
     /// Cuts Solver::new time from ~6.5s to <500ms at 25 iters.
     /// Read from PKR_SUBGAME_LAZY_TERM (default "1").
@@ -631,6 +639,10 @@ impl<'a> Solver<'a> {
             full_chance: std::env::var("PKR_SUBGAME_FULL_CHANCE")
                 .map(|v| v != "0")
                 .unwrap_or(true),
+            chance_enumerate_max_depth: std::env::var("PKR_SUBGAME_CHANCE_DEPTH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(u32::MAX),
             lazy_term: std::env::var("PKR_SUBGAME_LAZY_TERM")
                 .map(|v| v != "0")
                 .unwrap_or(true),
@@ -683,7 +695,7 @@ impl<'a> Solver<'a> {
 
     pub fn root(&self) -> u32 { self.tree.root }
 
-    fn walk(&mut self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64) -> f64 {
+    fn walk(&mut self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64, depth: u32) -> f64 {
         self.nodes_visited[deal_idx as usize].fetch_add(1, Ordering::Relaxed);
         // PublicNode is no longer Copy (holds Vec for chance nodes), so
         // match by reference and dispatch.
@@ -714,11 +726,12 @@ impl<'a> Solver<'a> {
                 if valid.is_empty() {
                     return 0.0;
                 }
-                if self.full_chance {
+                let enumerate = self.full_chance && depth < self.chance_enumerate_max_depth;
+                if enumerate {
                     let w = 1.0 / valid.len() as f64;
                     let mut total = 0.0f64;
                     for child in valid {
-                        total += w * self.walk(child, deal_idx, reach0, reach1);
+                        total += w * self.walk(child, deal_idx, reach0, reach1, depth + 1);
                     }
                     total
                 } else {
@@ -729,7 +742,7 @@ impl<'a> Solver<'a> {
                             .wrapping_add(self.nodes_visited[deal_idx as usize].load(Ordering::Relaxed)),
                     );
                     let pick = valid[rng.random_range(0..valid.len())];
-                    self.walk(pick, deal_idx, reach0, reach1)
+                    self.walk(pick, deal_idx, reach0, reach1, depth + 1)
                 }
             }
             2 => {
@@ -750,9 +763,9 @@ impl<'a> Solver<'a> {
                     if bucket_child[b] < 0 { continue; }
                     let child = bucket_child[b] as u32;
                     let v_p0 = if actor == 0 {
-                        self.walk(child, deal_idx, reach0 * strat[b], reach1)
+                        self.walk(child, deal_idx, reach0 * strat[b], reach1, depth + 1)
                     } else {
-                        self.walk(child, deal_idx, reach0, reach1 * strat[b])
+                        self.walk(child, deal_idx, reach0, reach1 * strat[b], depth + 1)
                     };
                     cfv[b] = if actor == 0 { v_p0 } else { -v_p0 };
                     avg_p0 += strat[b] * v_p0;
@@ -802,7 +815,7 @@ impl<'a> Solver<'a> {
             let this_addr = self as *mut Solver as usize;
             (0..n_deals).into_par_iter().for_each(move |deal_idx| {
                 let this: &mut Solver = unsafe { &mut *(this_addr as *mut Solver) };
-                this.walk(root, deal_idx as u32, 1.0, 1.0);
+                this.walk(root, deal_idx as u32, 1.0, 1.0, 0);
             });
         }
     }
