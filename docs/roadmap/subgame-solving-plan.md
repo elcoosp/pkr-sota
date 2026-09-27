@@ -97,3 +97,31 @@ against `pkr-exploit::sampled_exploitability` on the same
 - `docs/experiments/river-subgame-poc-positive.md` — the POC
 - `docs/experiments/v34-long-run-confirmed.md` — the blueprint baseline
 - `docs/handoff/HANDOFF_2026-09-25.md` §4 — original recommendation
+
+
+## Turn adversarial safety — DONE 2026-09-27
+
+Same structure as river adversarial test. P1 picks the worst deal.
+
+| | CFR worst | BP worst | delta |
+|---|---|---|---|
+| river | +5.7 | +144.4 | **+138.7** |
+| turn | +16.1 | +159.3 | **+143.1** |
+
+Both subgame solvers are ~10x less exploitable than the blueprint
+under adversarial deal selection. Turn POC fully closed.
+
+## What remains before the 2-week build
+
+1. **Safe-solving gadget (max-margin).** Without it, a well-informed
+   opponent who knows we're solving can try to force lines where the
+   assumption of uniform/tracked ranges breaks. Not yet tested as a
+   threat, but required for deployment.
+2. **Runtime latency budget.** Turn solve at 500 iters is ~5s; production
+   needs <100ms. Requires parallelizing over chance branches or
+   switching to full enumeration + CFR+ once tree fits in cache.
+3. **Flop solver.** Not started. Adds a second chance event (two river
+   branches deep). Design doc required.
+
+Ranked by value: gadget > latency > flop. Flop only matters after the
+first two are done.
