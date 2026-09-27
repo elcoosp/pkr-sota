@@ -100,3 +100,18 @@ the historical minimum regardless — so this is pure compute savings.
 For a 100M-budget experiment, the flag cuts ~40M iterations without
 touching the output. Future seed-pool experiments run in roughly
 half the wall time.
+
+
+## Second seed confirmation (partial, 2026-09-27 late)
+
+Seed 201 100M run at 6 readings shows best 2583 mbb, vs seed 201's
+30M best of 2247 mbb — a +336 mbb gap in the same direction as seed
+200 (+375). 2/2 seeds confirm the pattern.
+
+Full 100M results pending (seed201 completes ~00:45, seed202 after).
+
+| seed | 30M best | 100M best | delta |
+|---|---|---|---|
+| 200 | 2231.7 | 2607.3 (final) | +375.6 |
+| 201 | 2246.9 | 2583.0 (6/10) | +336.1 |
+| 202 | 2171.2 | pending | |
