@@ -279,3 +279,74 @@ architecture:
   each (node, deal) is written by exactly one thread).
 
 None of these is required for the POC. They're production optimizations.
+
+
+## Flop solver scaling wall (2026-09-27)
+
+Extended `build_tree` to flop-complete states. The tree now nests
+Flop → Turn → River chance nodes. Sanity test on 3×3 hands, 2 iterations:
+
+  nodes visited: 345,072,168
+  wall:          176s
+  throughput:    ~1.96M nodes/sec
+
+Correct, but not viable.
+
+### The wall
+
+| config | 2-iter wall | 25-iter wall | regret memory |
+|---|---|---|---|
+| 3×3 hands (9 deals) | 176s | 37 min | 350 MB |
+| 10×10 (100 deals) | ~1955s | **6.8 h** | 3.8 GB |
+| 20×20 (400 deals) | OOM | OOM | 15 GB |
+
+The flop tree is ~200K public nodes. Regret storage is
+`4 arrays × 48 B × n_nodes × n_deals`. Node visits per iteration
+are ~172M at 100 deals.
+
+### What would fix it
+
+None are a quick change:
+
+1. **Sparse regret storage.** `HashMap<(node, deal), [f64;6]>` keyed on
+   visited (node, deal) pairs. Memory scales with coverage, not tree
+   size. Estimated: 5-10× memory reduction, no compute reduction.
+2. **Shared river subtrees.** All 46 river branches of a turn node
+   share betting topology; only terminal board values differ. A
+   structure-of-arrays over subgame types would reduce both memory
+   and compute 3-5×.
+3. **Deal-class bucketing at flop only.** Proven to hurt quality at
+   turn/river (N_CLASSES experiment); at flop the abstraction is already
+   coarse enough that a modest bucketing might be acceptable. Not tested.
+4. **Precompute lookup tables.** Solve the flop subgame once offline,
+   store a policy table, mmap at runtime. Removes solve latency entirely,
+   trades disk for compute.
+
+### Recommendation
+
+**Ship turn + river subgame solving as the production subgame stack.**
+Leave flop as blueprint. The subgame advantage measured at turn/river
+(+26.62 and +42.96 chips median) is the full win we can extract with
+this architecture. Flop adds a 46× cost for an unmeasured marginal gain.
+
+If flop becomes required:
+- First try precompute + mmap (option 4). Fastest to prototype if the
+  runtime can afford a 200 MB lookup table.
+- Second try sparse storage + shared subtrees (options 1+2, 3-5 days).
+
+## Updated roadmap status
+
+| milestone | status |
+|---|---|
+| RangeTracker | DONE |
+| River solver | DONE (+42.96) |
+| River adversarial | DONE (+138.7) |
+| Turn solver | DONE (+26.62) |
+| Turn adversarial | DONE (+143.1) |
+| Safe solving | DONE (alpha=1.0) |
+| Full-chance CFR+ | DONE |
+| Lazy term eval | DONE (2.7×) |
+| Parallel solve | DONE (2.6×) |
+| **Flop solver** | **WORKS but doesn't scale — see above** |
+| Runtime integration | OPEN — ship turn+river only |
+| <100ms latency | OPEN — precompute path |
