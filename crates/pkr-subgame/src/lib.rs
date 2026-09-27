@@ -509,6 +509,11 @@ struct Solver<'a> {
     /// External-sampling RNG for chance nodes. RefCell so walk can be
     /// &self (needed for BR walk, which doesn't touch regrets).
     rng: RefCell<SmallRng>,
+    /// `true` = full chance enumeration (exact expectation over rivers,
+    /// CFR+ convergence O(1/T)). `false` = external sampling (one river
+    /// per walk, MCCFR convergence O(1/sqrt(T))).
+    /// Read from PKR_SUBGAME_FULL_CHANCE (default "1").
+    full_chance: bool,
 }
 
 impl<'a> Solver<'a> {
@@ -593,6 +598,9 @@ impl<'a> Solver<'a> {
             iter_weight: 1.0,
             nodes_visited: 0,
             rng: RefCell::new(SmallRng::seed_from_u64(cfg.root.board[0] as u64 ^ 0x5EED)),
+            full_chance: std::env::var("PKR_SUBGAME_FULL_CHANCE")
+                .map(|v| v != "0")
+                .unwrap_or(true),
         }
     }
 
@@ -617,7 +625,7 @@ impl<'a> Solver<'a> {
         match variant_tag {
             0 | 1 => self.term_val[self.idx(node_id, deal_idx)],
             3 => {
-                // Chance node: sample one non-blocked river card uniformly.
+                // Chance node: full expectation OR sample one river.
                 let children = match &self.tree.nodes[node_id as usize] {
                     PublicNode::ChanceRiver { children } => children.clone(),
                     _ => unreachable!(),
@@ -634,11 +642,20 @@ impl<'a> Solver<'a> {
                 if valid.is_empty() {
                     return 0.0;
                 }
-                let pick = {
-                    let mut rng = self.rng.borrow_mut();
-                    valid[rng.random_range(0..valid.len())]
-                };
-                self.walk(pick, deal_idx, reach0, reach1)
+                if self.full_chance {
+                    let w = 1.0 / valid.len() as f64;
+                    let mut total = 0.0f64;
+                    for child in valid {
+                        total += w * self.walk(child, deal_idx, reach0, reach1);
+                    }
+                    total
+                } else {
+                    let pick = {
+                        let mut rng = self.rng.borrow_mut();
+                        valid[rng.random_range(0..valid.len())]
+                    };
+                    self.walk(pick, deal_idx, reach0, reach1)
+                }
             }
             2 => {
                 let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
@@ -920,7 +937,6 @@ impl<'a> Solver<'a> {
         match variant_tag {
             0 | 1 => self.term_val[self.idx(node_id, deal_idx)],
             3 => {
-                // BR walk uses the same chance-sampling as the CFR walk.
                 let children = match &self.tree.nodes[node_id as usize] {
                     PublicNode::ChanceRiver { children } => children,
                     _ => unreachable!(),
@@ -937,11 +953,20 @@ impl<'a> Solver<'a> {
                 if valid.is_empty() {
                     return 0.0;
                 }
-                let pick = {
-                    let mut rng = self.rng.borrow_mut();
-                    valid[rng.random_range(0..valid.len())]
-                };
-                self.br_walk(pick, deal_idx, p0_strategy)
+                if self.full_chance {
+                    let w = 1.0 / valid.len() as f64;
+                    let mut total = 0.0f64;
+                    for child in valid {
+                        total += w * self.br_walk(child, deal_idx, p0_strategy);
+                    }
+                    total
+                } else {
+                    let pick = {
+                        let mut rng = self.rng.borrow_mut();
+                        valid[rng.random_range(0..valid.len())]
+                    };
+                    self.br_walk(pick, deal_idx, p0_strategy)
+                }
             }
             2 => {
                 let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
