@@ -350,3 +350,37 @@ If flop becomes required:
 | **Flop solver** | **WORKS but doesn't scale — see above** |
 | Runtime integration | OPEN — ship turn+river only |
 | <100ms latency | OPEN — precompute path |
+
+
+## Flop depth-hybrid test (2026-09-27, later)
+
+Added `PKR_SUBGAME_CHANCE_DEPTH` — enumerate all chance children when
+tree depth < threshold, sample one otherwise. Goal: enumerate the
+flop chance exactly while sampling rivers, keeping wall time low.
+
+| depth | nodes | wall | BR |
+|---|---|---|---|
+| 3 (all sampled) | 8M | 110s | +31.89 |
+| 5 (flop enum, turn sampled) | 136M | 143s | +25.46 |
+| 8 (full enum) | 345M | 142s | +18.59 |
+
+**Depth threshold works** (node count scales as expected), but **wall
+time barely changes**. Reason: `Solver::new` builds the full tree once
+upfront regardless of walk behavior. Tree build is the fixed cost.
+
+**Conclusion: flop is not viable for runtime at any hybrid setting.**
+Confirmed with two independent strategies. Precompute paths are the
+only remaining option, but they trade runtime cost for training-side
+cost and haven't been attempted.
+
+The depth knob is retained as a test/experiment tool. It has no
+production use.
+
+## Final subgame scope
+
+**Shipped**: turn + river solving. Blueprint on preflop + flop.
+Runtime path: `SubgameHandle::decide(state, hole, opp_range)` on turn/river.
+Fallback: `SolverHandle::get_advice_fast(hash)` for all streets.
+
+**Deferred indefinitely**: flop solving (compute-prohibitive), precompute
+mmap path (<100ms latency, multi-day work).
