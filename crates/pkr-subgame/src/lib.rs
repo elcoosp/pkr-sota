@@ -14,7 +14,10 @@ pub mod range_tracker;
 
 use pkr_cfr::table::CompactRegretTable;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
-use pkr_core::state::{Action, ActionKind, GameState};
+use pkr_core::state::{Action, ActionKind, GameState, Street};
+use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
+use std::cell::RefCell;
 
 pub const MAX_ACTIONS: usize = 8;
 pub const ABSTRACT_BUCKETS: usize = 6;
@@ -251,17 +254,28 @@ pub fn run_poc(cfg: &POCConfig) -> POCResult {
 // Public tree
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum PublicNode {
     /// Fold terminal. `to_p0` is P0's chip value, already signed.
     Fold { to_p0: f64 },
-    /// Showdown terminal. Value depends on deal ranks.
-    Showdown { pot: f32, invested_p0: f32 },
+    /// Showdown terminal. Value depends on deal ranks AND this node's
+    /// board (which may differ from the root board for turn subgames,
+    /// where each river branch has its own 5-card board).
+    Showdown {
+        board: [u8; 5],
+        board_len: u8,
+        pot: f32,
+        invested_p0: f32,
+    },
     /// Decision node.
     Decision {
         actor: u8,
-        /// Child node id per bucket, or -1 if that bucket is illegal here.
         bucket_child: [i32; ABSTRACT_BUCKETS],
+    },
+    /// Chance node: enumerate the river cards that complete the board.
+    /// Walk samples one child uniformly over the non-blocked children.
+    ChanceRiver {
+        children: Vec<(u8, u32)>,
     },
 }
 
@@ -285,6 +299,8 @@ fn build_tree(state: &mut GameState, nodes: &mut Vec<PublicNode>, depth: u32) ->
             }
         } else {
             PublicNode::Showdown {
+                board: state.board,
+                board_len: state.board_len,
                 pot: state.pot,
                 invested_p0: state.total_invested[0],
             }
@@ -293,10 +309,32 @@ fn build_tree(state: &mut GameState, nodes: &mut Vec<PublicNode>, depth: u32) ->
         return idx;
     }
 
+    // NEW: turn betting complete, advance to river with a chance node.
+    if state.is_street_complete() && state.street == Street::Turn {
+        let board_len = state.board_len as usize;
+        let mut remaining: Vec<u8> = Vec::with_capacity(46);
+        for c in 0..52u8 {
+            if !state.board[..board_len].contains(&c) {
+                remaining.push(c);
+            }
+        }
+        let mut children = Vec::with_capacity(remaining.len());
+        for card in remaining {
+            state.advance_street_in_place(&[card]);
+            let child = build_tree(state, nodes, depth + 1);
+            state.undo_action();
+            children.push((card, child));
+        }
+        nodes[idx as usize] = PublicNode::ChanceRiver { children };
+        return idx;
+    }
+
+    // Regular decision node.
     let actor = state.actor;
     let mut buf = [Action { player: 0, kind: ActionKind::Fold }; MAX_ACTIONS];
     let n = state.legal_actions_into(&mut buf);
     if n == 0 {
+        // Defensive: no actions and not terminal is a bug; emit fold.
         nodes[idx as usize] = PublicNode::Fold { to_p0: 0.0 };
         return idx;
     }
@@ -355,6 +393,9 @@ struct Solver<'a> {
     term_val: Vec<f64>,
     iter_weight: f64,
     nodes_visited: u64,
+    /// External-sampling RNG for chance nodes. RefCell so walk can be
+    /// &self (needed for BR walk, which doesn't touch regrets).
+    rng: RefCell<SmallRng>,
 }
 
 impl<'a> Solver<'a> {
@@ -393,31 +434,37 @@ impl<'a> Solver<'a> {
         }
 
         // --- Precompute terminal values ---
+        // For turn subgames, each Showdown node has its own board (the
+        // river card differs across chance branches). Re-evaluate hand
+        // ranks per showdown node.
         let mut term_val = vec![0.0f64; n_nodes * n_deals];
         for node_id in 0..n_nodes {
-            match nodes[node_id] {
+            match &nodes[node_id] {
                 PublicNode::Fold { to_p0 } => {
                     for deal_idx in 0..n_deals {
-                        term_val[node_id * n_deals + deal_idx] = to_p0;
+                        term_val[node_id * n_deals + deal_idx] = *to_p0;
                     }
                 }
-                PublicNode::Showdown { pot, invested_p0 } => {
+                PublicNode::Showdown { board, board_len, pot, invested_p0 } => {
+                    let b = &board[..*board_len as usize];
                     for deal_idx in 0..n_deals {
-                        let r0 = rank0[deal_idx];
-                        let r1 = rank1[deal_idx];
+                        let r0 = cfg.evaluator.evaluate_hand(&deals[deal_idx].h0, b);
+                        let r1 = cfg.evaluator.evaluate_hand(&deals[deal_idx].h1, b);
                         let v = if r0 == r1 {
-                            (pot / 2.0 - invested_p0) as f64
+                            (*pot / 2.0 - *invested_p0) as f64
                         } else if r0 < r1 {
-                            (pot - invested_p0) as f64
+                            (*pot - *invested_p0) as f64
                         } else {
-                            -(invested_p0 as f64)
+                            -(*invested_p0 as f64)
                         };
                         term_val[node_id * n_deals + deal_idx] = v;
                     }
                 }
-                PublicNode::Decision { .. } => {}
+                PublicNode::Decision { .. } | PublicNode::ChanceRiver { .. } => {}
             }
         }
+        let _ = &rank0;  // kept for potential future use
+        let _ = &rank1;
 
         Solver {
             cfg,
@@ -432,6 +479,7 @@ impl<'a> Solver<'a> {
             term_val,
             iter_weight: 1.0,
             nodes_visited: 0,
+            rng: RefCell::new(SmallRng::seed_from_u64(cfg.root.board[0] as u64 ^ 0x5EED)),
         }
     }
 
@@ -444,13 +492,47 @@ impl<'a> Solver<'a> {
 
     fn walk(&mut self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64) -> f64 {
         self.nodes_visited += 1;
-        let node = self.tree.nodes[node_id as usize];
-        match node {
-            PublicNode::Fold { .. } | PublicNode::Showdown { .. } => {
-                self.term_val[self.idx(node_id, deal_idx)]
+        // PublicNode is no longer Copy (holds Vec for chance nodes), so
+        // match by reference and dispatch.
+        let variant_tag = match &self.tree.nodes[node_id as usize] {
+            PublicNode::Fold { .. } => 0u8,
+            PublicNode::Showdown { .. } => 1,
+            PublicNode::Decision { .. } => 2,
+            PublicNode::ChanceRiver { .. } => 3,
+        };
+
+        match variant_tag {
+            0 | 1 => self.term_val[self.idx(node_id, deal_idx)],
+            3 => {
+                // Chance node: sample one non-blocked river card uniformly.
+                let children = match &self.tree.nodes[node_id as usize] {
+                    PublicNode::ChanceRiver { children } => children.clone(),
+                    _ => unreachable!(),
+                };
+                let h0 = self.deals[deal_idx as usize].h0;
+                let h1 = self.deals[deal_idx as usize].h1;
+                let valid: Vec<u32> = children
+                    .iter()
+                    .filter(|(c, _)| {
+                        *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1]
+                    })
+                    .map(|(_, id)| *id)
+                    .collect();
+                if valid.is_empty() {
+                    return 0.0;
+                }
+                let pick = {
+                    let mut rng = self.rng.borrow_mut();
+                    valid[rng.random_range(0..valid.len())]
+                };
+                self.walk(pick, deal_idx, reach0, reach1)
             }
-            PublicNode::Decision { actor, bucket_child } => {
-                let i = node_id as usize * self.n_deals + deal_idx as usize;
+            2 => {
+                let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
+                    PublicNode::Decision { actor, bucket_child } => (*actor, *bucket_child),
+                    _ => unreachable!(),
+                };
+                let i = self.idx(node_id, deal_idx);
                 let prior = self.deals[deal_idx as usize].prior;
 
                 let regrets = if actor == 0 { &self.reg0[i] } else { &self.reg1[i] };
@@ -490,6 +572,7 @@ impl<'a> Solver<'a> {
 
                 avg_p0
             }
+            _ => 0.0,
         }
     }
 
@@ -510,14 +593,14 @@ impl<'a> Solver<'a> {
     fn p0_strategy(&self) -> Vec<Option<[f64; ABSTRACT_BUCKETS]>> {
         let mut out = vec![None; self.n_nodes * self.n_deals];
         for node_id in 0..self.n_nodes {
-            if let PublicNode::Decision { actor: 0, bucket_child } = self.tree.nodes[node_id] {
+            if let PublicNode::Decision { actor: 0, bucket_child } = &self.tree.nodes[node_id] {
                 for deal_idx in 0..self.n_deals {
                     let i = node_id * self.n_deals + deal_idx;
                     let sum: f64 = self.sum0[i].iter().sum();
                     if sum > 1e-12 {
                         let mut s = [0.0; ABSTRACT_BUCKETS];
                         for b in 0..ABSTRACT_BUCKETS {
-                            if bucket_child[b] >= 0 {
+                            if (*bucket_child)[b] >= 0 {
                                 s[b] = self.sum0[i][b] / sum;
                             }
                         }
@@ -715,12 +798,43 @@ impl<'a> Solver<'a> {
         deal_idx: u32,
         p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>],
     ) -> f64 {
-        let node = self.tree.nodes[node_id as usize];
-        match node {
-            PublicNode::Fold { .. } | PublicNode::Showdown { .. } => {
-                self.term_val[self.idx(node_id, deal_idx)]
+        let variant_tag = match &self.tree.nodes[node_id as usize] {
+            PublicNode::Fold { .. } => 0u8,
+            PublicNode::Showdown { .. } => 1,
+            PublicNode::Decision { .. } => 2,
+            PublicNode::ChanceRiver { .. } => 3,
+        };
+        match variant_tag {
+            0 | 1 => self.term_val[self.idx(node_id, deal_idx)],
+            3 => {
+                // BR walk uses the same chance-sampling as the CFR walk.
+                let children = match &self.tree.nodes[node_id as usize] {
+                    PublicNode::ChanceRiver { children } => children,
+                    _ => unreachable!(),
+                };
+                let h0 = self.deals[deal_idx as usize].h0;
+                let h1 = self.deals[deal_idx as usize].h1;
+                let valid: Vec<u32> = children
+                    .iter()
+                    .filter(|(c, _)| {
+                        *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1]
+                    })
+                    .map(|(_, id)| *id)
+                    .collect();
+                if valid.is_empty() {
+                    return 0.0;
+                }
+                let pick = {
+                    let mut rng = self.rng.borrow_mut();
+                    valid[rng.random_range(0..valid.len())]
+                };
+                self.br_walk(pick, deal_idx, p0_strategy)
             }
-            PublicNode::Decision { actor, bucket_child } => {
+            2 => {
+                let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
+                    PublicNode::Decision { actor, bucket_child } => (*actor, *bucket_child),
+                    _ => unreachable!(),
+                };
                 if actor == 0 {
                     let i = self.idx(node_id, deal_idx);
                     let strat = match &p0_strategy[i] {
@@ -748,6 +862,7 @@ impl<'a> Solver<'a> {
                     if best.is_finite() { -best } else { 0.0 }
                 }
             }
+            _ => 0.0,
         }
     }
 
@@ -773,8 +888,26 @@ impl<'a> Solver<'a> {
         abs: &dyn AbstractionBuilder,
         tbl: &CompactRegretTable,
     ) {
-        let node = self.tree.nodes[node_id as usize];
-        if let PublicNode::Decision { actor, bucket_child } = node {
+        // Handle chance nodes: recurse into each non-blocked river branch.
+        let children = match &self.tree.nodes[node_id as usize] {
+            PublicNode::ChanceRiver { children } => Some(children.clone()),
+            _ => None,
+        };
+        if let Some(children) = children {
+            for (card, child) in children {
+                state.advance_street_in_place(&[card]);
+                self.fill_blueprint_strat(child, state, strat, abs, tbl);
+                state.undo_action();
+            }
+            return;
+        }
+
+        // Borrow the node data we need, drop the borrow before mutating `state`.
+        let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
+            PublicNode::Decision { actor, bucket_child } => (*actor, *bucket_child),
+            _ => return,
+        };
+        {
             if actor == 0 {
                 let mut sig_buf = [0u8; 8];
                 let sig_len = state.infoset_signature_into(&mut sig_buf);

@@ -10,4 +10,5 @@ pkr-eval = { workspace = true }
 pkr-abstraction = { workspace = true }
 pkr-cfr = { workspace = true }
 rayon = { workspace = true }
+rand = { workspace = true }
 foldhash = { workspace = true }
