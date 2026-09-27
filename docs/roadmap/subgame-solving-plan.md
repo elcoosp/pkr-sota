@@ -29,12 +29,23 @@ max-margin: constrain the solved strategy so its worst-case value
 against any opponent is at least the blueprint's own EV at the root.
 This is the safety guarantee that makes subgame solving deployment-safe.
 
-**Day 4-5: Turn solving.** Extend the flat-tree enumerator to handle
-turn roots with 1 future chance event. Two approaches:
-  (a) public tree with chance aggregated via a gadget (Libratus-style)
-  (b) enumerate all 44 possible river cards into the public tree
-The gadget is required for compute; the direct enumeration is only
-viable on river-only trees. Budget 3 days for the gadget + tests.
+**Day 4-5: Turn solving. [DONE 2026-09-27]** Implemented via external-
+sampling MCCFR with ChanceRiver nodes (option (b) from the original
+plan). Enumerates all 46 river branches; walker samples one per
+iteration. Same PublicTree structure, extended with a Chance variant.
+
+**Result:** turn CFR beats blueprint by median +26.62 chips at 500
+iterations (5/5 boards). At 50 iterations it loses (-10.12 median,
+2/5 wins) — under-converged. External sampling is O(1/sqrt(T)) vs
+river CFR+'s O(1/T), so ~5-10x more iterations are needed for the
+same convergence. Expected.
+
+Per-solve cost: ~5s at 500 iters, 10x10 hands, ~950K nodes/sec.
+
+**Open:** production turn solve would want 1000-2000 iters (10-20s
+per solve). Acceptable for offline eval; needs optimization for
+runtime (parallelize over chance branches, or switch to full
+enumeration with CFR+ once tree size allows).
 
 ### Week 2 — scale and integrate
 
