@@ -166,32 +166,10 @@ impl SubgameHandle {
             blueprint: Some((self.cfg.abstraction.as_ref(), self.cfg.table.as_ref())),
         };
 
-        // Pull the strategy that CFR learned for our concrete hand at
-        // the root. Since P0 range is a point mass on `our_hole`, the
-        // first deal in the solver corresponds to (our_hole, first
-        // opponent sample). The root strategy depends on our hole, which
-        // is fixed across all deals — so we average over opponent samples.
-        let result = pkr_subgame::root_strategies(&cfg);
-        if result.strategies.is_empty() {
-            return None;
-        }
-
-        // Average over deals (which vary only in opponent hand).
-        let mut avg = [0.0f64; SUBGAME_BUCKETS];
-        for (i, s) in result.strategies.iter().enumerate() {
-            let w = opp_samples.get(i).map(|(_, p)| *p).unwrap_or(1.0);
-            for b in 0..SUBGAME_BUCKETS {
-                avg[b] += w * s[b];
-            }
-        }
-        let sum: f64 = avg.iter().sum();
-        if sum <= 1e-9 {
-            return None;
-        }
-        for b in 0..SUBGAME_BUCKETS {
-            avg[b] /= sum;
-        }
-        Some(avg)
+        // Solve the subgame and read the root P0 strategy. Since P0's
+        // hole is a point mass, the correct reduction is: sum regrets
+        // across opponent hands, then regret-match once.
+        pkr_subgame::solve_root_p0_strategy(&cfg)
     }
 
     /// Convenience: same as `decide` but returns the index of the highest-

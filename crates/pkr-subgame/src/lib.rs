@@ -215,6 +215,18 @@ pub fn safe_solve(cfg: &POCConfig) -> SafeSolveResult {
     }
 }
 
+/// Solve the subgame and return P0's aggregated root strategy
+/// (regret-match on the regret-sum across deals). Correct reduction
+/// when P0's hole is a point mass across deals.
+///
+/// `None` if the root isn't a P0 decision node, or no deal survived
+/// range intersection.
+pub fn solve_root_p0_strategy(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
+    let mut solver = Solver::new(cfg);
+    solver.solve();
+    solver.root_p0_strategy_aggregated()
+}
+
 pub fn adversarial_safety_test(cfg: &POCConfig) -> AdversarialResult {
     let mut solver = Solver::new(cfg);
     solver.solve();
@@ -947,6 +959,50 @@ impl<'a> Solver<'a> {
     }
 
     pub fn root_id(&self) -> u32 { self.tree.root }
+
+    /// Aggregate P0 strategy at the root: sum regrets across all deals,
+    /// then regret-match once. This is the correct reduction when P0's
+    /// hole is fixed across deals (as in a subgame solve for one hand).
+    /// Averaging per-deal regret-matched strategies (what
+    /// `root_p0_strategies` does) gives a different, incorrect result.
+    pub fn root_p0_strategy_aggregated(&self) -> Option<[f64; ABSTRACT_BUCKETS]> {
+        let root = self.tree.root as usize;
+        let i_root = root * self.n_deals;
+        let bucket_child = match self.tree.nodes[root] {
+            PublicNode::Decision { bucket_child, .. } => bucket_child,
+            _ => return None,
+        };
+        // Sum positive regrets across deals.
+        let mut agg = [0.0f64; ABSTRACT_BUCKETS];
+        for d in 0..self.n_deals {
+            let raw = self.reg0[i_root + d];
+            for b in 0..ABSTRACT_BUCKETS {
+                if raw[b] > 0.0 {
+                    agg[b] += raw[b];
+                }
+            }
+        }
+        let sum: f64 = agg.iter().sum();
+        if sum <= 1e-12 {
+            // Uniform over legal buckets.
+            let n = bucket_child.iter().filter(|&&c| c >= 0).count().max(1);
+            let u = 1.0 / n as f64;
+            let mut out = [0.0f64; ABSTRACT_BUCKETS];
+            for b in 0..ABSTRACT_BUCKETS {
+                if bucket_child[b] >= 0 {
+                    out[b] = u;
+                }
+            }
+            return Some(out);
+        }
+        let mut out = [0.0f64; ABSTRACT_BUCKETS];
+        for b in 0..ABSTRACT_BUCKETS {
+            if bucket_child[b] >= 0 {
+                out[b] = agg[b] / sum;
+            }
+        }
+        Some(out)
+    }
 
     /// First P0 decision node (tree order) with non-zero strategy for at
     /// least one deal. Returns (node_id, per-deal normalized strategies).
