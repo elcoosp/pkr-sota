@@ -17,7 +17,8 @@ use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
-use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
+use rayon::prelude::*;
 
 pub const MAX_ACTIONS: usize = 8;
 pub const ABSTRACT_BUCKETS: usize = 6;
@@ -506,9 +507,9 @@ struct Solver<'a> {
     term_val: Vec<f64>,
     iter_weight: f64,
     nodes_visited: u64,
-    /// External-sampling RNG for chance nodes. RefCell so walk can be
-    /// &self (needed for BR walk, which doesn't touch regrets).
-    rng: RefCell<SmallRng>,
+    /// Seed for the RNG. Each chance encounter seeds a fresh SmallRng
+    /// from (seed ^ deal_idx ^ nodes_visited) so the Solver stays Sync.
+    seed: u64,
     /// `true` = full chance enumeration (exact expectation over rivers,
     /// CFR+ convergence O(1/T)). `false` = external sampling (one river
     /// per walk, MCCFR convergence O(1/sqrt(T))).
@@ -518,8 +519,10 @@ struct Solver<'a> {
     /// Cuts Solver::new time from ~6.5s to <500ms at 25 iters.
     /// Read from PKR_SUBGAME_LAZY_TERM (default "1").
     lazy_term: bool,
-    /// Lazily-computed showdown values. NaN = not yet computed.
-    lazy_cache: std::cell::RefCell<Vec<f64>>,
+    /// Lazily-computed showdown values. u64::MAX = unset sentinel;
+    /// otherwise holds f64::to_bits of the value. Atomic so Solver is
+    /// Sync and the BR walk can parallelize.
+    lazy_cache: Box<[AtomicU64]>,
 }
 
 impl<'a> Solver<'a> {
@@ -609,14 +612,17 @@ impl<'a> Solver<'a> {
             term_val,
             iter_weight: 1.0,
             nodes_visited: 0,
-            rng: RefCell::new(SmallRng::seed_from_u64(cfg.root.board[0] as u64 ^ 0x5EED)),
+            seed: (cfg.root.board[0] as u64) ^ 0x5EED_2026_0000_0000,
             full_chance: std::env::var("PKR_SUBGAME_FULL_CHANCE")
                 .map(|v| v != "0")
                 .unwrap_or(true),
             lazy_term: std::env::var("PKR_SUBGAME_LAZY_TERM")
                 .map(|v| v != "0")
                 .unwrap_or(true),
-            lazy_cache: std::cell::RefCell::new(vec![f64::NAN; n_nodes * n_deals]),
+            lazy_cache: (0..n_nodes * n_deals)
+                .map(|_| AtomicU64::new(u64::MAX))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
         }
     }
 
@@ -632,9 +638,9 @@ impl<'a> Solver<'a> {
         if !self.lazy_term {
             return self.term_val[i];
         }
-        let cached = self.lazy_cache.borrow()[i];
-        if !cached.is_nan() {
-            return cached;
+        let bits = self.lazy_cache[i].load(Ordering::Relaxed);
+        if bits != u64::MAX {
+            return f64::from_bits(bits);
         }
         // Compute on the fly.
         let (board, board_len, pot, invested_p0) = match &self.tree.nodes[node_id as usize] {
@@ -656,7 +662,7 @@ impl<'a> Solver<'a> {
         } else {
             -(invested_p0 as f64)
         };
-        self.lazy_cache.borrow_mut()[i] = v;
+        self.lazy_cache[i].store(v.to_bits(), Ordering::Relaxed);
         v
     }
 
@@ -701,10 +707,13 @@ impl<'a> Solver<'a> {
                     }
                     total
                 } else {
-                    let pick = {
-                        let mut rng = self.rng.borrow_mut();
-                        valid[rng.random_range(0..valid.len())]
-                    };
+                    let mut rng = SmallRng::seed_from_u64(
+                        self.seed
+                            .wrapping_add(deal_idx as u64)
+                            .wrapping_mul(0x9E3779B97F4A7C15)
+                            .wrapping_add(self.nodes_visited),
+                    );
+                    let pick = valid[rng.random_range(0..valid.len())];
                     self.walk(pick, deal_idx, reach0, reach1)
                 }
             }
@@ -824,7 +833,7 @@ impl<'a> Solver<'a> {
 
     /// br_walk returns value to P0; we want P1's BR value (for
     /// exploitability), so negate once. `priors` is a per-deal weight
-    /// list, normalized inside.
+    /// list, normalized inside. Parallel over deals: br_walk is &self.
     fn br_v1_with_prior(
         &self,
         p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>],
@@ -834,15 +843,18 @@ impl<'a> Solver<'a> {
         if sum <= 1e-12 {
             return 0.0;
         }
-        let mut total = 0.0f64;
-        for i in 0..self.n_deals {
-            let w = priors[i];
-            if w <= 0.0 {
-                continue;
-            }
-            let v_p0 = self.br_walk(self.tree.root, i as u32, p0_strategy);
-            total += w * (-v_p0);
-        }
+        let root = self.tree.root;
+        let total: f64 = (0..self.n_deals)
+            .into_par_iter()
+            .map(|i| {
+                let w = priors[i];
+                if w <= 0.0 {
+                    return 0.0;
+                }
+                let v_p0 = self.br_walk(root, i as u32, p0_strategy);
+                w * (-v_p0)
+            })
+            .sum();
         total / sum
     }
 
@@ -853,9 +865,11 @@ impl<'a> Solver<'a> {
         &self,
         p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>],
     ) -> Vec<f64> {
+        let root = self.tree.root;
         (0..self.n_deals)
+            .into_par_iter()
             .map(|i| {
-                let v_p0 = self.br_walk(self.tree.root, i as u32, p0_strategy);
+                let v_p0 = self.br_walk(root, i as u32, p0_strategy);
                 -v_p0
             })
             .collect()
@@ -1012,10 +1026,13 @@ impl<'a> Solver<'a> {
                     }
                     total
                 } else {
-                    let pick = {
-                        let mut rng = self.rng.borrow_mut();
-                        valid[rng.random_range(0..valid.len())]
-                    };
+                    let mut rng = SmallRng::seed_from_u64(
+                        self.seed
+                            .wrapping_add(deal_idx as u64)
+                            .wrapping_mul(0x9E3779B97F4A7C15)
+                            .wrapping_add(node_id as u64),
+                    );
+                    let pick = valid[rng.random_range(0..valid.len())];
                     self.br_walk(pick, deal_idx, p0_strategy)
                 }
             }
