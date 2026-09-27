@@ -1,7 +1,8 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 use pkr_abstraction::{
-    calculate_ehs, hand_and_board_features, hand_structure_features, load_centroids,
+    calculate_ehs, hand_and_board_features,
+    hand_structure_features, hand_structure_features_v39, load_centroids,
     load_centroids_6d, nearest_centroid_10d, nearest_centroid_6d, save_centroids,
     save_centroids_10d, save_centroids_6d, CentroidStore, CentroidStore10D, CentroidStore6D,
 };
@@ -908,13 +909,22 @@ fn generate_centroids_6d(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let evaluator = make_evaluator(rank_table_path)?;
     let total = choose(52, 2) as usize;
+    let use_v39 = std::env::var("PKR_PREFLOP_V39").as_deref() == Ok("1");
+    if use_v39 {
+        eprintln!("  using V39 features (continuous gap)");
+    }
     let data: Vec<[f32; 6]> = (0..total)
         .into_par_iter()
         .map(|idx| {
             let hole = combinadic_unrank_2(idx as u32);
             let (ehs, ehs_sq) = calculate_ehs(&hole, &[], evaluator.as_ref());
-            let s = hand_structure_features(&hole);
-            [ehs, ehs_sq, s[0], s[1], s[2], s[3]]
+            if use_v39 {
+                let s = hand_structure_features_v39(&hole);
+                [ehs, ehs_sq, s[0], s[1], s[2], s[3]]
+            } else {
+                let s = hand_structure_features(&hole);
+                [ehs, ehs_sq, s[0], s[1], s[2], s[3]]
+            }
         })
         .collect();
     let mut rng = StdRng::seed_from_u64(42);
@@ -944,11 +954,17 @@ fn generate_preflop_rich_table(
     let evaluator = make_evaluator(rank_table_path)?;
     let total = choose(52, 2) as usize;
     let mut table: Vec<u8> = vec![0u8; total];
+    let use_v39 = std::env::var("PKR_PREFLOP_V39").as_deref() == Ok("1");
     table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
         let hole = combinadic_unrank_2(idx as u32);
         let (ehs, ehs_sq) = calculate_ehs(&hole, &[], evaluator.as_ref());
-        let s = hand_structure_features(&hole);
-        let feat: [f32; 6] = [ehs, ehs_sq, s[0], s[1], s[2], s[3]];
+        let feat: [f32; 6] = if use_v39 {
+            let s = hand_structure_features_v39(&hole);
+            [ehs, ehs_sq, s[0], s[1], s[2], s[3]]
+        } else {
+            let s = hand_structure_features(&hole);
+            [ehs, ehs_sq, s[0], s[1], s[2], s[3]]
+        };
         *slot = nearest_centroid_6d(&feat, centroids) as u8;
     });
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;

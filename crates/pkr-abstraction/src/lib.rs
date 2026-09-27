@@ -174,6 +174,43 @@ pub fn hand_structure_features(hole: &[u8]) -> [f32; 4] {
     ]
 }
 
+/// V39 preflop feature vector. Same 6 dimensions as the v33 version, but
+/// the `connector` bit (gap <= 2) is replaced with `gap/12`, a continuous
+/// measure of rank spread. Captures 54s vs 53s vs 52s distinctions that
+/// the binary bit conflates.
+pub fn hand_structure_features_v39(hole: &[u8]) -> [f32; 4] {
+    debug_assert_eq!(hole.len(), 2);
+    let r0 = card_rank(hole[0]);
+    let r1 = card_rank(hole[1]);
+    let (rank_high, rank_low) = if r0 >= r1 { (r0, r1) } else { (r1, r0) };
+    let suited = if card_suit(hole[0]) == card_suit(hole[1]) { 1.0 } else { 0.0 };
+    let gap = (rank_high - rank_low) as f32 / 12.0;
+    [
+        rank_high as f32 / 12.0,
+        rank_low as f32 / 12.0,
+        suited,
+        gap,
+    ]
+}
+
+/// V39 combined vector: (EHS, EHS^2, rank_high/12, rank_low/12, suited, gap/12).
+pub fn hand_and_board_features_v39(
+    ehs: f32,
+    ehs_sq: f32,
+    hole: &[u8],
+    board: &[u8],
+) -> [f32; 10] {
+    let h = hand_structure_features_v39(hole);
+    let b = board_structure_features(board);
+    [ehs, ehs_sq, h[0], h[1], h[2], h[3], b[0], b[1], b[2], b[3]]
+}
+
+/// Env-gated selector for the v39 feature space. Reads PKR_PREFLOP_V39=1.
+pub fn preflop_v39_enabled() -> bool {
+    std::env::var("PKR_PREFLOP_V39").as_deref() == Ok("1")
+}
+
+
 // ---------------------------------------------------------------------------
 // 10D "hand+board" feature space for flop/turn tables.
 //
