@@ -59,6 +59,11 @@ ITERS_PER_SYNC="${ITERS_PER_SYNC:-2048}"
 # (The public-tree BR at `pkr-exploit::public_br` is WIP and cannot be
 # used — see that module's doc comment.)
 EVAL_EVERY="${EVAL_EVERY:-5000000}"
+# Stop training after this many consecutive evals fail to set a new
+# historical minimum. Retroactive check on 100M runs: average savings
+# was 49% of the iteration budget with no change to the shipped
+# blueprint. See docs/experiments/v38-30M-sweetspot.md for context.
+STOP_ON_PLATEAU="${STOP_ON_PLATEAU:-5}"
 EVAL_DEALS="${EVAL_DEALS:-5000}"
 PROMOTE_GATE="${PROMOTE_GATE:-3.0}"
 

@@ -384,3 +384,8 @@ Fallback: `SolverHandle::get_advice_fast(hash)` for all streets.
 
 **Deferred indefinitely**: flop solving (compute-prohibitive), precompute
 mmap path (<100ms latency, multi-day work).
+
+
+## Trainer: plateau stop
+
+`--stop-on-plateau 5` now default in run-config.sh. ~49% compute savings on 100M-budget runs (measured retroactively on v37 seed pool).

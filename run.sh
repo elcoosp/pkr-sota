@@ -134,6 +134,7 @@ cargo run --release -p pkr-trainer -- \
     --iters-per-sync "$ITERS_PER_SYNC" \
     --eval-every "$EVAL_EVERY" \
     --eval-deals "$EVAL_DEALS" \
+    --stop-on-plateau "$STOP_ON_PLATEAU" \
     --promote-gate "$PROMOTE_GATE" \
     --exploitability-csv "$OUT/exploitability.csv" \
     --metrics-csv "$OUT/metrics.csv" \

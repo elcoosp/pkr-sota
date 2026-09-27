@@ -75,3 +75,28 @@ same tables. Two outcomes:
 
 Every future experiment runs at 1/3 the cost. Session iteration cadence
 on training-side experiments goes from ~3h to ~1h per seed.
+
+
+## Plateau-stop feature (2026-09-27)
+
+Added `--stop-on-plateau N`: end training after N consecutive evals
+produce no new historical minimum. Now default in `run-config.sh`
+(`STOP_ON_PLATEAU=5`, i.e. stop at last_min + 25M iters at 5M cadence).
+
+Retroactive check on the four completed 100M runs:
+
+| run | last min | stop at | saved | pct |
+|---|---|---|---|---|
+| v37 seed 42 | 60M | 85M | 15M | 15% |
+| v37 seed 100 | 15M | 40M | 60M | 60% |
+| v37 seed 101 | 15M | 40M | 60M | 60% |
+| v37 seed 102 | 15M | 40M | 60M | 60% |
+| **average** | | | **49M** | **49%** |
+
+Three of four wasted 60% of the iteration budget on post-minimum
+drift. The shipped artifact is unchanged — the promote gate preserves
+the historical minimum regardless — so this is pure compute savings.
+
+For a 100M-budget experiment, the flag cuts ~40M iterations without
+touching the output. Future seed-pool experiments run in roughly
+half the wall time.
