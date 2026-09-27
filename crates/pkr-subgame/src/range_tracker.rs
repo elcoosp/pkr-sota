@@ -83,6 +83,9 @@ pub struct RangeTracker<'a> {
     state: GameState,
     p0: Box<[f64; N_HANDS]>,
     p1: Box<[f64; N_HANDS]>,
+    /// Snapshot stack: (p0_range, p1_range). Pushed by apply_action and
+    /// advance_street, popped by undo_last_action.
+    undo_stack: Vec<(Box<[f64; N_HANDS]>, Box<[f64; N_HANDS]>)>,
 }
 
 impl<'a> RangeTracker<'a> {
@@ -105,6 +108,7 @@ impl<'a> RangeTracker<'a> {
             state: root,
             p0,
             p1,
+            undo_stack: Vec::new(),
         }
     }
 
@@ -146,6 +150,7 @@ impl<'a> RangeTracker<'a> {
         if self.state.is_terminal() {
             return Err(RangeError::HandOver);
         }
+        self.undo_stack.push((self.p0.clone(), self.p1.clone()));
         let actor = self.state.actor;
 
         // Update range BEFORE applying the action (the blueprint prob is
@@ -217,9 +222,23 @@ impl<'a> RangeTracker<'a> {
 
     /// Advance the street with `new_cards` (3 for flop, 1 for turn/river).
     pub fn advance_street(&mut self, new_cards: &[u8]) -> Result<(), RangeError> {
+        self.undo_stack.push((self.p0.clone(), self.p1.clone()));
         self.state.advance_street_in_place(new_cards);
         Self::restrict_to_board(&mut self.p0, &self.state);
         Self::restrict_to_board(&mut self.p1, &self.state);
+        Ok(())
+    }
+
+    /// Undo the last `apply_action` or `advance_street`. Restores ranges
+    /// and reverses the state mutation.
+    pub fn undo_last_action(&mut self) -> Result<(), RangeError> {
+        let (p0, p1) = self
+            .undo_stack
+            .pop()
+            .ok_or_else(|| RangeError::EmptyRange("undo_stack empty".into()))?;
+        self.state.undo_action();
+        self.p0 = p0;
+        self.p1 = p1;
         Ok(())
     }
 
