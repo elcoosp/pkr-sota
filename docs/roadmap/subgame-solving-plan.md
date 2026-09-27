@@ -125,3 +125,47 @@ under adversarial deal selection. Turn POC fully closed.
 
 Ranked by value: gadget > latency > flop. Flop only matters after the
 first two are done.
+
+
+## Safe-solving — DONE 2026-09-27
+
+`safe_solve(cfg)` implemented: run CFR, then blend toward the blueprint
+until BR_v1 <= blueprint BR_v1. Guarantees the shipped strategy is never
+more exploitable than the blueprint.
+
+River sweep (10 boards, 100 iters, 12 hands, aggressive line):
+
+| metric | value |
+|---|---|
+| mean cfr_br | +0.31 chips |
+| mean bp_br | +37.64 chips |
+| mean alpha | **1.0000** |
+| boards needing any blend | **0** |
+
+**CFR is already strictly safer than the blueprint on every board.**
+Pure CFR wins; the safe-solving wrapper is a no-op. This is the
+strongest outcome: no manual gadget needed, no compute sacrificed
+to safety.
+
+**Caveat.** "Adversarial" here means *adversarial deal selection* —
+P1 picks the deal maximizing BR against a fixed strategy. The stronger
+test is *adversarial range selection* — P1 picks the distribution over
+hands maximizing exploitability. Both the earlier "wide-range" test
+and this one give CFR the win, but they're not the same measurement.
+Wiring the range-adversarial version into `safe_solve` is a small
+change to `br_v1_with_prior` (replace the tracked prior with a
+worst-case prior), and should be done before the production build.
+
+## Roadmap status
+
+| milestone | status |
+|---|---|
+| RangeTracker | DONE |
+| River CFR solve | DONE (+42.96 chips median) |
+| River adversarial (deal) | DONE (+138.7 delta) |
+| Turn CFR solve | DONE (+26.62 chips median) |
+| Turn adversarial (deal) | DONE (+143.1 delta) |
+| Safe-solving wrapper | DONE (alpha=1.0, no blend) |
+| Adversarial range safety | OPEN (small extension) |
+| Runtime latency < 100ms | OPEN (parallelize chance branches) |
+| Flop solver | OPEN (design required) |
