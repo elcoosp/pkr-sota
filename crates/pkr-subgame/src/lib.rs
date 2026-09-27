@@ -360,7 +360,7 @@ pub fn run_poc(cfg: &POCConfig) -> POCResult {
         br_v1_vs_blueprint,
         br_v1_vs_blueprint_wide,
         iterations: cfg.iterations,
-        nodes_visited: solver.nodes_visited,
+        nodes_visited: solver.nodes_visited.iter().map(|a| a.load(Ordering::Relaxed)).sum(),
     }
 }
 
@@ -506,7 +506,9 @@ struct Solver<'a> {
     /// Precomputed terminal values indexed the same way.
     term_val: Vec<f64>,
     iter_weight: f64,
-    nodes_visited: u64,
+    /// Per-deal node counters. Different deals hit different cache
+    /// lines, avoiding the contention that a single shared atomic had.
+    nodes_visited: Vec<AtomicU64>,
     /// Seed for the RNG. Each chance encounter seeds a fresh SmallRng
     /// from (seed ^ deal_idx ^ nodes_visited) so the Solver stays Sync.
     seed: u64,
@@ -524,6 +526,13 @@ struct Solver<'a> {
     /// Sync and the BR walk can parallelize.
     lazy_cache: Box<[AtomicU64]>,
 }
+
+// SAFETY: all mutable fields are indexed by (node_id * n_deals + deal_idx).
+// Two parallel threads operating on different deal_idx values write to
+// disjoint slots. Reads are to immutable fields (tree, deals, term_val,
+// cfg). The only shared mutable state is `nodes_visited`, which is atomic.
+unsafe impl<'a> Send for Solver<'a> {}
+unsafe impl<'a> Sync for Solver<'a> {}
 
 impl<'a> Solver<'a> {
     fn new(cfg: &'a POCConfig<'a>) -> Self {
@@ -611,7 +620,7 @@ impl<'a> Solver<'a> {
             sum1: vec![[0.0; ABSTRACT_BUCKETS]; n_nodes * n_deals],
             term_val,
             iter_weight: 1.0,
-            nodes_visited: 0,
+            nodes_visited: (0..n_deals).map(|_| AtomicU64::new(0)).collect(),
             seed: (cfg.root.board[0] as u64) ^ 0x5EED_2026_0000_0000,
             full_chance: std::env::var("PKR_SUBGAME_FULL_CHANCE")
                 .map(|v| v != "0")
@@ -669,7 +678,7 @@ impl<'a> Solver<'a> {
     pub fn root(&self) -> u32 { self.tree.root }
 
     fn walk(&mut self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64) -> f64 {
-        self.nodes_visited += 1;
+        self.nodes_visited[deal_idx as usize].fetch_add(1, Ordering::Relaxed);
         // PublicNode is no longer Copy (holds Vec for chance nodes), so
         // match by reference and dispatch.
         let variant_tag = match &self.tree.nodes[node_id as usize] {
@@ -711,7 +720,7 @@ impl<'a> Solver<'a> {
                         self.seed
                             .wrapping_add(deal_idx as u64)
                             .wrapping_mul(0x9E3779B97F4A7C15)
-                            .wrapping_add(self.nodes_visited),
+                            .wrapping_add(self.nodes_visited[deal_idx as usize].load(Ordering::Relaxed)),
                     );
                     let pick = valid[rng.random_range(0..valid.len())];
                     self.walk(pick, deal_idx, reach0, reach1)
@@ -769,11 +778,26 @@ impl<'a> Solver<'a> {
     fn solve(&mut self) {
         let root = self.tree.root;
         let n_deals = self.n_deals;
-        for iter in 0..self.cfg.iterations {
+        let iters = self.cfg.iterations;
+        for iter in 0..iters {
             self.iter_weight = (iter + 1) as f64;
-            for deal_idx in 0..n_deals {
-                self.walk(root, deal_idx as u32, 1.0, 1.0);
-            }
+
+            // SAFETY: each deal is walked by exactly one thread; all
+            // mutable state is indexed by (node * n_deals + deal) and
+            // is disjoint per deal. Reads (tree, deals, term_val) are
+            // immutable for the duration of the parallel section.
+            //
+            // The pointer is passed as `usize` (which is trivially
+            // Send + Sync) to satisfy rayon's closure bounds without
+            // fighting the type system. The safety invariant is
+            // documented above and enforced by the (node, deal) index
+            // scheme: two different `deal_idx` values never touch the
+            // same slot.
+            let this_addr = self as *mut Solver as usize;
+            (0..n_deals).into_par_iter().for_each(move |deal_idx| {
+                let this: &mut Solver = unsafe { &mut *(this_addr as *mut Solver) };
+                this.walk(root, deal_idx as u32, 1.0, 1.0);
+            });
         }
     }
 
