@@ -1,3 +1,17 @@
+> **Correction 2026-09-27.** A 4-seed pool (seeds 42, 100, 101, 102)
+> gives a mean of **2587.6 ± 63.3 mbb** at 100M iterations, not the
+> single-seed 2526.2 originally quoted. Seed 42 was 61.5 mbb below the
+> mean — a lucky draw. The corrected improvement over v33-B (20M iters)
+> is **−202 mbb** (was −263). Still a clear win; the magnitude shrinks
+> by ~20%. All other claims in this document stand.
+>
+> Cross-seed SD at 100M iters is ~63 mbb, lower than the ~78 at 5M.
+> Earlier speculation that "variance grows with iteration count" is
+> wrong; the 20M estimate of 110 mbb was a 2-seed artefact.
+>
+> Seeds 100, 101, 102 all found their minimum at iteration 15M. Seed 42
+> found its minimum at 60M. The "sawtooth" shape is seed-specific.
+
 # v34 — 100M-iteration rich 6D run (confirmed second win)
 
 **Date:** 2026-09-25 (launch) → 2026-09-26 00:59 (finish)
