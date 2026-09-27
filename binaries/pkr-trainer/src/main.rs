@@ -978,12 +978,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             trainer.get_table(),
             abstraction_for_eval.as_ref(),
         );
-        let r = pkr_cfr::preflop_validate::validate_preflop_opening(&lookup);
-        eprintln!("  category: {}", r.category);
-        eprintln!("  passed:   {}", r.passed);
-        eprintln!("  score:    {:.3}", r.score);
-        for issue in &r.issues {
-            eprintln!("  issue:    {}", issue);
+        for (label, r) in [
+            ("BU open", pkr_cfr::preflop_validate::validate_preflop_opening(&lookup)),
+            ("BB 3-bet", pkr_cfr::preflop_validate::validate_bb_3bet(&lookup)),
+            ("BB defend", pkr_cfr::preflop_validate::validate_bb_defend(&lookup)),
+        ] {
+            eprintln!("  --- {} ---", label);
+            eprintln!("  category: {}", r.category);
+            eprintln!("  passed:   {}", r.passed);
+            eprintln!("  score:    {:.3}", r.score);
+            for issue in &r.issues {
+                eprintln!("    issue: {}", issue);
+            }
         }
         eprintln!();
     }
