@@ -70,7 +70,10 @@ impl Default for SubgameConfig {
             table: Arc::new(CompactRegretTable::with_capacity(1)),
             iters: 25,
             hands_per_range: 8,
-            enabled_streets: [false, false, true, true],
+            // DISABLED until range-aware solving is implemented.
+            // Uniform-range hook regresses e2e by ~4800 mbb (see
+            // docs/experiments/river-subgame-poc-positive.md).
+            enabled_streets: [false, false, false, false],
         }
     }
 }

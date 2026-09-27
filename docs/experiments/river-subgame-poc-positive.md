@@ -318,3 +318,62 @@ terminal.
 5. CFR produces hand-dependent strategies (not artefact) — NEW
 
 The 2-week build proceeds on solid evidence.
+
+
+## E2E finding: uniform-range assumption breaks river solving (2026-09-27)
+
+Tested river-only subgame solving end-to-end via `SubgameHook`.
+Result: **+4836 mbb regression** vs blueprint-only (100 deals, seed 42):
+
+| config | expl_mbb |
+|---|---|
+| blueprint only | 16459 |
+| with river subgame | 21295 |
+| delta | **+4836** |
+
+### Root cause
+
+The POC's +42.96 chip win came from matched uniform ranges on both
+sides. In the e2e test, P1 plays the blueprint — whose river range is
+heavily conditioned on its own flop/turn play. The subgame solve, using
+uniform ranges, optimizes P0 for the wrong opponent distribution and
+produces a strategy worse than the blueprint's.
+
+### What this rules out
+
+- Subgame solving with **uniform** ranges on top of a **blueprint**
+  opponent is **worse** than blueprint-vs-blueprint. This is the
+  standard result: subgame solving needs a range estimate at least as
+  accurate as the blueprint's own.
+
+### What this does not rule out
+
+- Subgame solving with **tracked** ranges (RangeTracker posterior).
+  The `pkr-subgame` module has `RangeTracker` and it works; the runtime
+  `SubgameHandle` currently uses uniform because the hook interface
+  `(state, hero_hole, hero_is_p0)` has no access to the opponent's
+  action history.
+
+### Fix required for shipping
+
+Thread the RangeTracker through the BR walk so the hook receives the
+current opponent posterior. Then the solve can use the same distribution
+the blueprint was trained against. This is a real change:
+
+1. `SubgameHook` signature needs to accept a range parameter, or
+2. The BR walk needs to construct a RangeTracker per deal and pass it to
+   the hook, or
+3. `SubgameHandle::decide` needs a "range from public history" API that
+   the caller populates.
+
+Option 2 is the correct design but is a multi-hour change. Estimated
+4-6 hours including tests.
+
+### Interim state
+
+River subgame solving is **not shippable** end-to-end with the current
+uniform-range hook. The per-subgame POC remains valid (isolated eval with
+matched ranges). The e2e integration must wait for range-aware solving.
+
+Set `enabled_streets: [false, false, false, false]` in `SubgameConfig`
+default until range-aware is implemented.
