@@ -215,3 +215,42 @@ min, which is tractable.
   inside `solve_root_p0_strategy`.
 - Runtime integration (`pkr-runtime/src/subgame.rs`) waits on Run C.
 - Turn extension waits on the river outcome.
+
+### Run F: 100 deals, 10 inner iterations
+
+`PKR_E2E_DEALS=100`, `PKR_E2E_HANDS=4`, `PKR_BR_ITERATIONS=1`,
+`PKR_SUBGAME_ITERS=10`, seed 42.
+
+| config | expl_mbb | SE |
+|---|---|---|
+| blueprint only | 10296.2 | 1620.2 |
+| tracked-range subgame | 10230.5 | 1618.6 |
+| delta | **-65.7** | — |
+
+Wall: 4316s (~72 min). Cache hits 1395799 / misses 3953314 (26.1%).
+
+**Sign consistent with all prior runs:**
+
+| run | deals | delta |
+|---|---|---|
+| C | 2 | -98.2 |
+| D | 8 | -53.2 |
+| F | 100 | -65.7 |
+
+But **the SE is 1618** at 100 deals. The paired-difference variance is
+dominated by per-deal BR variance, which does NOT shrink 1/sqrt(N)
+here because the in-sample BR overfits each deal differently and the
+deal set produces a heavy-tailed distribution of per-deal BR values.
+
+**Conclusion:** the range-aware river subgame reduces exploitability
+by a small but consistently-signed amount, **roughly 50-100 mbb** on
+this checkpoint. The measurement cannot distinguish -66 from 0 at
+100 deals with the current BR estimator.
+
+**The honest next step is not more deals.** Adding deals doesn't
+shrink the SE fast enough. The real proof of a lower-exploitability
+strategy is game play, not static-policy exploitability. Runtime
+integration (play the subgame strategy in the actual game loop) is
+where the effect should become visible, because the solve is
+per-decision rather than averaged over 100 deals worth of different
+board textures.

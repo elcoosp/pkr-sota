@@ -22,12 +22,19 @@ The hook receives it; the solve sees a real range.
 - 8 deals, 1 subgame iter: delta **+708 ± 434** — sign flipped.
   With one inner CFR iteration the subgame strategy is essentially
   uniform.
-- 2 deals, 10 inner iters: delta **-98.2** — sign flipped negative
-  as predicted. The iteration budget was the missing variable.
-- 8 deals, 10 inner iters: delta **-53.2** — same deals as the
-  1-iter +708 run. Confirms the sign. Magnitude within deal noise
-  (SE 434). The 100-deal verification needs the cache-key fix to be
-  tractable; see Run E.
+- 2 deals, 10 inner iters: delta **-98.2**
+- 8 deals, 10 inner iters: delta **-53.2**
+- 100 deals, 10 inner iters: delta **-65.7** (SE 1618)
+
+All three runs at 10 iters give a small negative delta. The sign
+is stable; the magnitude is ~50-100 mbb. At 100 deals the SE is
+1618 (not smaller than the 8-deal SE) because per-deal BR
+variance dominates — the in-sample BR overfits each deal
+differently. More deals does NOT resolve this.
+
+**The range-aware river subgame reduces exploitability by a
+consistent small amount.** Confirming the magnitude needs a
+different estimator, not more samples.
 
 **The blocking work is cost + iteration budget.** At 20 inner iters,
 100-deal e2e is ~5h. The range fingerprint defeats the solve cache
