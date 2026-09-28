@@ -116,3 +116,33 @@ run_A/run_B timing: 2M iters in ~2400s = ~833 it/s.
 
 Single-thread is ~8x slower. Not viable for production training, but
 fine for characterization runs.
+
+
+## FIXED: deterministic batch sort (2026-09-28)
+
+Root cause identified and fixed. Both `par_sort_unstable_by_key` calls
+in `crates/pkr-cfr/src/table.rs` used non-total sort keys:
+
+  flush_cpu_batch_with:  (index, action, iteration)
+  apply_strategy_batch:  (index, action)
+
+`par_sort_unstable_by_key` reorders items with equal keys arbitrarily.
+Since the sequential fold sums f64 in sorted order, different orderings
+produced different low bits of the accumulated regret.
+
+**Fix**: append the value's bit pattern as a tiebreaker:
+  flush_cpu_batch_with:  (index, action, iteration, delta.to_bits())
+  apply_strategy_batch:  (index, action, prob.to_bits())
+
+This makes the sort key a total order. Cost: +4 bytes per key. No
+runtime overhead beyond the comparison.
+
+### Verification
+
+Two identical 8-thread runs, 3M iters, seed 202:
+
+  run_C and run_D exploitability.csv — **byte-identical**
+  run_C and run_D metrics.csv        — **byte-identical**
+
+The 8-thread nondeterminism is fully resolved. Any A/B at any thread
+count now measures only the variable under test.
