@@ -367,3 +367,20 @@ and possibly harmful at the current iteration budget.
 **Next: retest turn at `PKR_SUBGAME_ITERS = 50`.** If turn remains
 non-positive at 50 iters, the turn subgame is not ready and the
 correct shipping configuration is river-only.
+
+
+### Turn cost (10-deal probe, 50 iters)
+
+Per-deal wall time (8-core parallel):
+
+    river-only,  50 iters:  0.5 s/deal
+    river+turn,  50 iters:  2.2 s/deal
+    ratio: 4.4x
+
+The turn subgame includes a chance node over the river card. With
+`full_chance` on (default), each turn solve enumerates all valid river
+cards (~44), inflating the tree by that factor. The 4.4x measured is
+much smaller than 44x because the solve is parallel across deals and
+the tree depth adds only one level.
+
+A 5000-deal turn-50 run is ~23 min on 8 cores. Running.
