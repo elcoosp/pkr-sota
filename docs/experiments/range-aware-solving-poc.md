@@ -325,3 +325,30 @@ shipping is not the effect size — it's that no runtime code path
 maintains a tracker. See
 `docs/roadmap/runtime-tracker-integration.md` for the RuntimeSession
 design.
+
+## Turn extension — preliminary (2026-09-28)
+
+Test extension enables `enabled_streets[2] = true` (turn) alongside
+river. Same gameplay methodology, same forced prelude (which now ends
+after flop; the while-loop plays turn + river).
+
+5000 deals, seed 42:
+
+| config | diff vs blueprint-P0 | t | diverged |
+|---|---|---|---|
+| river only | +2.03 chips/deal (SE 0.60) | 3.39 | 3639/5000 |
+| river + turn | -0.67 chips/deal (SE 0.74) | -0.91 | 3968/5000 |
+
+**Turn does not help at `iters = 10`.** The turn subgame tree is much
+larger than river's (it branches over the river card too), so 10 CFR
+iterations is likely insufficient for turn to converge. The +2.03
+river-only baseline is unchanged.
+
+This is preliminary — the t = -0.91 for river+turn means the
+configuration is not statistically distinguishable from zero. But the
+sign flip vs river-only is meaningful: adding turn is at best neutral
+and possibly harmful at the current iteration budget.
+
+**Next: retest turn at `PKR_SUBGAME_ITERS = 50`.** If turn remains
+non-positive at 50 iters, the turn subgame is not ready and the
+correct shipping configuration is river-only.
