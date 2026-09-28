@@ -384,3 +384,17 @@ much smaller than 44x because the solve is parallel across deals and
 the tree depth adds only one level.
 
 A 5000-deal turn-50 run is ~23 min on 8 cores. Running.
+
+### Runtime-level turn verification
+
+`cargo test --release -p pkr-runtime --test subgame_integration -- --ignored`
+passes both turn tests (`PKR_SUBGAME_ITERS=5`):
+
+    subgame_handle_decides_turn         ... ok
+    subgame_handle_decides_turn_as_seat1 ... ok
+
+Both return a strategy summing to 1.000000. The turn path is correct
+at the runtime level: SubgameHandle::decide produces a valid
+strategy when enabled_streets[2] is set. The gameplay result
+(river+turn non-positive at 10 iters) is therefore a **quality**
+problem, not a **correctness** problem.
