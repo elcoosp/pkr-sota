@@ -705,8 +705,6 @@ impl<'a> Solver<'a> {
         v
     }
 
-    pub fn root(&self) -> u32 { self.tree.root }
-
     fn walk(&mut self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64, depth: u32) -> f64 {
         self.nodes_visited[deal_idx as usize].fetch_add(1, Ordering::Relaxed);
         // PublicNode is no longer Copy (holds Vec for chance nodes), so
@@ -857,30 +855,6 @@ impl<'a> Solver<'a> {
         out
     }
 
-    /// P0 strategy for an arbitrary P0 hand class at a given public node.
-    /// Used by the adversarial test to score P1 hands never seen during
-    /// the solve. Returns None => uniform fallback.
-    pub fn p0_strategy_for_class(
-        &self,
-        node_id: u32,
-        class: usize,
-    ) -> Option<[f64; ABSTRACT_BUCKETS]> {
-        if let PublicNode::Decision { actor: 0, bucket_child } = self.tree.nodes[node_id as usize] {
-            let src = node_id as usize * N_CLASSES + class;
-            let sum: f64 = self.sum0[src].iter().sum();
-            if sum > 1e-12 {
-                let mut s = [0.0; ABSTRACT_BUCKETS];
-                for b in 0..ABSTRACT_BUCKETS {
-                    if bucket_child[b] >= 0 {
-                        s[b] = self.sum0[src][b] / sum;
-                    }
-                }
-                return Some(s);
-            }
-        }
-        None
-    }
-
     fn br_v1(&self, p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>]) -> f64 {
         let priors: Vec<f64> = self.deals.iter().map(|d| d.prior).collect();
         self.br_v1_with_prior(p0_strategy, &priors)
@@ -930,8 +904,6 @@ impl<'a> Solver<'a> {
             .collect()
     }
 
-    pub fn n_deals(&self) -> usize { self.n_deals }
-
     /// P0's normalized root strategy for each deal. Used by the
     /// strategy-diversity diagnostic.
     pub fn root_p0_strategies(&self) -> Vec<[f64; ABSTRACT_BUCKETS]> {
@@ -957,8 +929,6 @@ impl<'a> Solver<'a> {
             })
             .collect()
     }
-
-    pub fn root_id(&self) -> u32 { self.tree.root }
 
     /// Aggregate P0 strategy at the root: sum regrets across all deals,
     /// then regret-match once. This is the correct reduction when P0's
