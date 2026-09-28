@@ -297,3 +297,31 @@ river decisions are small-pot and don't move the needle much.
 blueprint-P0 policy on this deal set. Direction consistent across
 200 / 2000. Magnitude ~1-3 chips/deal (~0.5-1.5% of the 200-chip
 starting stack). Significance pending the 20000-deal run.
+
+### Definitive result: 20000 deals
+
+    blueprint mean: -0.3309 chips/deal  (10062/20000 wins)
+    subgame   mean: +2.0658 chips/deal  (10373/20000 wins)
+    diff:           +2.3967 chips/deal  (SE 0.3968, t=6.04)
+    diverged deals: 16288/20000
+
+**The range-aware river subgame beats the blueprint in game play,
+with t = 6.04.** The static-exploitability estimator could only see
+the sign; game play resolves the magnitude. Two reasons it's more
+sensitive:
+
+1. Exploitability is a max over BR strategies, dominated by the worst
+   deal. Game play averages over the actual distribution of deals and
+   the actual distribution of opponent hands — the relevant metric.
+2. Chip units are bounded per deal (±200); exploitability mbb units
+   accumulate variance across board textures.
+
+**Magnitude:** +2.4 chips/deal on a 200-chip stack = 1.2%. On 20000
+deals the paired design eliminates almost all variance from the
+deal draw, so the effect is measured cleanly.
+
+**Ship decision:** the effect is real and positive. The blocker to
+shipping is not the effect size — it's that no runtime code path
+maintains a tracker. See
+`docs/roadmap/runtime-tracker-integration.md` for the RuntimeSession
+design.
