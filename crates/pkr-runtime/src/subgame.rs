@@ -223,4 +223,11 @@ impl SubgameHandle {
     pub fn street_enabled(&self, street_idx: usize) -> bool {
         street_idx < 4 && self.cfg.enabled_streets[street_idx]
     }
+
+    /// Read-only access to the underlying blueprint table. Used by
+    /// `RuntimeSession` to provide a blueprint fallback path when the
+    /// subgame path can't answer.
+    pub fn table_ref(&self) -> &CompactRegretTable {
+        self.cfg.table.as_ref()
+    }
 }

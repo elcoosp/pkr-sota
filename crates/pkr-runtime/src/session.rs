@@ -117,3 +117,67 @@ impl<'a> RuntimeSession<'a> {
         self.tracker.is_some()
     }
 }
+
+impl<'a> RuntimeSession<'a> {
+    /// Advise with automatic fallback to the blueprint.
+    ///
+    /// If the subgame path can answer (our turn, enabled street), returns
+    /// the subgame-solved strategy. Otherwise reads the blueprint's
+    /// average strategy at the current infoset hash.
+    ///
+    /// `blueprint_hash` must be precomputed by the caller — this struct
+    /// deliberately does not know how to compute infoset hashes; that
+    /// stays in the caller's abstraction layer.
+    ///
+    /// Returns `None` only if both paths fail (e.g. unknown infoset hash
+    /// AND disabled street). Callers that always have a blueprint path
+    /// should pass a hash they know is valid, in which case this method
+    /// never returns None.
+    pub fn advise_or_blueprint(
+        &self,
+        state: &GameState,
+        our_hole: &[u8; 2],
+        blueprint_hash: u64,
+    ) -> Option<[f64; crate::subgame::SUBGAME_BUCKETS]> {
+        if let Some(s) = self.advise(state, our_hole) {
+            return Some(s);
+        }
+        let mut raw = [0.0f32; crate::subgame::SUBGAME_BUCKETS];
+        self.handle_blueprint_strategy(blueprint_hash, &mut raw);
+        let sum: f32 = raw.iter().sum();
+        if sum <= 1e-12 {
+            // Blueprint has no data at this infoset — fall back to uniform.
+            let n = crate::subgame::SUBGAME_BUCKETS as f64;
+            let mut u = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
+            for x in u.iter_mut() {
+                *x = 1.0 / n;
+            }
+            return Some(u);
+        }
+        let mut out = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
+        for i in 0..crate::subgame::SUBGAME_BUCKETS {
+            out[i] = (raw[i] / sum) as f64;
+        }
+        Some(out)
+    }
+
+    /// Read the blueprint average strategy. Exposed so callers can build
+    /// their own fallback pipeline.
+    pub fn blueprint_strategy(&self, hash: u64) -> [f64; crate::subgame::SUBGAME_BUCKETS] {
+        let mut raw = [0.0f32; crate::subgame::SUBGAME_BUCKETS];
+        self.handle_blueprint_strategy(hash, &mut raw);
+        let mut out = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
+        let sum: f32 = raw.iter().sum();
+        if sum <= 1e-12 {
+            return out;
+        }
+        for i in 0..crate::subgame::SUBGAME_BUCKETS {
+            out[i] = (raw[i] / sum) as f64;
+        }
+        out
+    }
+
+    fn handle_blueprint_strategy(&self, hash: u64, out: &mut [f32; crate::subgame::SUBGAME_BUCKETS]) {
+        self.handle.table_ref().get_average_strategy_into(hash, out);
+    }
+}
