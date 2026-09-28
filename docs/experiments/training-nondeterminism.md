@@ -141,8 +141,15 @@ runtime overhead beyond the comparison.
 
 Two identical 8-thread runs, 3M iters, seed 202:
 
-  run_C and run_D exploitability.csv — **byte-identical**
-  run_C and run_D metrics.csv        — **byte-identical**
+  exploitability.csv:  byte-identical
+  metrics.csv:         every training-state column identical
+                       (infosets, max_abs_regret, mean_abs_regret,
+                       strat_mass, nodes, cache_hit_rate, regret_in,
+                       regret_out, regret_dedup, strategy_applied)
+                       only wall-clock columns differ (wall_s,
+                       it_per_s, traverse_ms, merge_ms, flush_ms,
+                       wall_ms) — expected, since wall time isn't
+                       deterministic.
 
 The 8-thread nondeterminism is fully resolved. Any A/B at any thread
 count now measures only the variable under test.
