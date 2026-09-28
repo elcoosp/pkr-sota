@@ -33,7 +33,7 @@ PREFLOP_RICH="${PREFLOP_RICH:-1}"
 # ---------- training budget ----------
 # 40M is the first checkpoint of a run that will be extended if the
 # exploitability curve (E1) is still descending at 40M.
-ITERATIONS="${ITERATIONS:-40000000}"
+ITERATIONS="${ITERATIONS:-30000000}"
 # Wall-clock training budget in seconds (0 = off, iteration count rules).
 # When > 0 the trainer stops cleanly at the deadline (final checkpoint +
 # stats still written). Used for time-boxed runs, e.g. BENCH_SECONDS=43200

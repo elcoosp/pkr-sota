@@ -33,7 +33,7 @@ const EVAL_SEED: u64 = 0xE7A1_0000_0000_0001;
 #[derive(Parser)]
 #[command(name = "pkr-trainer")]
 struct Cli {
-    #[arg(long, default_value_t = 100000)]
+    #[arg(long, default_value_t = 30000000)]
     iterations: u32,
 
     #[arg(long, default_value = "blueprint.bin")]
