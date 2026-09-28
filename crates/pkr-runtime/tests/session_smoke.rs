@@ -133,3 +133,71 @@ fn session_owns_tracker_and_updates() {
         "advice must be normalized: sum = {ssum}"
     );
 }
+
+#[test]
+#[ignore]
+fn session_deal_start_resets_tracker() {
+    // Verify that calling deal_start twice in a row leaves the session
+    // in an equivalent state — no accumulator from the first deal
+    // leaks into the second.
+    let handle = build_handle();
+
+    let store = load_centroids(&out("centroids.bin")).expect("centroids");
+    let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+    abs.init_table(0, &out("preflop_abstraction.bin")).unwrap();
+    abs.init_table(1, &out("abstraction.bin")).unwrap();
+    abs.init_table(2, &out("turn_abstraction.bin")).unwrap();
+    abs.init_table(3, &out("river_buckets.bin")).unwrap();
+    let abs_ref: &dyn AbstractionBuilder = &abs;
+
+    let table = CompactRegretTable::with_capacity(60_000_000);
+    let fp = AbstractionFingerprint::from_constants(200);
+    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    let tbl_ref = &table;
+
+    let ev = pkr_eval::NlheEvaluator;
+    let ev_ref: &dyn Evaluator = &ev;
+
+    let mut session = RuntimeSession::new(handle, 0, abs_ref, tbl_ref, ev_ref);
+
+    let root = GameState::new(200.0, 1.0, 2.0);
+
+    // Deal 1: play some actions.
+    session.deal_start(root.clone());
+    session.observe_action(Action { player: 0, kind: ActionKind::Call });
+    session.observe_action(Action { player: 1, kind: ActionKind::Check });
+    let r1_after_actions: Vec<f64> = session.opp_range().unwrap().to_vec();
+
+    // Deal 2: fresh start, same root.
+    session.deal_start(root.clone());
+    let r2_fresh: Vec<f64> = session.opp_range().unwrap().to_vec();
+
+    // Both fresh state should be the same.
+    let r1_at_start_sum: f64 = r1_after_actions.iter().sum();
+    let r2_sum: f64 = r2_fresh.iter().sum();
+    assert!((r1_at_start_sum - 1.0).abs() < 1e-9);
+    assert!((r2_sum - 1.0).abs() < 1e-9);
+
+    // The fresh deal's range must be UNIFORM over non-board hands
+    // (same as what we'd get from RangeTracker::new(root)).
+    // Distinct from the post-action range from deal 1.
+    let uniform_mass = 1.0 / r2_fresh.iter().filter(|&&v| v > 0.0).count() as f64;
+    for &p in r2_fresh.iter().filter(|&&v| v > 0.0) {
+        assert!(
+            (p - uniform_mass).abs() < 1e-9,
+            "deal_start must reset to uniform: p={p}, uniform={uniform_mass}"
+        );
+    }
+
+    // And the deal 1 range should differ from the fresh uniform range
+    // (otherwise the actions had no effect).
+    let mut differs = false;
+    for (a, b) in r1_after_actions.iter().zip(r2_fresh.iter()) {
+        if (a - b).abs() > 1e-6 {
+            differs = true;
+            break;
+        }
+    }
+    assert!(differs, "post-action range must differ from fresh uniform");
+}
+
