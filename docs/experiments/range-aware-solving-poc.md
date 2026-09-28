@@ -278,7 +278,22 @@ priority.** The priority is verifying the effect through game play.
 ## Game-play verification (2026-09-28, later in session)
 
 Static exploitability is not sensitive enough (SE 1618 at 100 deals).
-Game play with a forced river-heavy deal shape IS sensitive:
+Game play with a forced river-heavy deal shape IS sensitive.
+
+**Parallelism note:** the deal loop is now parallel (rayon), reducing
+5000-deal runs from ~2 min to ~4 s on 8 cores. RNG is seeded per
+(config, deal) so parallel and sequential paths are deterministic and
+agree.
+
+**Baselines measured at 5000 deals, seed 42, `iters = 10`:**
+
+- river-only:  +1.43 chips/deal (SE 0.59, t=2.44)
+- river+turn:  -0.67 chips/deal (SE 0.74, t=-0.91)
+
+The river baseline matches the 20000-deal river-only run (+2.40,
+t=6.04) within the wider SE at 5000 deals. Turn is non-positive at
+10 inner iterations — consistent with the turn subgame tree being
+~40x larger (it branches over the river card).
 
     200 deals:  diff +3.38 chips/deal  (SE 3.51, t=0.96)
     2000 deals: diff +1.85 chips/deal  (SE 1.21, t=1.52)
