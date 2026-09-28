@@ -70,9 +70,15 @@ impl Default for SubgameConfig {
             table: Arc::new(CompactRegretTable::with_capacity(1)),
             iters: 25,
             hands_per_range: 8,
-            // DISABLED until range-aware solving is implemented.
-            // Uniform-range hook regresses e2e by ~4800 mbb (see
-            // docs/experiments/river-subgame-poc-positive.md).
+            // All streets disabled by default. River has a real win
+            // (documented in docs/experiments/range-aware-solving-poc.md)
+            // ONLY when the caller supplies a tracked, non-uniform
+            // opp_range to `decide`. The uniform fallback reproduces
+            // the +4836 mbb regression from river-subgame-poc-positive.md.
+            //
+            // Callers that maintain a RangeTracker should set
+            // enabled_streets[3] = true. Anyone without a tracker must
+            // leave it false.
             enabled_streets: [false, false, false, false],
         }
     }
@@ -135,6 +141,24 @@ impl SubgameHandle {
 
         let street_idx = work_state.street as usize;
         if street_idx >= 4 || !self.cfg.enabled_streets[street_idx] {
+            return None;
+        }
+
+        // Sanity guard (see docs/roadmap/range-aware-solving.md §5).
+        //
+        // We do NOT assert that opp_range[our_hole] is zero. The
+        // RangeTracker documents that card-removal between the two
+        // players is not enforced (each player's marginal range is
+        // updated independently). Overlap between our hole and the
+        // opponent's range is expected; the solver's own `incompatible`
+        // check drops those deals when it enumerates.
+        //
+        // We DO reject an all-zero range: that means the caller passed
+        // an uninitialized or degenerate posterior, and the solver would
+        // produce a meaningless strategy. The check runs AFTER the
+        // street-enabled gate so disabled streets pay nothing.
+        let total: f64 = opp_range.iter().sum();
+        if total <= 1e-6 {
             return None;
         }
 
