@@ -144,36 +144,55 @@ If the tracker were degenerate (uniform at river), the hook would
 receive uniform and we'd see the old regression. The probe is the
 sanity gate for "did the wiring actually thread the posterior".
 
-## Cost — the actual blocker
+## Cost — corrected analysis
 
-The uniform version was cheap because the cache key's 8-bin posterior
-fingerprint was identical across every call. With a tracked posterior,
-the fingerprint differs at every node, and cache hits collapse:
+Earlier hypothesis: the cache collapse is because the fingerprint of
+the tracked posterior differs per node, and a coarser fingerprint
+would recover the hit rate. **That hypothesis was wrong.** Run E
+(commit `2602efc`, 32-bin log-quantized fingerprint) produced:
 
-    8-deal run: cache hits 110442, misses 297134
-    ~37k hook calls per deal
-    ~1.9 ms per miss (10 inner CFR iters; ~0.2 ms at 1 iter)
-    => ~2-3 minutes per deal at 1 iter, ~20-30x that at 20 iters
+| | hits | misses |
+|---|---|---|
+| Run D (8-bin raw bits) | 110865 | 303176 |
+| Run E (32-bin log-quantized) | 110901 | 303140 |
 
-100-deal e2e at 20 iters is ~5 hours. Not routine-A/B viable.
+Δ = 36 calls out of 414k. Noise. The fingerprint change is a no-op.
 
-### Mitigations (in priority order)
+**Why it can't help:** the opponent's range at a river node is a
+*deterministic function of the public history*. The cache key already
+contains the history signature, so two calls with the same key
+necessarily have the same range. The fingerprint contributes zero
+discriminating power.
 
-1. **Coarser-grained solve cache.** Key the cache on a stronger
-   fingerprint of the posterior (32-bin, or a MinHash over the top-K
-   support). Recovers most hit rate without returning wrong strategies.
-   Estimated: 1h.
+**The real cost driver:** ~37k hook calls per deal * ~2ms per miss.
+This is not cache misses that could be avoided by a better key; it's
+genuinely distinct subgames that each need a solve.
 
-2. **Fewer hook calls per line.** Solve only at the FIRST river
+Measured wall times (8 deals, PKR_E2E_HANDS=4, PKR_BR_ITERATIONS=1):
+
+| iters | wall |
+|---|---|
+| 1 | 557s |
+| 10 | 346s |
+
+Faster at 10 iters — at 1 iter the tree-building cost is amortized
+over almost no iterations. 100 deals at 10 iters extrapolates to ~75
+min, which is tractable.
+
+### Mitigations (corrected priority)
+
+1. **Fewer hook calls per line.** Solve only at the FIRST river
    decision of each line; deeper river nodes fall back to the
-   blueprint. Cuts hook calls ~5-10x. Estimated: 2h.
+   blueprint. Cuts hook calls ~5-10x. Estimated: 2h. This is the
+   only mitigation that reduces the number of distinct subgames.
 
-3. **Parallelize hook solves.** Thread-local subgame contexts.
-   Estimated: 4h.
+2. **Parallelize hook solves.** The BR walker is rayon-parallel over
+   deals, but the hook is single-threaded within a deal. Estimated: 4h.
 
-4. **Reduce `PKR_E2E_HANDS`** (linear in solve cost). Env-driven.
+3. **Reduce `PKR_E2E_HANDS`** (linear in solve cost). Env-driven.
 
-5. **Reduce `PKR_SUBGAME_ITERS`** for A/B runs (linear). Env-driven.
+4. **Reduce `PKR_SUBGAME_ITERS`** (linear, but see Run B: too few
+   iters changes the sign). Min ~10 for meaningful results.
 
 ## Success criteria status
 
