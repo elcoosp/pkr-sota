@@ -64,15 +64,27 @@ per-deal state through apply/undo).
 Option B is cleaner. It also lets the hook implement any *policy*
 about which nodes to solve, without further walker changes.
 
-## Estimated payoff
+## Measured payoff (2026-09-28, updated)
 
-At 8 deals x 10 iters, miss count was ~300k, i.e. ~37.5k/deal. If the
-first river decision is, say, 10% of all river decisions (the tree
-branches heavily), miss count drops 10x. Wall time drops proportionally.
+**The 10x estimate was wrong.** Counter run (8 deals, 10 iters,
+`PKR_COUNT_RIVER_NODES=1`):
 
-This is a *hypothesis*. The step before implementing is a counter:
-instrument the hook with `(is_first_river, is_deeper_river)` and
-measure the distribution over the 100-deal run.
+    river nodes: shallow=198873 deep=215168 (48.0% shallow)
+
+So eliminating all "deep" river hook calls saves ~52% of hook calls,
+i.e. a **~2x speedup**, not 10x.
+
+The counter classifies "shallow" as `street_bets[0] == 0 &&
+street_bets[1] == 0` — no river money committed yet by anyone. This is
+a proxy for "first decision of the line", but not exact: after a
+check-check river branch, a subsequent node can also have zero
+street_bets if the walker undoes back. In practice it's close enough.
+
+**Given the modest payoff and the unresolved magnitude of the
+underlying e2e effect, this mitigation is now deprioritized.**
+See `docs/experiments/range-aware-solving-poc.md` Run F for the
+reasoning: the effect is small enough that reducing cost does not
+change the decision to ship.
 
 ## Interaction with the cache
 
