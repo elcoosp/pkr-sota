@@ -24,7 +24,10 @@ The hook receives it; the solve sees a real range.
   uniform.
 - 2 deals, 10 inner iters: delta **-98.2** — sign flipped negative
   as predicted. The iteration budget was the missing variable.
-- 8 deals, 10 inner iters (Run D): in flight at handoff.
+- 8 deals, 10 inner iters: delta **-53.2** — same deals as the
+  1-iter +708 run. Confirms the sign. Magnitude within deal noise
+  (SE 434). The 100-deal verification needs the cache-key fix to be
+  tractable; see Run E.
 
 **The blocking work is cost + iteration budget.** At 20 inner iters,
 100-deal e2e is ~5h. The range fingerprint defeats the solve cache

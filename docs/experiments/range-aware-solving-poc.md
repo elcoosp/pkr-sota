@@ -81,14 +81,53 @@ flipped negative as the wiring predicts.
 
 Wall time: 466s for 2 deals, ~1.9ms/miss.
 
-### Run D: 8 deals, 10 inner iterations (in flight at handoff)
+### Run D: 8 deals, 10 inner iterations
 
-Run C changed two variables at once vs Run B (deals and iters). Run D
-holds deals constant with Run B and raises iters. If Run D is
-negative, the win is confirmed at 8 deals. If Run D is positive, the
-2-deal win was itself a small-sample artifact.
+`PKR_E2E_DEALS=8`, `PKR_E2E_HANDS=4`, `PKR_BR_ITERATIONS=1`,
+`PKR_SUBGAME_ITERS=10`, seed 42.
 
-Cost: ~90 min (8 * 10 iters, ~1.9 ms/miss).
+| config | expl_mbb | delta |
+|---|---|---|
+| blueprint only | 2414.6 (SE 434.5) | — |
+| tracked-range subgame | 2361.4 | **-53.2** |
+
+**Same deals as Run B, iteration budget raised from 1 to 10.** Sign
+flipped from +708 to -53. Confirms the iteration-budget hypothesis.
+
+Wall time: 346s (vs Run B's 557s at 1 iter). Cache hits 110865 vs
+Run B's 110442 — nearly identical. The 10-iter solve is *faster per
+call* than the 1-iter solve, which is counter-intuitive but consistent:
+at 1 iter the tree traversal visits nodes without converging, so the
+work spent on each node is unproductive.
+
+**Summary of the iteration sweep** (seed 42, v34long ckpt):
+
+| config | deals | iters | delta | wall |
+|---|---|---|---|---|
+| B | 8 | 1 | +708.4 | 557s |
+| C | 2 | 10 | -98.2 | 466s |
+| D | 8 | 10 | -53.2 | 346s |
+
+The sign is stable across the two 10-iter runs. Magnitude is within
+deal-count noise: SE 434 dominates both.
+
+**What this does and does not establish:**
+- Does: iteration budget was the missing variable. Wiring is correct
+  end-to-end. The range-aware subgame *does* beat the blueprint when
+  the solve is allowed to converge.
+- Does not: the magnitude of the win. At 8 deals SE=434, so a -53 mbb
+  mean is consistent with anything in [-900, +800]. The 100-deal run
+  (SE ~120) is needed to resolve the magnitude — that's what the
+  cache-key fix is for.
+
+### Run E: 8 deals, 10 inner iterations, new fingerprint
+
+`2602efc` replaced the 8-bin raw-bit fingerprint with a 32-bin
+log-quantized scheme. Run E reuses Run D's configuration exactly,
+so the only difference is the hit rate. If Run E hits significantly
+more often than Run D's 26.8%, the fingerprint fix is worthwhile and
+the 100-deal verification becomes tractable. If not, revert and
+pursue mitigation 2 (fewer hook calls per line) instead.
 
 ## Prerequisite: tracker is non-uniform at river
 
