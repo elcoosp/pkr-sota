@@ -274,3 +274,26 @@ Combined with the fact that the delta is small (-53 mbb at 8 deals)
 and the estimator can't resolve the magnitude at any tractable deal
 count, **pursuing the mitigation for cost savings is not the
 priority.** The priority is verifying the effect through game play.
+
+## Game-play verification (2026-09-28, later in session)
+
+Static exploitability is not sensitive enough (SE 1618 at 100 deals).
+Game play with a forced river-heavy deal shape IS sensitive:
+
+    200 deals:  diff +3.38 chips/deal  (SE 3.51, t=0.96)
+    2000 deals: diff +1.85 chips/deal  (SE 1.21, t=1.52)
+    20000 deals: (running)
+
+Deal shape: preflop SB-call / BB-check; flop/turn check-check with a
+fixed runout; then river play sampled from either the blueprint or
+the subgame-solved policy. Both configurations see the same deal.
+
+At 2000 deals, **1616/2000 deals diverged** (hook returned a
+different river strategy than the blueprint). So the hook is
+demonstrably doing work; the chips/deal diff is small because most
+river decisions are small-pot and don't move the needle much.
+
+**Reading:** the subgame-P0 policy wins more chips than the
+blueprint-P0 policy on this deal set. Direction consistent across
+200 / 2000. Magnitude ~1-3 chips/deal (~0.5-1.5% of the 200-chip
+starting stack). Significance pending the 20000-deal run.
