@@ -64,14 +64,31 @@ informative: even a *uniform* strategy at river is only ~700 mbb worse
 than the blueprint. With 20 iterations the solve should converge to a
 strategy meaningfully better than both.
 
-### Run C: 2 deals, 10 inner iterations (in flight at handoff)
+### Run C: 2 deals, 10 inner iterations
 
-Run B suggests the 1-iter solve is doing nothing useful. Run C reruns
-with `PKR_SUBGAME_ITERS=10` on 2 deals to see whether the iter budget
-moves the delta. If the delta stays positive at 10 iters, the
-range-aware approach as wired has a bug beyond the iteration count.
-If it flips negative, the wiring is fine and the win was masked by
-iteration count.
+`PKR_E2E_DEALS=2`, `PKR_E2E_HANDS=4`, `PKR_BR_ITERATIONS=1`,
+`PKR_SUBGAME_ITERS=10`, seed 42, same checkpoint.
+
+| config | expl_mbb | delta |
+|---|---|---|
+| blueprint only | 2220.8 | — |
+| tracked-range subgame | 2122.6 | **-98.2** |
+
+**The iteration budget was the variable.** At 1 iter the subgame
+strategy is essentially uniform (Run B: +708). At 10 iters the solve
+converges enough to beat the blueprint by a small margin. The sign
+flipped negative as the wiring predicts.
+
+Wall time: 466s for 2 deals, ~1.9ms/miss.
+
+### Run D: 8 deals, 10 inner iterations (in flight at handoff)
+
+Run C changed two variables at once vs Run B (deals and iters). Run D
+holds deals constant with Run B and raises iters. If Run D is
+negative, the win is confirmed at 8 deals. If Run D is positive, the
+2-deal win was itself a small-sample artifact.
+
+Cost: ~90 min (8 * 10 iters, ~1.9 ms/miss).
 
 ## Prerequisite: tracker is non-uniform at river
 

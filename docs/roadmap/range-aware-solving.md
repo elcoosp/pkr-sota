@@ -22,7 +22,9 @@ The hook receives it; the solve sees a real range.
 - 8 deals, 1 subgame iter: delta **+708 ± 434** — sign flipped.
   With one inner CFR iteration the subgame strategy is essentially
   uniform.
-- 2 deals, 10 inner iters: in flight at handoff.
+- 2 deals, 10 inner iters: delta **-98.2** — sign flipped negative
+  as predicted. The iteration budget was the missing variable.
+- 8 deals, 10 inner iters (Run D): in flight at handoff.
 
 **The blocking work is cost + iteration budget.** At 20 inner iters,
 100-deal e2e is ~5h. The range fingerprint defeats the solve cache
