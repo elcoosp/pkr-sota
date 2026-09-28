@@ -63,3 +63,56 @@ regrets differ run-to-run even with identical inputs.
 divergence at 5M is the current lower bound; the true floor across
 full runs is unknown. Once measured, every existing result can be
 re-evaluated with the correct error bar.
+
+
+## Verified: nondeterminism is thread-order (2026-09-28)
+
+Two identical runs, single-thread, 2M iterations, seed 202:
+
+| iter | run_A | run_B |
+|---|---|---|
+| 1,003,520 | 3457.9916 (SE 146.0125, br0 8.7118, br1 5.1202) | 3457.9916 (identical) |
+
+**Bit-identical to the last digit on every field.** Single-thread
+training is fully deterministic.
+
+Therefore the divergence we saw at 8 threads (0.25% different infoset
+counts at iter 5M) is **rayon thread-order** affecting float
+accumulation in the regret merge. `(a+b)+c != a+(b+c)` in f32/f64, and
+the merge order depends on which worker thread's batch arrives first.
+
+## Fix
+
+**Deterministic merge.** Sort the per-deal or per-batch contributions
+by a fixed key (deal index, or batch index) before accumulating into
+the shared regret table. Cost: a sort of the batch vector per sync,
+which is O(N log N) on a small N. Estimated impact: <5% throughput.
+
+Alternative if throughput matters: accumulate per-thread partial sums
+into a deterministic reduction tree (rayon's `.reduce()` with a
+specified associativity gives this for free if the merge op is
+replaced with a two-phase accumulate).
+
+## Impact on historical A/Bs
+
+The 8-thread divergence is at least **0.25% in state space**. In eval
+readings that showed as ~33 mbb at 5M iterations. Across a full 30M
+run, the true floor is unknown but likely in the 30-100 mbb range.
+
+**Interpretation:**
+- Deltas < 100 mbb from any 8-thread A/B are unreliable
+- Deltas > 300 mbb (like the 30M/100M finding at ~350 mbb) survive
+  the noise floor
+- The v33 preflop feature win (+425 mbb) also survives
+
+**Recommendation:** until deterministic merge is implemented, run
+all A/Bs at `--threads 1`. 8 threads for exploratory sweeps where
+direction is enough; single thread when the magnitude matters.
+
+## Single-thread throughput cost
+
+run_A/run_B timing: 2M iters in ~2400s = ~833 it/s.
+8-thread throughput: ~7000 it/s.
+
+Single-thread is ~8x slower. Not viable for production training, but
+fine for characterization runs.
