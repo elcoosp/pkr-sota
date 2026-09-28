@@ -254,3 +254,23 @@ integration (play the subgame strategy in the actual game loop) is
 where the effect should become visible, because the solve is
 per-decision rather than averaged over 100 deals worth of different
 board textures.
+
+### Counter run: shallow/deep river node distribution
+
+`PKR_COUNT_RIVER_NODES=1`, 8 deals, 10 iters, same config as Run D.
+
+    river nodes: shallow=198873 deep=215168 (48.0% shallow)
+
+**Half of all river hook calls are at the first decision of the line**
+(no river money committed yet). The other half are deeper in the river
+subtree.
+
+**Implication for the "solve-first-river-node-only" mitigation:**
+the design doc estimated "5-10x" hook-call reduction. The actual
+measurement says **~2x** (0.48 of calls eliminated). Not the big win
+the design anticipated, but still meaningful.
+
+Combined with the fact that the delta is small (-53 mbb at 8 deals)
+and the estimator can't resolve the magnitude at any tractable deal
+count, **pursuing the mitigation for cost savings is not the
+priority.** The priority is verifying the effect through game play.
