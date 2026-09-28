@@ -514,8 +514,10 @@ impl CompactRegretTable {
         if ops.is_empty() {
             return 0;
         }
-        // E4b: bit-identical grouping key, single u64 compare (audit E4).
-        ops.par_sort_unstable_by_key(|op| ((op.index as u64) << 8) | op.action as u64);
+        // Deterministic total order: ties on (index, action) are broken
+        // by the prob's bit pattern so the f64 sum order is identical
+        // run-to-run. See flush_cpu_batch_with for the same reasoning.
+        ops.par_sort_unstable_by_key(|op| (op.index, op.action, op.prob.to_bits()));
 
         let mut groups: Vec<(usize, usize, u32, u8)> = Vec::with_capacity(ops.len() / 4 + 16);
         let mut i = 0usize;
@@ -561,7 +563,14 @@ impl CompactRegretTable {
         if batch.is_empty() {
             return (0, 0);
         }
-        batch.par_sort_unstable_by_key(|item| (item.index, item.action, item.iteration));
+        // Deterministic total order: ties on (index, action, iteration) are
+    // broken by the delta's bit pattern, so the f64 accumulation order
+    // is identical across runs. Without this, par_sort_unstable_by_key
+    // reorders equal keys nondeterministically and the sum's low bits
+    // vary run-to-run.
+    batch.par_sort_unstable_by_key(|item| {
+        (item.index, item.action, item.iteration, item.delta.to_bits())
+    });
 
         let mut groups: Vec<(usize, usize, u32, u32)> = Vec::with_capacity(batch.len() / 4 + 16);
         let mut i = 0usize;
