@@ -201,3 +201,53 @@ fn session_deal_start_resets_tracker() {
     assert!(differs, "post-action range must differ from fresh uniform");
 }
 
+
+#[test]
+#[ignore]
+fn advise_or_blueprint_always_returns_a_strategy() {
+    // The combined API must return SOME strategy in every state — either
+    // the subgame result, the blueprint average, or uniform. Never None
+    // as long as a valid blueprint hash is available.
+    let handle = build_handle();
+
+    let store = load_centroids(&out("centroids.bin")).expect("centroids");
+    let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+    abs.init_table(0, &out("preflop_abstraction.bin")).unwrap();
+    abs.init_table(1, &out("abstraction.bin")).unwrap();
+    abs.init_table(2, &out("turn_abstraction.bin")).unwrap();
+    abs.init_table(3, &out("river_buckets.bin")).unwrap();
+    let abs_ref: &dyn AbstractionBuilder = &abs;
+
+    let table = CompactRegretTable::with_capacity(60_000_000);
+    let fp = AbstractionFingerprint::from_constants(200);
+    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    let tbl_ref = &table;
+
+    let ev = pkr_eval::NlheEvaluator;
+    let ev_ref: &dyn Evaluator = &ev;
+
+    let session = RuntimeSession::new(handle, 0, abs_ref, tbl_ref, ev_ref);
+
+    // Fresh session: no active deal. advise_or_blueprint should still
+    // return SOMETHING using only the blueprint path.
+    let st = GameState::new(200.0, 1.0, 2.0);
+    // Use a nonsense hash — the blueprint won't have it, so fallback
+    // to uniform. The method must still return Some.
+    let s = session
+        .advise_or_blueprint(&st, &[30, 31], 0xDEAD_BEEF)
+        .expect("advise_or_blueprint must return Some even with an unknown hash");
+    let sum: f64 = s.iter().sum();
+    assert!((sum - 1.0).abs() < 1e-6, "strategy must be normalized: sum = {sum}");
+
+    // Same with a valid blueprint hash on the preflop state.
+    // Use the abstraction to compute one.
+    let mut sig_buf = [0u8; 8];
+    let sig_len = st.infoset_signature_into(&mut sig_buf);
+    let history = &sig_buf[..sig_len];
+    let hash = abs_ref.get_infoset_hash(&st.hole[0], &[], history, st.street as u8);
+    let s2 = session
+        .advise_or_blueprint(&st, &[30, 31], hash)
+        .expect("advise_or_blueprint must return Some with a valid hash");
+    let sum2: f64 = s2.iter().sum();
+    assert!((sum2 - 1.0).abs() < 1e-6, "strategy must be normalized: sum = {sum2}");
+}
