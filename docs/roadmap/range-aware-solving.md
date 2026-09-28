@@ -1,10 +1,35 @@
 # Range-aware subgame solving — design doc
 
 **Date:** 2026-09-27
-**Status:** Ready to implement
+**Status:** wiring LANDED (commits 461e67c, 0b06058); e2e outcome UNRESOLVED
 **Motivation:** The uniform-range subgame hook regresses e2e by +4836 mbb
 (see `docs/experiments/river-subgame-poc-positive.md`). Fixing it requires
 threading the opponent posterior through the BR walk.
+
+## Outcome (2026-09-28)
+
+The `Traversal` refactor and the `SubgameHook::strategy` signature
+change described below are **landed**.
+
+**Wiring verified.** `crates/pkr-subgame/tests/tracker_probe.rs` proves
+the tracker's posterior at a river decision has max mass ~280x uniform.
+The hook receives it; the solve sees a real range.
+
+**E2E outcome unresolved.**
+- 1 deal, 1 subgame iter: delta **-4468** — noise (1-deal in-sample
+  BR is dominated by overfit; blueprint alone reads 8981 at 1 deal vs
+  2414 at 8).
+- 8 deals, 1 subgame iter: delta **+708 ± 434** — sign flipped.
+  With one inner CFR iteration the subgame strategy is essentially
+  uniform.
+- 2 deals, 10 inner iters: in flight at handoff.
+
+**The blocking work is cost + iteration budget.** At 20 inner iters,
+100-deal e2e is ~5h. The range fingerprint defeats the solve cache
+(each river node sees a distinct posterior).
+
+See `docs/experiments/range-aware-solving-poc.md` for the full record
+and the mitigation list.
 
 ## The problem, in one paragraph
 
