@@ -359,18 +359,19 @@ mod tests {
     }
 
     #[test]
-    fn sampling_produces_normalized_distribution() {
+    fn sampling_preserves_true_masses() {
+        // Support: first 10 hands, each with mass 0.1 (total mass 1.0).
+        // `sample_hands_weighted` is documented to return the TRUE
+        // posterior mass per hand, not a renormalization within the
+        // sample. So each returned mass equals the input mass.
         let mut r = [0.0; N_HANDS];
-        // Uniform over first 10 hands.
         for i in 0..10 {
-            r[i] = 1.0;
+            r[i] = 0.1;
         }
         let s = sample_hands_weighted(&r, 5, 42);
         assert_eq!(s.len(), 5);
-        let sum: f64 = s.iter().map(|(_, p)| p).sum();
-        assert!((sum - 1.0).abs() < 1e-9, "sampled probs sum = {}", sum);
         for (h, p) in &s {
-            assert!(*p > 0.0);
+            assert!((*p - 0.1).abs() < 1e-12, "mass must match input: {}", p);
             assert!(index_of_hole(h) < 10, "sampled outside support");
         }
     }

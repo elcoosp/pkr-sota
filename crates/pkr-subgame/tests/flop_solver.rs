@@ -24,6 +24,7 @@ fn make_range(pool: &[u8], excl: &[u8], n: usize) -> Vec<[u8; 2]> {
 }
 
 #[test]
+#[ignore = "slow: builds full nested flop chance tree (>4 min); run with --ignored"]
 fn flop_solver_builds_nested_chance_tree() {
     let board: [u8; 3] = [0, 14, 28];
     let root = flop_root(&board);
