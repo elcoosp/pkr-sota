@@ -881,6 +881,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         total_iters as f64 / elapsed_total.max(1e-6)
     );
 
+    // Capture every training-affecting env flag so stats.json is a
+    // complete reproduction record. Add a flag here when it starts
+    // affecting the training run.
+    //
+    // Variables with a compile-time default are recorded as their
+    // effective value, not just "set"/"unset".
+    let env_flag = |name: &str, default: &str| -> String {
+        std::env::var(name).unwrap_or_else(|_| default.to_string())
+    };
+    let env_config = serde_json::json!({
+        "PKR_MOMENTUM":          env_flag("PKR_MOMENTUM", "on"),
+        "PKR_AVG_POWER":         env_flag("PKR_AVG_POWER", "2"),
+        "PKR_EXPLORE_EPSILON":   env_flag("PKR_EXPLORE_EPSILON", "0.05"),
+        "PKR_DCFR_ALPHA":        env_flag("PKR_DCFR_ALPHA", "1.5"),
+        "PKR_HS_DCFR":           env_flag("PKR_HS_DCFR", "0"),
+        "PKR_HS_DCFR_TOTAL":     env_flag("PKR_HS_DCFR_TOTAL", ""),
+        "PKR_ALT_UPDATES":       env_flag("PKR_ALT_UPDATES", "0"),
+        "PKR_PHASE_PROFILE":     env_flag("PKR_PHASE_PROFILE", "0"),
+        "PKR_STRICT_BETS":       env_flag("PKR_STRICT_BETS", "0"),
+        "PKR_SKIP_FORCED":       env_flag("PKR_SKIP_FORCED", "0"),
+    });
+
     if let Some(path) = &cli.stats_json {
         eprintln!("computing final stats ...");
         let snap = trainer.get_table().snapshot();
@@ -903,7 +925,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "end_iter": trainer.iteration(),
                 "stopped_early": stopped_early,
                 "plateau_stopped": plateau_stopped,
+                "seed": cli.seed,
+                "eval_seed": EVAL_SEED,
+                "eval_deals": cli.eval_deals,
+                "promote_gate": cli.promote_gate,
+                "stop_on_plateau": cli.stop_on_plateau,
             },
+            "env": env_config,
             "wall_seconds": elapsed_total,
             "snapshot": {
                 "infosets": snap.infosets,
