@@ -32,12 +32,64 @@ impl SolverHandle {
         if keys[base] != infoset_hash {
             return None;
         }
+        self.advice_for_key_index(base)
+    }
+
+    /// Batch lookup for callers with many queries at once.
+    ///
+    /// Both `hashes` and the on-disk key table are sorted, so this walks
+    /// them together in O(n log n + m) where n = `hashes.len()` and m =
+    /// number of keys. That's one binary search *per call* avoided — for
+    /// a large batch the per-hash cost drops from O(log m) probes to
+    /// amortized O(1).
+    ///
+    /// The returned vec is parallel to the input: `result[i]` corresponds
+    /// to `hashes[i]`, and equals `get_advice_fast(hashes[i])` byte for
+    /// byte.
+    pub fn get_advice_batch(&self, hashes: &[u64]) -> Vec<Option<SotaAdvice>> {
+        let mut out: Vec<Option<SotaAdvice>> = vec![None; hashes.len()];
+        if hashes.is_empty() {
+            return out;
+        }
+        let keys: &[u64] = match bytemuck::try_cast_slice(self.mmap.keys_data()) {
+            Ok(k) => k,
+            Err(_) => return out,
+        };
+        let m = keys.len();
+        if m == 0 {
+            return out;
+        }
+
+        // Indices into `hashes`, sorted by hash value. Ties keep the
+        // original order via the secondary index compare, so the output
+        // is deterministic.
+        let mut idx: Vec<usize> = (0..hashes.len()).collect();
+        idx.sort_unstable_by_key(|&i| (hashes[i], i));
+
+        let mut key_cursor = 0usize;
+        for &i in &idx {
+            let h = hashes[i];
+            // Advance the key cursor to the first key >= h.
+            while key_cursor < m && keys[key_cursor] < h {
+                key_cursor += 1;
+            }
+            if key_cursor < m && keys[key_cursor] == h {
+                out[i] = self.advice_for_key_index(key_cursor);
+            }
+        }
+        out
+    }
+
+    /// Shared tail of single and batch lookup: given a known-valid index
+    /// into the key table, produce the `SotaAdvice`. Returns `None` if
+    /// the blueprint's header or CDF section is malformed.
+    fn advice_for_key_index(&self, key_index: usize) -> Option<SotaAdvice> {
         let max_actions = self.mmap.file_header().max_actions_k as usize;
         if max_actions == 0 || max_actions > 16 {
             return None;
         }
         let cdf = self.mmap.cdf_data();
-        let cdf_start = base * max_actions;
+        let cdf_start = key_index * max_actions;
         let cdf_end = cdf_start + max_actions;
         if cdf_end > cdf.len() {
             return None;
