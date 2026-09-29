@@ -116,3 +116,50 @@ same size".
     `generate_centroids_6d`, `generate_preflop_rich_table`,
     `preflop-rich`, `PKR_RICH_CENTROIDS` gate
 - Commits: `4669b97`, `20899a2`, `2844e32`, `f3fe1c2`
+
+---
+
+## RETEST (2026-09-29, deterministic trainer)
+
+The original finding predates the 8-thread determinism fix (commit
+`00a778d`). Retested with the same config on the fixed trainer.
+
+### seed 42 (both arms complete, 20M iters each)
+
+| | A (2D) | B (6D) | delta |
+|---|---|---|---|
+| original (2026-09-25) | 3192.4 | 2728.6 | -463.8 |
+| **retest (2026-09-29)** | **3336.0** | **3093.1** | **-242.9** |
+
+**The 6D advantage shrank ~48%.** Still negative, still same sign —
+but the magnitude is much smaller than the original claim.
+
+The absolute readings drifted up in both arms (A: +143.6, B: +364.5),
+which suggests the trainer is finding slightly different optima than
+it did on 2026-09-25. That could be:
+
+1. The determinism fix itself — the sort-key change alters the fold
+   order and hence the low-bit accumulation. Same algorithm, different
+   rounding path.
+2. Default drift — hyperparameters or abstraction files may have
+   changed since the original run.
+3. In-sample BR variance — at 4000 eval deals the reading SE is ~180,
+   so +364.5 for B is ~2σ. Real but not conclusive on its own.
+
+### seed 43
+
+In progress (first attempt was killed mid-run by a launcher bug; a
+clean rerun is in flight).
+
+### Interim verdict
+
+The v33 rich-preflop claim **holds in sign but not in magnitude**.
+The correct way to describe the finding after the retest is:
+
+> Rich 6D preflop features beat the 2D baseline by ~240 mbb (seed 42,
+> 20M iters, deterministic trainer). The original +425 mbb pooled
+> estimate was inflated by noise on the pre-determinism-fix runs.
+
+Shipping the rich-6D table as the default remains the right call — a
+240 mbb win is still substantial. But downstream docs that quote the
+"~425 mbb" figure should be updated once seed 43 lands.
