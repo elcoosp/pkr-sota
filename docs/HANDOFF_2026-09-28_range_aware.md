@@ -119,4 +119,119 @@ the outcome?). Between them they bracket the whole pipeline.
 
 ---
 
+---
+
+## LATE-SESSION UPDATE (same session, after initial handoff)
+
+### Turn extension — negative result, not shipped
+
+| config | iters | delta | t |
+|---|---|---|---|
+| river only | 10 | +1.43 | 2.44 |
+| river only | 50 | +1.38 | 2.35 |
+| river+turn | 10 | -0.67 | -0.91 |
+| river+turn | 50 | -0.16 | -0.22 |
+
+Runtime turn tests pass (both seats, strategy sums to 1.0). Turn is
+correct but not useful at either iteration count. It changes 3858 of
+5000 river decisions, just not for the better.
+
+**Ship river-only.** Turn needs a different decomposition — a
+selective node choice, not "solve at every turn decision".
+
+Turn cost: 2.2 s/deal at 50 iters vs 0.5 s/deal for river.
+
+### hands_per_range — plateaus at 4
+
+5000 deals, river-only, 10 iters:
+
+| hands | delta | t |
+|---|---|---|
+| 2 | +1.33 | 2.25 |
+| 4 | +1.43 | 2.44 |
+| 8 | +1.43 | 2.42 |
+| 16 | +1.54 | 2.65 |
+
+Default 4. No reason to pay for a non-significant improvement.
+
+### Shipping API: RuntimeSession has LANDED
+
+The initial handoff said "runtime integration not yet done". That
+changed. `crates/pkr-runtime/src/session.rs` now provides:
+
+    use pkr_runtime::RuntimeSession;
+
+    let mut session = RuntimeSession::new(handle, our_seat, abs, tbl, ev);
+    session.deal_start(root);
+    session.observe_action(action);
+    session.observe_street(&cards);
+    let strategy = session.advise_or_blueprint(&state, &hole, hash);
+
+- `RangeTracker` not leaked to the caller.
+- `advise_or_blueprint` always returns a normalized strategy: subgame
+  if possible, blueprint average otherwise, uniform as the fallback.
+- `advise` (no fallback) returns `None` when it's not our turn or the
+  street is disabled.
+- `SubgameHandle::table_ref` exposed so the fallback can read the
+  blueprint table.
+
+Tests: `crates/pkr-runtime/tests/session_smoke.rs` — 3 tests
+(owns-tracker, deal_start-resets, advise-or-blueprint contracts). All
+pass at HEAD with
+`cargo test --release -p pkr-runtime --test session_smoke -- --ignored`.
+
+### Parallelism
+
+`gameplay_subgame.rs` uses rayon over deals. 5000 deals in ~4 s
+(previously ~2 min). RNG seeded per (config, deal) so parallel and
+sequential runs agree.
+
+### Cross-seed confirmation
+
+5 seeds x 2000 deals: +1.85 / +3.54 / +2.43 / +0.54 / +2.11 — all
+positive. Pooled t ~ 4.5. Combined with the 20000-deal t=6.04 run,
+the river effect is robust.
+
+### Env vars for gameplay_subgame.rs
+
+    PKR_GP_DEALS       (default 200)
+    PKR_GP_SEED        (default 42)
+    PKR_GP_HANDS       (default 4)
+    PKR_GP_TURN        (default off)
+    PKR_GP_DEBUG       (default off)
+    PKR_SUBGAME_ITERS  (default 10)
+
+### Corrected "what's next"
+
+1. Runtime integration — the API is done. What's missing is a bot
+   binary that actually calls `RuntimeSession`. Blocked on that
+   existing.
+2. Turn — dead end at the current design. Do not spend more time on
+   "solve every turn decision". If turn is revisited, it needs a
+   node-selection heuristic first.
+3. v33 retest — `launcher-v33-retest.sh` (git-ignored, on disk).
+   Re-measures the +425 mbb preflop feature win under the
+   deterministic trainer. 4 runs x 30M iters, ~8 h serialized.
+
+### Late-session commits
+
+    7034f17  re-export RuntimeSession
+    d1fbcd2  RuntimeSession + tracker wrapper
+    6514ae8  session deal_start resets tracker
+    fb8842b  RuntimeSession::advise_or_blueprint + table_ref
+    2768341  advise_or_blueprint test
+    317791f  fix advise_or_blueprint test (fake hashes only)
+    0a6fc50  turn-50 negative result documented
+    b9a2f06  parallelism note + baselines
+    fa52ac8  turn cost measurement
+    6d81a8a  runtime turn passes
+    71e10d8  root_p0_strategy_aggregated normalisation test
+    4b57189  parallel gameplay + env vars
+    1f39040  turn toggle + preliminary finding
+    dab1dff  PKR_GP_SEED for cross-seed confirmation
+    7278c07  status snapshot rewrite
+    bc6530b  PKR_GP_HANDS; hands plateau at 4
+
+---
+
 END OF HANDOFF
