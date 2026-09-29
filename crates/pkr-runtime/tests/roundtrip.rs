@@ -146,3 +146,117 @@ fn fallback_advice_is_safe() {
     );
     assert!(fb.cdf_probabilities[0] < 200, "must not be all-fold");
 }
+
+#[test]
+fn batch_matches_single_lookup_byte_for_byte() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+
+    // Enough keys to exercise the merge walk across segments.
+    let mut keys: Vec<u64> = (0u64..64)
+        .map(|i| 0x1111_0000_0000_0000u64 + i * 0x0101_0101_0101_0101)
+        .collect();
+    keys.sort_unstable();
+
+    let cdfs: Vec<[u8; K]> = (0..keys.len())
+        .map(|i| {
+            let mut c = [0u8; K];
+            for j in 0..K {
+                c[j] = ((i + j * 7) % 256) as u8;
+            }
+            c[K - 1] = 255;
+            c
+        })
+        .collect();
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+
+    // Lookups: some hit, some miss, some hit again (duplicates), all
+    // unsorted. Order in input must be preserved in output.
+    let mut queries: Vec<u64> = Vec::new();
+    queries.push(keys[0]);
+    queries.push(0xDEAD_BEEF_DEAD_BEEFu64); // miss
+    queries.push(keys[32]);
+    queries.push(keys[0]); // duplicate hit
+    queries.push(keys[63]);
+    queries.push(keys[63]); // duplicate hit
+    queries.push(0x0);      // miss (below)
+    queries.push(u64::MAX); // miss (above)
+
+    let batch = handle.get_advice_batch(&queries);
+    assert_eq!(batch.len(), queries.len());
+
+    for (i, &h) in queries.iter().enumerate() {
+        let single = handle.get_advice_fast(h);
+        assert_eq!(
+            batch[i].is_some(),
+            single.is_some(),
+            "presence differs at index {i} for hash 0x{h:016x}"
+        );
+        if let (Some(b), Some(s)) = (&batch[i], &single) {
+            assert_eq!(
+                b.len, s.len,
+                "len differs at index {i} for hash 0x{h:016x}"
+            );
+            assert_eq!(
+                &b.cdf_probabilities[..b.len as usize],
+                &s.cdf_probabilities[..s.len as usize],
+                "cdf differs at index {i} for hash 0x{h:016x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn batch_handles_empty_input() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: Vec<u64> = vec![1, 2, 3];
+    let cdfs: Vec<[u8; K]> = vec![[0; K]; 3];
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+
+    let empty: &[u64] = &[];
+    assert!(handle.get_advice_batch(empty).is_empty());
+}
+
+#[test]
+fn batch_with_all_misses_returns_all_none() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: Vec<u64> = vec![0x100, 0x200, 0x300];
+    let cdfs: Vec<[u8; K]> = vec![[0; K]; 3];
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+
+    let queries: Vec<u64> = vec![1, 0x150, 0x250, 0x350, u64::MAX];
+    let batch = handle.get_advice_batch(&queries);
+    assert!(batch.iter().all(|r| r.is_none()));
+}
+
+#[test]
+fn batch_with_all_hits_returns_all_some() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: Vec<u64> = vec![0x100, 0x200, 0x300];
+    let cdfs: Vec<[u8; K]> = vec![
+        [10, 40, 80, 150, 200, 255],
+        [42, 85, 128, 170, 212, 255],
+        [255, 255, 255, 255, 255, 255],
+    ];
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+
+    let queries: Vec<u64> = vec![0x100, 0x200, 0x300];
+    let batch = handle.get_advice_batch(&queries);
+    assert!(batch.iter().all(|r| r.is_some()));
+    for (i, r) in batch.iter().enumerate() {
+        let a = r.as_ref().unwrap();
+        let cdf = &a.cdf_probabilities[..a.len as usize];
+        assert_eq!(cdf, &cdfs[i][..a.len as usize]);
+    }
+}
