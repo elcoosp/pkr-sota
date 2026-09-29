@@ -153,3 +153,18 @@ Two identical 8-thread runs, 3M iters, seed 202:
 
 The 8-thread nondeterminism is fully resolved. Any A/B at any thread
 count now measures only the variable under test.
+
+---
+
+## RETEST NOTE (2026-09-29)
+
+The +425 mbb figure cited above is the *pre-determinism-fix* estimate.
+The deterministic retest (see the RETEST section in
+`docs/experiments/v33-rich-preflop-confirmed.md`) gives:
+
+    seed 42: 2D=3336.0, 6D=3093.1, delta=-242.9  (was -463.8 pre-fix)
+
+The 6D win holds in sign but shrinks ~48%. When quoting a magnitude,
+use ~240 mbb, not ~425. The argument in this document about the
+nondeterminism floor is unaffected — 240 mbb is still well above the
+30-100 mbb noise floor the doc derives.

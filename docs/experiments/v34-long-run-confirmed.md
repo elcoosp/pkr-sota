@@ -161,3 +161,13 @@ For the next step, in priority order:
   - `binaries/pkr-trainer/src/main.rs` — CSV append-on-resume,
     checkpoint_every default 500k, abort on checkpoint failure
   - `run.sh`, `scripts/run-config.sh` — `PREFLOP_RICH=1` default
+
+---
+
+## RETEST NOTE (2026-09-29)
+
+The "425 mbb" v33 figure cited above is the pre-determinism-fix
+estimate. The retest on the fixed trainer gives ~243 mbb (seed 42).
+The qualitative claim — rich 6D + long training beats either alone —
+is unaffected. Only the specific magnitude should be quoted as ~240
+from the retest.
