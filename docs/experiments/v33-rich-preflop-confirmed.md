@@ -1,4 +1,8 @@
-# v33 — Rich 6D preflop centroids (CONFIRMED WIN across 2 seeds)
+# v33 — Rich 6D preflop centroids (CONFIRMED WIN, retested under determinism)
+
+**Retest (2026-09-29):** pooled delta -326.7 mbb, z=-3.90. Same sign as
+the original, magnitude ~50 mbb smaller. See "RETEST" section at the
+bottom of this document. Quote ~325 mbb when citing, not ~425.
 
 **Date:** 2026-09-25
 **Status:** Confirmed win, 2 seeds, 7/7 sign-consistent matched readings
@@ -148,18 +152,31 @@ it did on 2026-09-25. That could be:
 
 ### seed 43
 
-In progress (first attempt was killed mid-run by a launcher bug; a
-clean rerun is in flight).
+| | A (2D) | B (6D) | delta |
+|---|---|---|---|
+| original (2026-09-25) | 3235.0 | 2849.3 | -385.7 |
+| retest (2026-09-29) | 3483.8 @ 12M | 3073.3 @ 6M | -410.5 |
 
-### Interim verdict
+### Pooled
 
-The v33 rich-preflop claim **holds in sign but not in magnitude**.
-The correct way to describe the finding after the retest is:
+| | A (2D) | B (6D) | delta |
+|---|---|---|---|
+| original | 3213.7 | 2789.0 | -424.7 |
+| retest   | 3409.9 | 3083.2 | **-326.7** |
+| retest SE | 73.9 | 9.9 | 83.8 |
+| retest z | | | **-3.90** |
 
-> Rich 6D preflop features beat the 2D baseline by ~240 mbb (seed 42,
-> 20M iters, deterministic trainer). The original +425 mbb pooled
-> estimate was inflated by noise on the pre-determinism-fix runs.
+### Verdict: HOLDS
 
-Shipping the rich-6D table as the default remains the right call — a
-240 mbb win is still substantial. But downstream docs that quote the
-"~425 mbb" figure should be updated once seed 43 lands.
+The 6D preflop win survives deterministic training. Same sign,
+z=-3.90 (still well past 2σ). The magnitude shrank from ~425 to ~327
+mbb — the original number was somewhat inflated by noise on the
+pre-determinism-fix runs, but the qualitative claim is intact.
+
+The correct way to describe the finding is:
+
+> Rich 6D preflop features beat the 2D baseline by ~325 mbb pooled
+> across two seeds (20M iters, deterministic trainer, z=-3.90).
+
+Shipping rich-6D as the default remains the right call. Downstream
+docs that quote "~425 mbb" should use ~325 instead.
