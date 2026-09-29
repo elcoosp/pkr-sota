@@ -260,3 +260,81 @@ fn batch_with_all_hits_returns_all_some() {
         assert_eq!(cdf, &cdfs[i][..a.len as usize]);
     }
 }
+
+#[test]
+fn health_check_reports_hits_and_latency() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: Vec<u64> = (0u64..128).map(|i| 0x1000 + i * 17).collect();
+    let cdfs: Vec<[u8; K]> = (0..keys.len())
+        .map(|i| {
+            let mut c = [0u8; K];
+            for j in 0..K { c[j] = ((i * 3 + j * 11) % 256) as u8; }
+            c[K - 1] = 255;
+            c
+        })
+        .collect();
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+
+    let r = handle.health_check(1000);
+    assert_eq!(r.key_count, 128);
+    assert_eq!(r.queries, 1000);
+    // 1 in 8 queries is a deliberate miss; the rest sweep the table.
+    assert!(r.hits >= 800, "expected ~875 hits, got {}", r.hits);
+    assert!(r.hits <= 900, "expected ~875 hits, got {}", r.hits);
+    // Latency must be non-decreasing across p50 <= p99 <= max.
+    assert!(r.p50_ns <= r.p99_ns);
+    assert!(r.p99_ns <= r.max_ns);
+}
+
+#[test]
+fn health_check_handles_empty_blueprint() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: Vec<u64> = vec![];
+    let cdfs: Vec<[u8; K]> = vec![];
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+
+    let r = handle.health_check(100);
+    assert_eq!(r.key_count, 0);
+    assert_eq!(r.queries, 0);
+    assert_eq!(r.hits, 0);
+}
+
+#[test]
+fn health_check_zero_queries_is_safe() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: Vec<u64> = vec![1, 2, 3];
+    let cdfs: Vec<[u8; K]> = vec![[0; K]; 3];
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+
+    let r = handle.health_check(0);
+    assert_eq!(r.queries, 0);
+    assert_eq!(r.hits, 0);
+    assert_eq!(r.p50_ns, 0);
+    assert_eq!(r.p99_ns, 0);
+    assert_eq!(r.max_ns, 0);
+}
+
+#[test]
+fn health_report_summary_is_a_single_line() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let keys: Vec<u64> = vec![1, 2, 3];
+    let cdfs: Vec<[u8; K]> = vec![[0; K]; 3];
+    write_synthetic_blueprint(tmp.path(), &keys, &cdfs);
+
+    let reader = MmapReader::new(tmp.path()).unwrap();
+    let handle = SolverHandle::new(reader);
+    let r = handle.health_check(100);
+    let s = r.summary();
+    assert!(!s.contains('\n'), "summary must be a single line");
+    assert!(s.contains("p50="));
+    assert!(s.contains("p99="));
+}
