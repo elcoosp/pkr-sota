@@ -479,16 +479,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli.eval_deals,
             EVAL_SEED ^ (start_iter as u64),
         );
-        eprintln!(
-            "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
-            start_iter,
-            br.exploitability_mbb,
-            br.expl_std_err_mbb,
-            br.expl_insample_mbb,
-            br.br0,
-            br.br1,
-            br.deals_sampled
-        );
+        if cli.log_json {
+            json_progress(&[
+                ("event", serde_json::json!("eval")),
+                ("iter", serde_json::json!(start_iter)),
+                ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
+                ("expl_std_err_mbb", serde_json::json!(br.expl_std_err_mbb)),
+                ("expl_insample_mbb", serde_json::json!(br.expl_insample_mbb)),
+                ("br0", serde_json::json!(br.br0)),
+                ("br1", serde_json::json!(br.br1)),
+                ("deals", serde_json::json!(br.deals_sampled)),
+            ]);
+        } else {
+            eprintln!(
+                "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
+                start_iter,
+                br.exploitability_mbb,
+                br.expl_std_err_mbb,
+                br.expl_insample_mbb,
+                br.br0,
+                br.br1,
+                br.deals_sampled
+            );
+        }
     }
 
     let start = Instant::now();
@@ -717,11 +730,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     cli.eval_deals,
                     done as u64,
                 );
-                eprintln!(
-            "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
-            done, br.exploitability_mbb, br.expl_std_err_mbb,
-            br.expl_insample_mbb, br.br0, br.br1, br.deals_sampled
-        );
+                if cli.log_json {
+                    json_progress(&[
+                        ("event", serde_json::json!("eval")),
+                        ("iter", serde_json::json!(done)),
+                        ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
+                        ("expl_std_err_mbb", serde_json::json!(br.expl_std_err_mbb)),
+                        ("expl_insample_mbb", serde_json::json!(br.expl_insample_mbb)),
+                        ("br0", serde_json::json!(br.br0)),
+                        ("br1", serde_json::json!(br.br1)),
+                        ("deals", serde_json::json!(br.deals_sampled)),
+                    ]);
+                } else {
+                    eprintln!(
+                        "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
+                        done, br.exploitability_mbb, br.expl_std_err_mbb,
+                        br.expl_insample_mbb, br.br0, br.br1, br.deals_sampled
+                    );
+                }
 
                 // E1: append to the exploitability CSV.
                 if let Some(w) = expl_writer.as_mut() {
@@ -760,24 +786,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None => false,
                 };
                 if rejected {
-                    eprintln!(
-                        "SKIP-PROMOTE iter={} expl_mbb={:.2} not a new minimum (best {:.2}, need < {:.2})",
-                        done,
-                        br.exploitability_mbb,
-                        best_expl_mbb.unwrap_or(0.0),
-                        best_expl_mbb.map(|b| b - min_improvement).unwrap_or(0.0),
-                    );
+                    if cli.log_json {
+                        json_progress(&[
+                            ("event", serde_json::json!("skip_promote")),
+                            ("iter", serde_json::json!(done)),
+                            ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
+                            ("best_expl_mbb", serde_json::json!(best_expl_mbb.unwrap_or(0.0))),
+                            ("need_below", serde_json::json!(best_expl_mbb.map(|b| b - min_improvement).unwrap_or(0.0))),
+                        ]);
+                    } else {
+                        eprintln!(
+                            "SKIP-PROMOTE iter={} expl_mbb={:.2} not a new minimum (best {:.2}, need < {:.2})",
+                            done,
+                            br.exploitability_mbb,
+                            best_expl_mbb.unwrap_or(0.0),
+                            best_expl_mbb.map(|b| b - min_improvement).unwrap_or(0.0),
+                        );
+                    }
                     consecutive_non_minimum = consecutive_non_minimum.saturating_add(1);
                     if cli.stop_on_plateau > 0
                         && consecutive_non_minimum >= cli.stop_on_plateau
                     {
-                        eprintln!(
-                            "PLATEAU-STOP: {} consecutive evals without a new minimum                              (threshold {}). Stopping at iter {}. Last best: {:.2} mbb.",
-                            consecutive_non_minimum,
-                            cli.stop_on_plateau,
-                            done,
-                            best_expl_mbb.unwrap_or(0.0),
-                        );
+                        if cli.log_json {
+                            json_progress(&[
+                                ("event", serde_json::json!("plateau_stop")),
+                                ("consecutive_non_minimum", serde_json::json!(consecutive_non_minimum)),
+                                ("threshold", serde_json::json!(cli.stop_on_plateau)),
+                                ("iter", serde_json::json!(done)),
+                                ("last_best_mbb", serde_json::json!(best_expl_mbb.unwrap_or(0.0))),
+                            ]);
+                        } else {
+                            eprintln!(
+                                "PLATEAU-STOP: {} consecutive evals without a new minimum                              (threshold {}). Stopping at iter {}. Last best: {:.2} mbb.",
+                                consecutive_non_minimum,
+                                cli.stop_on_plateau,
+                                done,
+                                best_expl_mbb.unwrap_or(0.0),
+                            );
+                        }
                         stopped_early = true;
                         plateau_stopped = true;
                         break;
@@ -788,14 +834,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     // Export the current table as the promoted blueprint.
                     match export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint) {
                         Ok(n) => {
-                            eprintln!(
-                                "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
-                                done,
-                                br.exploitability_mbb,
-                                best_expl_mbb,
-                                cli.output.display(),
-                                n,
-                            );
+                            if cli.log_json {
+                                json_progress(&[
+                                    ("event", serde_json::json!("promote")),
+                                    ("iter", serde_json::json!(done)),
+                                    ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
+                                    ("prev_best_mbb", serde_json::json!(best_expl_mbb)),
+                                    ("output", serde_json::json!(cli.output.display().to_string())),
+                                    ("infosets", serde_json::json!(n)),
+                                ]);
+                            } else {
+                                eprintln!(
+                                    "PROMOTE iter={} expl_mbb={:.2} (prev best {:?}) -> {} ({} infosets)",
+                                    done,
+                                    br.exploitability_mbb,
+                                    best_expl_mbb,
+                                    cli.output.display(),
+                                    n,
+                                );
+                            }
                             // Defensive: also write a "best-ever" copy. If a
                             // later run or a bug overwrites `cli.output`,
                             // `best.bin` remains the historical minimum.
