@@ -1,0 +1,49 @@
+name: golden
+
+on:
+  pull_request:
+    paths:
+      - 'crates/pkr-cfr/**'
+      - 'crates/pkr-abstraction/**'
+      - 'crates/pkr-eval/**'
+      - 'crates/pkr-core/**'
+      - 'binaries/pkr-trainer/**'
+      - 'ci/golden-training.sha256'
+      - 'ci/scripts/golden-training.sh'
+      - '.github/workflows/golden.yml'
+  workflow_dispatch:
+
+# Cancel in-progress runs on the same ref.
+concurrency:
+  group: golden-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  golden:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: golden-release
+          cache-targets: true
+
+      # The golden check needs the smoke abstraction. Generate it once
+      # at this workflow's cost; it's ~30s on a CI runner.
+      - name: Restore smoke artifacts
+        id: smoke-cache
+        uses: actions/cache@v4
+        with:
+          path: outputs/v0-smoke
+          key: smoke-${{ hashFiles('ci/cache-key.sh', 'crates/pkr-abstraction/**', 'crates/pkr-core/**', 'crates/pkr-eval/**') }}
+
+      - name: Generate smoke abstraction
+        if: steps.smoke-cache.outputs.cache-hit != 'true'
+        run: bash smoke.sh
+
+      - name: Golden training check
+        run: bash ci/scripts/golden-training.sh
