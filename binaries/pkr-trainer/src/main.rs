@@ -30,6 +30,17 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 /// (common-random-numbers comparison). The training RNG is separate.
 const EVAL_SEED: u64 = 0xE7A1_0000_0000_0001;
 
+/// Emit a JSON progress line to stderr. Called when `--log-json` is set.
+/// Field names are stable; new fields can be added without breaking
+/// existing consumers.
+fn json_progress(fields: &[(&str, serde_json::Value)]) {
+    let mut obj = serde_json::Map::new();
+    for (k, v) in fields {
+        obj.insert((*k).to_string(), v.clone());
+    }
+    eprintln!("{}", serde_json::Value::Object(obj));
+}
+
 #[derive(Parser)]
 #[command(name = "pkr-trainer")]
 struct Cli {
@@ -185,6 +196,13 @@ struct Cli {
     /// Seed for the worker RNGs. Same seed + same inputs = identical training run.
     #[arg(long, default_value_t = 0x5EED_1F70u64)]
     seed: u64,
+
+    /// Emit periodic progress and eval reports as one-line JSON objects
+    /// on stderr instead of human-readable text. Start-up banners and
+    /// fatal errors stay in their usual form. Intended for CI and log
+    /// aggregators that parse the metrics.
+    #[arg(long, default_value_t = false)]
+    log_json: bool,
 }
 
 fn main() {
@@ -652,23 +670,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let flush_ms = delta.flush_ns as f64 / 1.0e6;
             let wall_ms = delta.wall_ns as f64 / 1.0e6;
 
-            eprintln!(
-                "iter {}/{} | infosets: {} ({:.1}%) | {:.1} it/s | ETA {:.2}h | \
-                 max|r|={:.2e} nonfinite={} | cache_hit={:.3} dedup={:.3} | \
-                 nodes/it={:.0} depth_avg={:.1}",
-                done,
-                max_iters,
-                snap.infosets,
-                cap_pct,
-                rate,
-                eta_s / 3600.0,
-                snap.max_abs_regret,
-                snap.nonfinite_count,
-                cache_hit_rate,
-                regret_dedup,
-                nodes_per_iter,
-                delta.avg_depth(),
-            );
+            if cli.log_json {
+                json_progress(&[
+                    ("event", serde_json::json!("progress")),
+                    ("iter", serde_json::json!(done)),
+                    ("max_iters", serde_json::json!(max_iters)),
+                    ("infosets", serde_json::json!(snap.infosets)),
+                    ("cap_pct", serde_json::json!(cap_pct)),
+                    ("it_per_s", serde_json::json!(rate)),
+                    ("eta_s", serde_json::json!(eta_s)),
+                    ("max_abs_regret", serde_json::json!(snap.max_abs_regret)),
+                    ("nonfinite", serde_json::json!(snap.nonfinite_count)),
+                    ("cache_hit_rate", serde_json::json!(cache_hit_rate)),
+                    ("regret_dedup", serde_json::json!(regret_dedup)),
+                    ("nodes_per_iter", serde_json::json!(nodes_per_iter)),
+                    ("avg_depth", serde_json::json!(delta.avg_depth())),
+                ]);
+            } else {
+                eprintln!(
+                    "iter {}/{} | infosets: {} ({:.1}%) | {:.1} it/s | ETA {:.2}h | \
+                     max|r|={:.2e} nonfinite={} | cache_hit={:.3} dedup={:.3} | \
+                     nodes/it={:.0} depth_avg={:.1}",
+                    done,
+                    max_iters,
+                    snap.infosets,
+                    cap_pct,
+                    rate,
+                    eta_s / 3600.0,
+                    snap.max_abs_regret,
+                    snap.nonfinite_count,
+                    cache_hit_rate,
+                    regret_dedup,
+                    nodes_per_iter,
+                    delta.avg_depth(),
+                );
+            }
 
             // Sampled best-response exploitability check.
             // Fire when done has advanced by at least eval_every since the
