@@ -350,6 +350,17 @@ impl GameState {
 
     /// Internal apply without undo (for initial state setup).
     fn apply_action_internal(&mut self, action: &Action) {
+        // The `player` field on Action is authoritative in intent but
+        // has historically been ignored here (we use `self.actor`).
+        // This debug_assert catches the footgun where a caller
+        // constructs `Action { player: <wrong seat> }` and silently
+        // applies the action to the other seat. Cheap in debug, gone
+        // in release.
+        debug_assert_eq!(
+            action.player, self.actor,
+            "apply_action: action.player={} but state.actor={}",
+            action.player, self.actor
+        );
         let actor = self.actor;
         // C3: snapshot pre-action scalars for bucket computation below.
         let pre_stacks = self.stacks[actor];
