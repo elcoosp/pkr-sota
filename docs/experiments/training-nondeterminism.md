@@ -211,19 +211,55 @@ The blueprint exporter quantizes the average strategy to u8 CDFs. A
 quantization step, so the exported bytes are bit-identical. The host
 never sees the divergence.
 
-### Why the 8-thread fix didn't cover this
+### Where the divergence is (partial)
 
-The fix appended a bit-pattern tiebreaker to the `flush_cpu_batch_with`
-and `apply_strategy_batch` sort keys. That made the *regret* fold order
-deterministic. The strategy-sum accumulation path — which is a separate
-accumulator written during traversal, not during flush — has its own
-ordering that the sort fix doesn't touch.
+`strategy_sum_mass` in the snapshot differs. That metric is
+`sum(strategy_sum[cell])` across the table — the accumulation itself.
 
-The paths involved:
-- `crates/pkr-cfr/src/table.rs` — `strategy_sum` accumulation
-- `crates/pkr-cfr/src/traversal.rs` — where the accumulator is written
+The strategy batch path *is* already covered by the fix:
+`apply_strategy_batch` at `table.rs:520` sorts by
+`(index, action, prob.to_bits())`, i.e. the tiebreaker is present.
 
-Neither has a determinism guard today.
+So the divergence is *not* "the accumulator has no sort fix". The sort
+is there. What we know:
+
+1. The regret table's *reported* state (`max_abs_regret`, `infosets`)
+   matches bit-for-bit across runs.
+2. The exported blueprint (which is a quantized function of
+   `strategy_sum`) matches bit-for-bit.
+3. But `strategy_sum_mass` itself differs by ~1e-11.
+
+That combination means the underlying `strategy_sum` cells differ at
+float precision while the u8-quantized average does not. The source
+of the float difference is not yet localized. Candidates that need
+ruling out:
+
+- Cross-batch fold order. Each batch is internally sorted, but the
+  per-cell accumulator is written once per batch. If two batches
+  contain the same cell, the fold is `((cur + delta1) + delta2)` vs
+  `((cur + delta2) + delta1)`, which is not associative. The sort
+  fixes order *within* a batch; it says nothing about batch order,
+  which is determined by iteration index. That should be identical
+  across runs at the same iteration count... unless the batch
+  boundaries shift.
+- Traversal output ordering. The traversal is parallel over deals
+  (rayon). Each deal produces its own (idx, action, delta) tuples.
+  The *deltas* are deterministic per deal; the *batch* is then
+  sorted. If some cross-deal state leaks (e.g. shared RNG, shared
+  regret reads that race with writes), the deltas could differ.
+- RNG seeding. Each deal's RNG is seeded from the run seed and the
+  deal index. Need to verify no `rand::thread_rng` or similar
+  sneaks in.
+
+The next step to localize this is a single-threaded run at the same
+settings: if single-threaded produces a bit-identical `train.ckpt`,
+the divergence is thread-order-dependent and the batch-fold hypothesis
+is the leading candidate. If single-threaded also differs, the source
+is in the per-deal computation and RNG seeding is the leading
+candidate.
+
+**Do not** assume it's the accumulator's sort. That's already fixed.
+The claim in this section is a partial localization, not a root cause.
 
 ### What this means for CI
 
