@@ -30,35 +30,36 @@ fn build_handle(enabled_river: bool) -> SubgameHandle {
 #[test]
 fn all_zero_range_returns_none_on_enabled_street() {
     // Build a river state. We only need the street to be River and the
-    // state to be non-terminal. Use a minimal preflop->river walk.
+    // state to be non-terminal.
+    //
+    // IMPORTANT: the `player` field on Action must equal `state.actor`
+    // at the moment of application. Preflop SB (P0) acts first;
+    // postflop BB (P1) acts first in heads-up. The helper below uses
+    // `st.actor` so we never have to think about the alternation.
+    fn apply_here(st: &mut GameState, kind: pkr_core::state::ActionKind) {
+        let actor = st.actor;
+        st.apply_action_in_place(&pkr_core::state::Action {
+            player: actor,
+            kind,
+        });
+    }
+
     let mut st = GameState::new(200.0, 1.0, 2.0);
-    // Preflop: call, check.
-    st.apply_action_in_place(&pkr_core::state::Action {
-        player: 0,
-        kind: pkr_core::state::ActionKind::Call,
-    });
-    st.apply_action_in_place(&pkr_core::state::Action {
-        player: 1,
-        kind: pkr_core::state::ActionKind::Check,
-    });
+    use pkr_core::state::ActionKind;
+
+    // Preflop: SB calls, BB checks.
+    apply_here(&mut st, ActionKind::Call);
+    apply_here(&mut st, ActionKind::Check);
+
+    // Flop / turn: BB acts first (OOP), then SB. Both check.
     st.advance_street_in_place(&[0, 4, 8]);
-    st.apply_action_in_place(&pkr_core::state::Action {
-        player: 0,
-        kind: pkr_core::state::ActionKind::Check,
-    });
-    st.apply_action_in_place(&pkr_core::state::Action {
-        player: 1,
-        kind: pkr_core::state::ActionKind::Check,
-    });
+    apply_here(&mut st, ActionKind::Check);
+    apply_here(&mut st, ActionKind::Check);
+
     st.advance_street_in_place(&[12]);
-    st.apply_action_in_place(&pkr_core::state::Action {
-        player: 0,
-        kind: pkr_core::state::ActionKind::Check,
-    });
-    st.apply_action_in_place(&pkr_core::state::Action {
-        player: 1,
-        kind: pkr_core::state::ActionKind::Check,
-    });
+    apply_here(&mut st, ActionKind::Check);
+    apply_here(&mut st, ActionKind::Check);
+
     st.advance_street_in_place(&[16]);
 
     assert_eq!(st.street, pkr_core::state::Street::River);
