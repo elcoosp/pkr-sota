@@ -923,12 +923,22 @@ impl CompactRegretTable {
         let guard = self.hash_to_idx.pin();
         let map_len = guard.len() as u64;
         w.write_all(&map_len.to_le_bytes())?;
-        // Pack 16 bytes per write_all to halve the call-count on the
-        // 5M-key path (each write_all re-checks BufWriter capacity).
+        // PapayaMap iteration order is implementation-defined and not
+        // stable across runs even with identical insertions. The
+        // checkpoint format is a bare (hash, index) sequence; the
+        // loader rebuilds a fresh map so on-disk order is invisible
+        // to correctness. But it does show up in the file's bytes,
+        // making the checkpoint nondeterministic. Sort by hash so two
+        // runs of identical training produce byte-identical files.
+        let mut entries: Vec<(u64, usize)> = guard
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        entries.sort_unstable_by_key(|(k, _)| *k);
         let mut kv_buf = [0u8; 16];
-        for (k, v) in guard.iter() {
+        for (k, v) in entries {
             kv_buf[0..8].copy_from_slice(&k.to_le_bytes());
-            kv_buf[8..16].copy_from_slice(&(*v as u64).to_le_bytes());
+            kv_buf[8..16].copy_from_slice(&(v as u64).to_le_bytes());
             w.write_all(&kv_buf)?;
         }
         // P2-a: stream the backing arrays directly. AtomicI64/AtomicU64
