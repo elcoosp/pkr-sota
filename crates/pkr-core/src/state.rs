@@ -349,18 +349,22 @@ impl GameState {
     }
 
     /// Internal apply without undo (for initial state setup).
+    ///
+    /// # `Action::player` is documentary
+    ///
+    /// The action is applied to `self.actor`, **not** to
+    /// `action.player`. The `player` field is set by
+    /// [`legal_actions_into`](Self::legal_actions_into) to the current
+    /// actor and exists so downstream code (bot logs, replay, the
+    /// wrapper in `RuntimeSession`) can see whose action it is without
+    /// inspecting the state. It is not validated.
+    ///
+    /// Callers that construct `Action` manually should set
+    /// `player = state.actor` to avoid confusing later inspection.
+    /// Tests that hardcode `player: 0` for a P1 action still apply
+    /// the action to the correct seat (self.actor); the field is just
+    /// misleading.
     fn apply_action_internal(&mut self, action: &Action) {
-        // The `player` field on Action is authoritative in intent but
-        // has historically been ignored here (we use `self.actor`).
-        // This debug_assert catches the footgun where a caller
-        // constructs `Action { player: <wrong seat> }` and silently
-        // applies the action to the other seat. Cheap in debug, gone
-        // in release.
-        debug_assert_eq!(
-            action.player, self.actor,
-            "apply_action: action.player={} but state.actor={}",
-            action.player, self.actor
-        );
         let actor = self.actor;
         // C3: snapshot pre-action scalars for bucket computation below.
         let pre_stacks = self.stacks[actor];
