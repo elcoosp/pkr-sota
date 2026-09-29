@@ -6,6 +6,6 @@ pub mod translate;
 pub mod lookup;
 pub mod mmap;
 
-pub use lookup::SolverHandle;
+pub use lookup::{HealthReport, SolverHandle};
 pub use session::RuntimeSession;
 pub use mmap::{MmapError, MmapReader};
