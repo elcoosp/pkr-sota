@@ -32,6 +32,28 @@ pub enum MmapError {
 
 const MAGIC: &[u8; 8] = b"PKRSOTA1";
 
+/// Memory-mapped reader for a blueprint file.
+///
+/// # Memory-mapping contract
+///
+/// The file is mapped with `memmap2::Mmap` and read directly on every
+/// lookup — no copy is held in memory. **The file must not be modified
+/// or truncated while this reader (or any `SolverHandle` derived from
+/// it) is alive.** Modifying the underlying file is undefined behavior:
+/// the kernel may serve stale bytes for pages already mapped, may
+/// SIGBUS on a page that no longer exists, or may see a torn write on
+/// a page that's mid-update. This is inherited from `memmap2` and
+/// applies to every use of `MmapReader`.
+///
+/// The intended workflow is: write the blueprint once, then open a
+/// reader and never touch the file for the lifetime of the process.
+/// A host that needs to swap blueprints should drop the reader and
+/// handle, replace the file atomically (rename a temp over the path),
+/// and open a fresh reader.
+///
+/// The export path (`pkr-export::writer`) writes to a temp file and
+/// renames, so a running reader on the old path keeps a consistent
+/// view of the old bytes until it's dropped.
 #[derive(Debug)]
 pub struct MmapReader {
     mmap: Mmap,
