@@ -46,8 +46,9 @@ Correct (runtime turn tests pass) but not useful. Ship river-only.
 
 - A runtime bot binary that actually calls `RuntimeSession`. The API is
   done; the consumer doesn't exist yet.
-- The v33 preflop retest: seed42 shows the +425 mbb original claim was
-  inflated to ~243 mbb under deterministic training; seed43 running.
+- The v33 preflop retest: **COMPLETE**. Pooled -326.7 mbb (z=-3.90),
+  vs original -424.7 (z=-6.65). Holds in sign, magnitude ~25% smaller.
+  Ship config (PREFLOP_RICH=1) unchanged.
 
 ## Reference
 
