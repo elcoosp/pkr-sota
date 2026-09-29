@@ -261,6 +261,75 @@ candidate.
 **Do not** assume it's the accumulator's sort. That's already fixed.
 The claim in this section is a partial localization, not a root cause.
 
+---
+
+## THIRD SOURCE FIXED (2026-09-29): checkpoint map iteration
+
+`save_checkpoint` wrote the (hash, index) map in `PapayaMap`'s
+iteration order. PapayaMap's iteration order is implementation-defined
+and not stable across runs even with identical insertions. So the
+on-disk `train.ckpt` bytes differed every run, even though the
+underlying data was the same.
+
+Fix: materialize the map entries, sort by hash, then write. The loader
+rebuilds a fresh map from the sequence, so on-disk order was never
+semantically meaningful — it just leaked through to the file bytes.
+
+    let mut entries: Vec<(u64, usize)> = guard.iter().map(|(k, v)| (*k, *v)).collect();
+    entries.sort_unstable_by_key(|(k, _)| *k);
+
+Committed at `0a3c747`. Verified: two single-threaded 100k-iteration
+runs at seed 42 now produce byte-identical `train.ckpt`
+(sha256 a26c768196eb7b6d).
+
+## STILL OPEN: 4-thread train.ckpt divergence
+
+At 4 threads, `train.ckpt` still differs between runs of the same
+seed. The divergence is in the strategy-sum path:
+
+    SAME  regret_ops_input, regret_ops_unique
+    SAME  max_abs_regret, mean_abs_regret, infosets
+    DIFF  strategy_sum_mass       (at ~5e-17 per cell)
+    DIFF  mean_entropy_bits       (at ~1e-14)
+
+So the regret table is bit-identical across threads; the strategy-sum
+accumulator is not. `apply_strategy_batch` already sorts by
+`(index, action, prob.to_bits())`, so the within-batch fold order is
+deterministic. What remains open:
+
+- The strategy batch is a `&mut Vec<StrategyOp>` shared across
+  `par_iter` over deals. The push order across deals is racy.
+- If two ops hit the same (index, action) with identical `prob.to_bits()`,
+  the sort key ties — but numerically identical values fold
+  order-independently, so this shouldn't matter.
+- If they have different probs, the sort orders them — so within-batch
+  order is fine.
+
+That points to the *batch boundaries* being nondeterministic: if the
+per-deal work completes in different orders, ops from deal A and deal
+B land in different batches across runs, and `(cur + delta_A) + delta_B`
+vs `(cur + delta_B) + delta_A` differ in the low bits.
+
+Confirmed effect: `strategy_sum_mass` differs by ~5e-17 relative,
+which accumulates to ~1e-11 over 339K cells. Below the u8 quantization
+step in the exporter, so `blueprint.bin` is bit-identical (verified
+across 4-thread runs).
+
+Impact: `train.ckpt` is not byte-reproducible at >1 thread. Fixing it
+requires either (a) accumulating per-deal partial sums and reducing
+them in deterministic order, or (b) serializing the strategy-sum path.
+Neither is urgent because the shipped artifact (`blueprint.bin`) and
+the reported metrics (`exploitability.csv`) are already deterministic
+at 4 threads.
+
+## Summary after 2026-09-29
+
+| thread count | blueprint.bin | exploitability.csv | train.ckpt |
+|---|---|---|---|
+| 1 | identical | identical | **identical** |
+| 4 | identical | identical | differs (strategy-sum) |
+| 8 | identical | identical | differs (strategy-sum) |
+
 ### What this means for CI
 
 A golden-hash CI test on `train.ckpt` is not achievable at 4 threads in
