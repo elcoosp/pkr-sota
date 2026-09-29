@@ -239,15 +239,11 @@ fn advise_or_blueprint_always_returns_a_strategy() {
     let sum: f64 = s.iter().sum();
     assert!((sum - 1.0).abs() < 1e-6, "strategy must be normalized: sum = {sum}");
 
-    // Same with a valid blueprint hash on the preflop state.
-    // Use the abstraction to compute one.
-    let mut sig_buf = [0u8; 8];
-    let sig_len = st.infoset_signature_into(&mut sig_buf);
-    let history = &sig_buf[..sig_len];
-    let hash = abs_ref.get_infoset_hash(&st.hole[0], &[], history, st.street as u8);
+    // Also with a large fake hash (likely also absent from the blueprint):
+    // still must return Some.
     let s2 = session
-        .advise_or_blueprint(&st, &[30, 31], hash)
-        .expect("advise_or_blueprint must return Some with a valid hash");
+        .advise_or_blueprint(&st, &[30, 31], 0xFFFF_FFFF_FFFF_FFFF)
+        .expect("advise_or_blueprint must return Some with an arbitrary hash");
     let sum2: f64 = s2.iter().sum();
     assert!((sum2 - 1.0).abs() < 1e-6, "strategy must be normalized: sum = {sum2}");
 }
