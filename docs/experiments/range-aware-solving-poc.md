@@ -441,3 +441,34 @@ problem, not a **correctness** problem.
 Plateaus at 4. 16 is marginally better (+0.11 chips/deal) but within
 the SE. **Default 4 is fine.** No reason to pay 4x solve cost for a
 non-significant gain.
+
+## Generality across checkpoints (2026-09-29)
+
+The +2.40 chips/deal range-aware win was measured on v34long. To check
+it isn't checkpoint-specific, ran the gameplay test against two
+additional checkpoints from the v33 retest.
+
+5000 paired deals each, seed 42, `PKR_SUBGAME_ITERS=10`,
+`PKR_GP_HANDS=4`, river-only:
+
+| checkpoint | preflop features | delta | SE | t | diverged |
+|---|---|---|---|---|---|
+| v34long (shipping) | 6D rich | +1.43 | 0.59 | 2.44 | 3809/5000 |
+| seed42-A2D | 2D baseline | **+1.89** | 0.81 | 2.34 | 4050/5000 |
+| seed42-B6D | 6D rich | **+1.67** | 0.71 | 2.34 | 4016/5000 |
+
+**The win holds on all three.** It is not specific to the v34long
+checkpoint or to the 6D preflop feature space. The effect is a
+property of the river subgame solver plus a tracked posterior, not of
+any particular upstream abstraction.
+
+The seed42-A2D reading is slightly *larger* than v34long (+1.89 vs
++1.43) even though it comes from a "worse" preflop abstraction — the
+range-aware river solve is fixing more of the blueprint's river
+mistakes when the upstream abstraction is coarser. This is consistent
+with the mechanism: the subgame solve does its own concrete-card
+river CFR, so upstream abstraction error at river gets partially
+corrected regardless of where it came from.
+
+All three are t ~ 2.3-2.4 (5k deals). Combined they're ~t=4; the
+20k-deal run on v34long alone is t=6.04.
