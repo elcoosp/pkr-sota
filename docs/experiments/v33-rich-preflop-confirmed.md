@@ -1,6 +1,6 @@
 # v33 — Rich 6D preflop centroids (CONFIRMED WIN, retested under determinism)
 
-**Retest (2026-09-29):** pooled delta -326.7 mbb, z=-3.90. Same sign as
+**Retest (2026-09-29, RETEST COMPLETE):** pooled delta -326.7 mbb, z=-3.90. Same sign as
 the original, magnitude ~50 mbb smaller. See "RETEST" section at the
 bottom of this document. Quote ~325 mbb when citing, not ~425.
 
