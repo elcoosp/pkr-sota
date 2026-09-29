@@ -426,3 +426,18 @@ at the runtime level: SubgameHandle::decide produces a valid
 strategy when enabled_streets[2] is set. The gameplay result
 (river+turn non-positive at 10 iters) is therefore a **quality**
 problem, not a **correctness** problem.
+
+### hands_per_range sensitivity
+
+5000 deals, river-only, 10 iters, seed 42:
+
+| hands | delta | t |
+|---|---|---|
+| 2  | +1.33 | 2.25 |
+| 4  | +1.43 | 2.44 |
+| 8  | +1.43 | 2.42 |
+| 16 | +1.54 | 2.65 |
+
+Plateaus at 4. 16 is marginally better (+0.11 chips/deal) but within
+the SE. **Default 4 is fine.** No reason to pay 4x solve cost for a
+non-significant gain.
