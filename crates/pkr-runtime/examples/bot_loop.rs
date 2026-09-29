@@ -69,45 +69,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     root.set_hole_cards([0, 5], [40, 41]);
     session.deal_start(root.clone());
 
-    // Legal line: preflop SB completes, BB checks. Then check-check
-    // on every postflop street. Streets advance when the betting
-    // round is complete (which is what `is_street_complete` reports).
+    // Legal line. Preflop: SB (P0) calls, BB (P1) checks.
+    // Postflop: BB (P1) acts first (OOP in HU), then SB (P0).
+    // Every action is applied with `player = st.actor` so the
+    // debug_assert in `apply_action_internal` stays quiet.
     let runouts: &[&[u8]] = &[&[2, 6, 10], &[14], &[18]];
-    let actions: &[(usize, ActionKind)] = &[
-        (0, ActionKind::Call),
-        (1, ActionKind::Check),
-        (0, ActionKind::Check),
-        (1, ActionKind::Check),
-        (0, ActionKind::Check),
-        (1, ActionKind::Check),
-        (0, ActionKind::Check),
-        (1, ActionKind::Check),
-    ];
 
     let mut st = root.clone();
-    let mut runout_idx = 0;
-    for (player, kind) in actions {
-        // Advance to the next street if the previous one is complete.
-        while st.is_street_complete() && runout_idx < runouts.len() {
-            let cards = runouts[runout_idx];
-            runout_idx += 1;
-            st.advance_street_in_place(cards);
-            session.observe_street(cards);
-            println!("[street] {} board_len={}", street_name(st.street), st.board_len);
-        }
-        let actor_before = st.actor;
-        let a = Action { player: *player, kind: kind.clone() };
+
+    // Preflop.
+    for kind in [ActionKind::Call, ActionKind::Check] {
+        let actor = st.actor;
+        let a = Action { player: actor, kind };
         st.apply_action_in_place(&a);
         session.observe_action(a);
-        println!(
-            "[action] actor={} player={} kind={:?}",
-            actor_before, player, kind
-        );
+        println!("[action] actor={} kind={:?}", actor, a.kind);
     }
+
+    // Flop and turn: check-check. River: P1 (BB) bets, then P0 has a
+    // decision — that is where the subgame path fires (river is in
+    // `enabled_streets`, and it is our turn to act).
+    //
+    // Note: we only apply the P1 bet; P0's response is deliberately
+    // NOT applied. `advise_or_blueprint` is called at that point, so
+    // the state's actor is P0.
+    let pre_river_runouts: &[&[u8]] = &[&[2, 6, 10], &[14]];
+    let river_card: &[u8] = &[18];
+
+    for cards in pre_river_runouts {
+        if !st.is_street_complete() {
+            eprintln!("BUG: expected street complete before advance");
+            break;
+        }
+        st.advance_street_in_place(cards);
+        session.observe_street(cards);
+        println!("[street] {} board_len={}", street_name(st.street), st.board_len);
+        for _ in 0..2 {
+            let actor = st.actor;
+            let a = Action { player: actor, kind: ActionKind::Check };
+            st.apply_action_in_place(&a);
+            session.observe_action(a);
+            println!("[action] actor={} kind=Check", actor);
+        }
+    }
+
+    // River: advance, P1 bets half-pot, P0 to act.
+    st.advance_street_in_place(river_card);
+    session.observe_street(river_card);
+    println!("[street] {} board_len={}", street_name(st.street), st.board_len);
+
+    let p1_bet = Action {
+        player: 1,
+        kind: ActionKind::Bet(st.pot * 0.5),
+    };
+    st.apply_action_in_place(&p1_bet);
+    session.observe_action(p1_bet);
+    println!(
+        "[action] actor=1 kind=Bet({:.1}) pot_now={:.1}",
+        st.pot * 0.5, st.pot
+    );
 
     assert_eq!(st.street, Street::River);
 
-    if st.actor == 0 {
+    println!();
+    if st.is_terminal() {
+        println!("=== Hand over (river check-check → showdown) ===");
+        println!("  folded: {:?}", st.folded);
+        println!("  total_invested: {:?}", st.total_invested);
+    } else if st.actor == 0 {
         let mut sig_buf = [0u8; 8];
         let sig_len = st.infoset_signature_into(&mut sig_buf);
         let history = &sig_buf[..sig_len];
@@ -118,7 +147,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .advise_or_blueprint(&st, &st.hole[0], hash)
             .expect("advise_or_blueprint never returns None with a valid hash");
 
-        println!();
         println!("=== Advice at river ===");
         for (i, p) in strat.iter().enumerate() {
             println!("  bucket {}: {:.4}", i, p);
