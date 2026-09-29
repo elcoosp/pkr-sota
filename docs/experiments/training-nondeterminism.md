@@ -168,3 +168,75 @@ The 6D win holds in sign but shrinks ~48%. When quoting a magnitude,
 use ~240 mbb, not ~425. The argument in this document about the
 nondeterminism floor is unaffected — 240 mbb is still well above the
 30-100 mbb noise floor the doc derives.
+
+---
+
+## SECOND SOURCE FOUND (2026-09-29)
+
+The 8-thread fix (00a778d) made `exploitability.csv` byte-identical and
+all *reported* training state (infosets, max_abs_regret, mean_abs_regret,
+nodes, cache_hit_rate in the CSV) identical. But two 100k-iteration runs
+at 4 threads, seed 42, still produce:
+
+    train.ckpt:    DIFFERENT
+    metrics.csv:   wall-clock columns differ (expected)
+    stats.json:    timing columns differ (expected)
+    blueprint.bin: IDENTICAL
+    exploitability.csv: IDENTICAL
+
+So `train.ckpt` has a residual divergence that doesn't affect the
+shipped artifact.
+
+### Where it is
+
+`stats.json` from the two runs, section by section:
+
+    snapshot.max_abs_regret:     SAME (90536.3828125)
+    snapshot.infosets:           SAME (339229)
+    snapshot.strategy_sum_mass:  DIFFERS at 1e-11
+    strategy_analysis.mean_entropy_bits: DIFFERS at 1e-14
+    sample_infosets[*]:          DIFFERS (a non-deterministic sample)
+    cumulative_metrics.*:        DIFFERS (timing)
+    wall_seconds:                DIFFERS
+
+`strategy_sum_mass` is a sum of every strategy-sum cell across the table.
+A relative difference of ~5e-17 per cell accumulates to ~1e-11 over
+339K cells. That is float-associativity order-dependence, not a logic
+bug.
+
+### Why `blueprint.bin` is still identical
+
+The blueprint exporter quantizes the average strategy to u8 CDFs. A
+1e-11 difference in the underlying strategy sum is far below the 1/255
+quantization step, so the exported bytes are bit-identical. The host
+never sees the divergence.
+
+### Why the 8-thread fix didn't cover this
+
+The fix appended a bit-pattern tiebreaker to the `flush_cpu_batch_with`
+and `apply_strategy_batch` sort keys. That made the *regret* fold order
+deterministic. The strategy-sum accumulation path — which is a separate
+accumulator written during traversal, not during flush — has its own
+ordering that the sort fix doesn't touch.
+
+The paths involved:
+- `crates/pkr-cfr/src/table.rs` — `strategy_sum` accumulation
+- `crates/pkr-cfr/src/traversal.rs` — where the accumulator is written
+
+Neither has a determinism guard today.
+
+### What this means for CI
+
+A golden-hash CI test on `train.ckpt` is not achievable at 4 threads in
+the current state. Either:
+
+1. **Hash `blueprint.bin`** — it's deterministic and is the shipped
+   artifact. Catches any behavioral drift that affects what hosts load.
+   Recommended.
+2. **Hash `exploitability.csv`** — deterministic. Catches drift in the
+   final reading but not in intermediate state.
+3. **Find and fix the strategy-sum ordering** — a real but larger task.
+   Worth doing eventually for full reproducibility of checkpoints.
+
+We ship the CI test on `blueprint.bin` (option 1). The train.ckpt gap
+is documented here and left open.
