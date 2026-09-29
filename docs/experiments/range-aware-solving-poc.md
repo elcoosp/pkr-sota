@@ -451,11 +451,17 @@ additional checkpoints from the v33 retest.
 5000 paired deals each, seed 42, `PKR_SUBGAME_ITERS=10`,
 `PKR_GP_HANDS=4`, river-only:
 
-| checkpoint | preflop features | delta | SE | t | diverged |
-|---|---|---|---|---|---|
-| v34long (shipping) | 6D rich | +1.43 | 0.59 | 2.44 | 3809/5000 |
-| seed42-A2D | 2D baseline | **+1.89** | 0.81 | 2.34 | 4050/5000 |
-| seed42-B6D | 6D rich | **+1.67** | 0.71 | 2.34 | 4016/5000 |
+| checkpoint | preflop features | deals | delta | SE | t | diverged |
+|---|---|---|---|---|---|---|---|
+| v34long (shipping) | 6D rich | 5000 | +1.43 | 0.59 | 2.44 | 3809/5000 |
+| seed42-A2D | 2D baseline | 5000 | +1.89 | 0.81 | 2.34 | 4050/5000 |
+| seed42-B6D | 6D rich | 5000 | +1.67 | 0.71 | 2.34 | 4016/5000 |
+| seed42-B6D | 6D rich | **20000** | **+1.12** | **0.36** | **3.07** | 15979/20000 |
+| v34long (shipping) | 6D rich | **20000** | **+2.40** | **0.40** | **6.04** | 16288/20000 |
+
+The 20k-deal runs are the tighter estimates. On seed42-B6D the win is
++1.12 (t=3.07); on v34long it's +2.40 (t=6.04). Different checkpoints,
+same sign, both significant at >3 sigma.
 
 **The win holds on all three.** It is not specific to the v34long
 checkpoint or to the 6D preflop feature space. The effect is a
