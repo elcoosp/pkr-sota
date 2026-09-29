@@ -247,3 +247,108 @@ fn advise_or_blueprint_always_returns_a_strategy() {
     let sum2: f64 = s2.iter().sum();
     assert!((sum2 - 1.0).abs() < 1e-6, "strategy must be normalized: sum = {sum2}");
 }
+
+/// The whole point of RuntimeSession is that it returns a strategy that
+/// DIFFERS from the blueprint at river when the subgame is enabled.
+/// This test proves that: same state, same hole, same hash — the
+/// session's strategy must differ from `blueprint_strategy(hash)` on
+/// at least one bucket.
+#[test]
+#[ignore]
+fn subgame_strategy_differs_from_blueprint_at_river() {
+    let handle = build_handle();
+
+    let store = load_centroids(&out("centroids.bin")).expect("centroids");
+    let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+    abs.init_table(0, &out("preflop_abstraction.bin")).unwrap();
+    abs.init_table(1, &out("abstraction.bin")).unwrap();
+    abs.init_table(2, &out("turn_abstraction.bin")).unwrap();
+    abs.init_table(3, &out("river_buckets.bin")).unwrap();
+    let abs_ref: &dyn AbstractionBuilder = &abs;
+
+    let table = CompactRegretTable::with_capacity(60_000_000);
+    let fp = AbstractionFingerprint::from_constants(200);
+    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    let tbl_ref = &table;
+
+    let ev = pkr_eval::NlheEvaluator;
+    let ev_ref: &dyn Evaluator = &ev;
+
+    let mut session = RuntimeSession::new(handle, 0, abs_ref, tbl_ref, ev_ref);
+
+    let mut root = GameState::new(200.0, 1.0, 2.0);
+    root.set_hole_cards([30, 31], [40, 41]);
+    session.deal_start(root.clone());
+
+    // Deterministic check-call to river.
+    let line_actions: &[(usize, ActionKind, &[u8])] = &[
+        (0, ActionKind::Call, &[]),
+        (1, ActionKind::Check, &[]),
+        (0, ActionKind::Check, &[0, 4, 8]),
+        (1, ActionKind::Check, &[]),
+        (0, ActionKind::Check, &[12]),
+        (1, ActionKind::Check, &[]),
+        (0, ActionKind::Check, &[16]),
+    ];
+
+    let mut st = root.clone();
+    for (player, kind, cards) in line_actions {
+        if !cards.is_empty() {
+            st.advance_street_in_place(cards);
+            session.observe_street(cards);
+        } else {
+            let a = Action { player: *player, kind: kind.clone() };
+            st.apply_action_in_place(&a);
+            session.observe_action(a);
+        }
+    }
+
+    assert_eq!(st.street, Street::River);
+
+    // At this point the state's actor is P1 (BB acts first on river after
+    // the preflop/flop/turn check-check prelude). P0 is "our_seat".
+    // Advance P1's check so P0 acts.
+    if st.actor != 0 {
+        let a = Action { player: st.actor, kind: ActionKind::Check };
+        st.apply_action_in_place(&a);
+        session.observe_action(a);
+    }
+    assert_eq!(st.actor, 0);
+
+    // Get the subgame strategy.
+    let sub = session
+        .advise(&st, &st.hole[0])
+        .expect("advise should return Some at river for us");
+
+    // Get the blueprint strategy at the same infoset.
+    let mut sig_buf = [0u8; 8];
+    let sig_len = st.infoset_signature_into(&mut sig_buf);
+    let history = &sig_buf[..sig_len];
+    let board = &st.board[..st.board_len as usize];
+    let hash = abs_ref.get_infoset_hash(&st.hole[0], board, history, st.street as u8);
+    let bp = session.blueprint_strategy(hash);
+
+    // At least one bucket must differ by > 1e-6.
+    let mut any_diff = false;
+    let mut max_diff = 0.0f64;
+    for (a, b) in sub.iter().zip(bp.iter()) {
+        let d = (a - b).abs();
+        if d > max_diff { max_diff = d; }
+        if d > 1e-6 { any_diff = true; }
+    }
+    println!();
+    println!("subgame:    {:?}", sub);
+    println!("blueprint:  {:?}", bp);
+    println!("max diff:   {:.6}", max_diff);
+    assert!(
+        any_diff,
+        "subgame strategy must differ from blueprint at some bucket; \
+         max_diff = {max_diff}"
+    );
+
+    // Both must be normalized.
+    let ssum: f64 = sub.iter().sum();
+    let bsum: f64 = bp.iter().sum();
+    assert!((ssum - 1.0).abs() < 1e-6, "subgame sum = {ssum}");
+    assert!((bsum - 1.0).abs() < 1e-6, "blueprint sum = {bsum}");
+}
