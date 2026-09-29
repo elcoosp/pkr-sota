@@ -26,6 +26,8 @@ EHS_SAMPLES_TURN="${EHS_SAMPLES_TURN:-200}"
 # Preflop feature space. 1 = rich 6D (EHS, EHS^2, rank_high, rank_low,
 # suited, connector), the confirmed-win configuration from
 # docs/experiments/v33-rich-preflop-confirmed.md. 0 = legacy 2D.
+# Retested under deterministic training 2026-09-29: the win holds in
+# sign but shrinks to ~240 mbb (seed 42). Still the correct default.
 # Requires PKR_RICH_CENTROIDS=1 at centroid-precompute time and the
 # `preflop-rich` subcommand; run.sh handles both automatically.
 PREFLOP_RICH="${PREFLOP_RICH:-1}"
