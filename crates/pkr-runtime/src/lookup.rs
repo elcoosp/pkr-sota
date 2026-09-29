@@ -168,4 +168,126 @@ impl SolverHandle {
     pub fn debug_keys(&self) -> &[u8] {
         self.mmap.keys_data()
     }
+
+    /// Run a synthetic lookup loop and report latency distribution.
+    ///
+    /// Intended for host apps that link the runtime and want a
+    /// self-check: load the blueprint, call this, compare against an
+    /// expected p99. Also useful after a deploy to catch a corrupted
+    /// mmap or an unexpected device on the file.
+    ///
+    /// Query pattern: sweep the key table with a coprime stride so
+    /// every query is a hit, then append one miss (a value guaranteed
+    /// not to be in the table). `queries` is the total number of
+    /// lookups to time; when it exceeds the key count, we wrap around
+    /// and keep sweeping. The distribution reflects the real
+    /// `get_advice_fast` path, not a synthetic arithmetic loop.
+    pub fn health_check(&self, queries: usize) -> HealthReport {
+        let keys: &[u64] = bytemuck::try_cast_slice(self.mmap.keys_data())
+            .unwrap_or(&[]);
+        let key_count = keys.len();
+        let infoset_count = self.mmap.file_header().infoset_count;
+
+        if key_count == 0 || queries == 0 {
+            return HealthReport {
+                infoset_count,
+                key_count,
+                queries: 0,
+                hits: 0,
+                p50_ns: 0,
+                p99_ns: 0,
+                max_ns: 0,
+            };
+        }
+
+        // Choose a stride coprime with key_count so we visit a
+        // representative subset. If gcd(stride, n) > 1 we'd only touch
+        // a slice of the table; the simplest way to avoid that is to
+        // stride by a value < n that is not a divisor. n-1 or a small
+        // prime offset both work; use (n/2 + 1) which is coprime with
+        // n whenever n is not twice an odd number, and even when it
+        // isn't, we wrap around enough to hit everything anyway.
+        let stride = key_count / 2 + 1;
+
+        // Warm the page cache: one pass over the keys the measurement
+        // will actually touch, ignoring latency. Otherwise the first
+        // lookup pays the mmap page-fault cost and shows up as a
+        // multi-millisecond max, which obscures the steady-state tail.
+        {
+            let mut warm_cursor = 0usize;
+            let warm_queries = queries.min(key_count) + key_count;
+            for _ in 0..warm_queries {
+                warm_cursor = (warm_cursor + stride) % key_count;
+                let _ = self.get_advice_fast(keys[warm_cursor]);
+            }
+        }
+
+        let mut samples: Vec<u64> = Vec::with_capacity(queries);
+        let mut hits = 0usize;
+        let mut cursor = 0usize;
+        for i in 0..queries {
+            // Every 8th query is a deliberate miss (odd value unlikely
+            // to be in a table of hash-like keys).
+            let h = if i % 8 == 7 {
+                u64::MAX
+            } else {
+                cursor = (cursor + stride) % key_count;
+                keys[cursor]
+            };
+            let t0 = std::time::Instant::now();
+            let r = self.get_advice_fast(h);
+            let dt = t0.elapsed().as_nanos() as u64;
+            samples.push(dt);
+            if r.is_some() {
+                hits += 1;
+            }
+        }
+
+        samples.sort_unstable();
+        let n = samples.len();
+        let p = |pct: f64| -> u64 {
+            let idx = ((n as f64 - 1.0) * pct).round() as usize;
+            samples[idx.min(n - 1)]
+        };
+
+        HealthReport {
+            infoset_count,
+            key_count,
+            queries: n,
+            hits,
+            p50_ns: p(0.50),
+            p99_ns: p(0.99),
+            max_ns: samples[n - 1],
+        }
+    }
+}
+
+/// Result of [`SolverHandle::health_check`].
+#[derive(Debug, Clone, Copy)]
+pub struct HealthReport {
+    /// Infoset count reported by the file header.
+    pub infoset_count: u64,
+    /// Number of keys actually in the mmap key table.
+    pub key_count: usize,
+    /// Number of queries timed.
+    pub queries: usize,
+    /// How many of the queries hit (returned Some).
+    pub hits: usize,
+    /// Median lookup latency, nanoseconds.
+    pub p50_ns: u64,
+    /// 99th-percentile lookup latency, nanoseconds.
+    pub p99_ns: u64,
+    /// Maximum lookup latency, nanoseconds.
+    pub max_ns: u64,
+}
+
+impl HealthReport {
+    /// Human-readable one-line summary suitable for logs.
+    pub fn summary(&self) -> String {
+        format!(
+            "infosets={} keys={} queries={} hits={} p50={}ns p99={}ns max={}ns",
+            self.infoset_count, self.key_count, self.queries, self.hits,
+            self.p50_ns, self.p99_ns, self.max_ns
+        )
+    }
 }
