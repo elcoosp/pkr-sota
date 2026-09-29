@@ -1,10 +1,40 @@
 # Runtime tracker integration — design
 
 **Date:** 2026-09-28
-**Status:** Proposed, not started.
-**Blocked by:** there is no runtime bot binary yet. Only `pkr-trainer`
-exists, which never plays a game — it trains a blueprint and evaluates
-it. Integration becomes actionable when a bot consumer lands.
+**Status:** SHIPPED 2026-09-29 — `RuntimeSession` in
+`crates/pkr-runtime/src/session.rs` (re-exported at crate root).
+Still blocked on a bot consumer binary; `pkr-trainer` does not play
+games.
+
+## What shipped (2026-09-29)
+
+    use pkr_runtime::RuntimeSession;
+
+    let mut session = RuntimeSession::new(handle, our_seat, abs, tbl, ev);
+    session.deal_start(root);
+    session.observe_action(action);
+    session.observe_street(&cards);
+    let strat = session.advise_or_blueprint(&state, &hole, hash);
+
+Three tests, all passing:
+- `session_smoke.rs::session_owns_tracker_and_updates`
+- `session_smoke.rs::session_deal_start_resets_tracker`
+- `session_smoke.rs::advise_or_blueprint_always_returns_a_strategy`
+- plus `advise_or_blueprint` vs `blueprint_strategy` divergence
+  (proves the subgame path actually fires).
+
+Runnable example: `crates/pkr-runtime/examples/bot_loop.rs` —
+`cargo run --release -p pkr-runtime --example bot_loop`.
+
+The `advise_or_blueprint` variant guarantees a normalized strategy on
+every call: subgame if the street is enabled and it is our turn,
+blueprint average otherwise, uniform as a final fallback. `advise`
+(no fallback) returns `None` in the fallback cases, for callers who
+want to handle them explicitly.
+
+The section below is kept as the original design for reference. The
+shipped API matches it in shape (borrow-based, no `Arc`-in-tracker
+refactor).
 
 ## The gap
 
