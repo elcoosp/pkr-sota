@@ -383,7 +383,35 @@ cards (~44), inflating the tree by that factor. The 4.4x measured is
 much smaller than 44x because the solve is parallel across deals and
 the tree depth adds only one level.
 
-A 5000-deal turn-50 run is ~23 min on 8 cores. Running.
+A 5000-deal turn-50 run is ~23 min on 8 cores.
+
+### Turn-50 definitive result
+
+    5000 deals, seed 42, PKR_SUBGAME_ITERS=50, PKR_GP_TURN=1:
+    diff (subgame - blueprint): -0.16 chips/deal (SE 0.72, t=-0.22)
+    diverged: 3858/5000
+
+**Turn contributes nothing at 50 inner iterations.** The effect is
+indistinguishable from zero. Compare:
+
+| config | iters | diff | t |
+|---|---|---|---|
+| river only | 10 | +1.43 | 2.44 |
+| river+turn | 10 | -0.67 | -0.91 |
+| river+turn | 50 | -0.16 | -0.22 |
+
+More iterations brought the turn-10 penalty to zero, but no further.
+This is consistent with the turn tree being large (4.4x per-deal wall
+time at 50 iters vs river) and the solve not having a good local
+target — the river subgame at least has a converged equilibrium that
+differs from the blueprint's, whereas the turn subgame's margin is
+either genuinely small or dominated by abstraction error carried from
+the flop.
+
+**Decision: ship river-only.** Turn needs a different design (probably
+subgame decomposition rooted at a specifically-chosen turn subgame,
+not "solve at every turn decision"). That's out of scope for this
+session.
 
 ### Runtime-level turn verification
 
