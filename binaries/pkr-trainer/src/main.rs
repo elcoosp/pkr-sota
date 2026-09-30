@@ -165,6 +165,15 @@ struct Cli {
     #[arg(long, default_value_t = 3.0)]
     promote_gate: f64,
 
+    /// Require the improvement over the previous best to be at least
+    /// this many standard errors to promote. 0 = off. With the default
+    /// 2.0, a reading that beats the best by less than 2σ is rejected
+    /// as indistinguishable from noise even if it clears `--promote-gate`
+    /// in raw mbb. Applies only when a previous best exists; the first
+    /// eval always promotes.
+    #[arg(long, default_value_t = 2.0)]
+    promote_min_sigma: f64,
+
     /// Stop training after this many consecutive evaluations fail to
     /// produce a new historical minimum. 0 = off (run to completion).
     ///
@@ -781,26 +790,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // keep `promote_gate` as a *significance* margin that the
                 // improvement must clear.
                 let min_improvement = cli.promote_gate.max(0.0);
+                let min_sigma = cli.promote_min_sigma.max(0.0);
                 let rejected = match best_expl_mbb {
-                    Some(b) => br.exploitability_mbb >= b - min_improvement,
+                    Some(b) => {
+                        let gate_reject = br.exploitability_mbb >= b - min_improvement;
+                        // E3 (P3): a win smaller than 2σ of the BR estimate
+                        // is indistinguishable from sampling noise. Refuse
+                        // to promote on it even if it clears the raw-mbb
+                        // gate. Only applies when a best exists; the first
+                        // eval always promotes.
+                        let improvement = b - br.exploitability_mbb;
+                        let sigma_needed = min_sigma * br.expl_std_err_mbb;
+                        let sigma_reject = min_sigma > 0.0 && improvement < sigma_needed;
+                        gate_reject || sigma_reject
+                    }
                     None => false,
                 };
                 if rejected {
+                    let improvement = best_expl_mbb
+                        .map(|b| b - br.exploitability_mbb)
+                        .unwrap_or(0.0);
+                    let sigma_needed = min_sigma * br.expl_std_err_mbb;
+                    let reason = if min_sigma > 0.0 && improvement < sigma_needed {
+                        "improvement below sigma threshold"
+                    } else {
+                        "no new minimum"
+                    };
                     if cli.log_json {
                         json_progress(&[
                             ("event", serde_json::json!("skip_promote")),
                             ("iter", serde_json::json!(done)),
                             ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
+                            ("expl_std_err_mbb", serde_json::json!(br.expl_std_err_mbb)),
                             ("best_expl_mbb", serde_json::json!(best_expl_mbb.unwrap_or(0.0))),
-                            ("need_below", serde_json::json!(best_expl_mbb.map(|b| b - min_improvement).unwrap_or(0.0))),
+                            ("improvement_mbb", serde_json::json!(improvement)),
+                            ("sigma_needed_mbb", serde_json::json!(sigma_needed)),
+                            ("reason", serde_json::json!(reason)),
                         ]);
                     } else {
                         eprintln!(
-                            "SKIP-PROMOTE iter={} expl_mbb={:.2} not a new minimum (best {:.2}, need < {:.2})",
+                            "SKIP-PROMOTE iter={} expl_mbb={:.2} ({}) (best {:.2}, need < {:.2}; improvement {:.2} vs sigma_needed {:.2})",
                             done,
                             br.exploitability_mbb,
+                            reason,
                             best_expl_mbb.unwrap_or(0.0),
                             best_expl_mbb.map(|b| b - min_improvement).unwrap_or(0.0),
+                            improvement,
+                            sigma_needed,
                         );
                     }
                     consecutive_non_minimum = consecutive_non_minimum.saturating_add(1);
