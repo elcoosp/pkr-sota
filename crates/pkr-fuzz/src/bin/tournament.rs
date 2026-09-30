@@ -102,7 +102,12 @@ fn main() {
     println!("  diff (A - B):                {:+.4} chips/deal", r.mean_diff);
     println!("  SE:                          {:.4}", r.se_diff);
     println!("  t:                           {:+.2}", r.t);
-    if r.t.abs() < 2.0 {
+    // A vs A gives mean_diff = 0 and se_diff = 0; that's the correct
+    // degenerate answer, not a "run more hands" situation.
+    if r.mean_diff == 0.0 && r.se_diff == 0.0 {
+        println!();
+        println!("  note: identical inputs, so the diff is exactly zero.");
+    } else if r.t.abs() < 2.0 {
         println!();
         println!("  note: |t| < 2. This comparison is not statistically");
         println!("        significant at the 95% level. Run more hands.");
