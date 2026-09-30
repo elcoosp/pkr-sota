@@ -89,6 +89,19 @@ pub struct TrainConfig {
     pub strict_bets: bool,
     /// Skip-forced-nodes optimization (dev-only). Production ignores it.
     pub skip_forced: bool,
+    /// F5: which nodes accumulate the average strategy.
+    ///
+    /// `true` (default) = the traverser's own nodes, weighted by
+    /// `strategy · own_reach · t^p` (the historical scheme).
+    ///
+    /// `false` = the opponent's nodes, weighted by `strategy · t^p`
+    /// only. That's the standard external-sampling averaging site: at
+    /// opponent nodes the visit frequency already encodes the
+    /// opponent's reach, so no reach factor is needed.
+    ///
+    /// Gated because it changes the convergence path; test on Kuhn or
+    /// Leduc before enabling for NLHE. See docs/experiments/f5-grid.md.
+    pub avg_at_traverser: bool,
 }
 
 impl Default for TrainConfig {
@@ -106,6 +119,7 @@ impl Default for TrainConfig {
             sequential: true,
             strict_bets: false,
             skip_forced: false,
+            avg_at_traverser: true,
         }
     }
 }
@@ -140,6 +154,7 @@ impl TrainConfig {
             sequential: env_bool("PKR_F5_SEQUENTIAL", d.sequential),
             strict_bets: env_bool("PKR_STRICT_BETS", d.strict_bets),
             skip_forced: env_bool("PKR_SKIP_FORCED", d.skip_forced),
+            avg_at_traverser: env_bool("PKR_AVG_AT_TRAVERSER", d.avg_at_traverser),
         }
     }
 }

@@ -308,7 +308,25 @@ pub fn update_regret_with_step(
     } else {
         (current_i64 as f64 * step.w_neg) as i64
     };
-    let new_r = discounted.saturating_add(predicted_i64).max(0);
+    let summed = discounted.saturating_add(predicted_i64);
+    // F5 (audit): flooring every regret at zero biases sampled regrets
+    // upward and makes DCFR's beta=0 discount dead code — the docstring
+    // even says negatives should decay, but the floor erases them first.
+    //
+    // `TrainConfig::neg_floor`:
+    //   true  (default) — RM+ style: floor at 0 (current behavior).
+    //   false           — allow negatives to persist, clamped to a
+    //                     large negative bound so nothing overflows.
+    //                     Regret matching ignores negatives via
+    //                     `raw > 0` in `regret_match_into`, so the
+    //                     argmax is unchanged.
+    let cfg = crate::config::TrainConfig::global();
+    let new_r = if cfg.neg_floor {
+        summed.max(0)
+    } else {
+        // -R_MAX (see table.rs) so no downstream multiply overflows.
+        summed.max(-(1i64 << 62))
+    };
     (new_r, predicted_i64)
 }
 

@@ -344,17 +344,56 @@ pub fn traverse(
         }
     }
 
-    if let Some(idx) = traverser_idx {
-        let w_avg = avg_weight(global_iteration);
-        for a in 0..K {
-            if strategy[a] <= 0.0 {
-                continue;
+    // F5: which node accumulates the average strategy.
+    //
+    // Historical (avg_at_traverser = true): at the traverser's own
+    // node, weight by `strategy · own_reach · t^p`. `reach_prob` at a
+    // traverser node is the *opponent's* reach (the traverser's own
+    // reach is the counterfactual constant).
+    //
+    // Standard external-sampling (avg_at_traverser = false): at the
+    // opponent node, weight by `strategy · t^p` only, because the
+    // opponent's visit frequency already encodes its reach.
+    //
+    // See docs/experiments/f5-grid.md. Changing this changes the
+    // convergence path; run the grid on Kuhn/Leduc first.
+    let avg_at_traverser = crate::config::TrainConfig::global().avg_at_traverser;
+
+    if avg_at_traverser {
+        if let Some(idx) = traverser_idx {
+            let w_avg = avg_weight(global_iteration);
+            for a in 0..K {
+                if strategy[a] <= 0.0 {
+                    continue;
+                }
+                strategy_batch.push(StrategyOp {
+                    index: idx as u32,
+                    action: a as u8,
+                    prob: strategy[a] * reach_prob * w_avg,
+                });
             }
-            strategy_batch.push(StrategyOp {
-                index: idx as u32,
-                action: a as u8,
-                prob: strategy[a] * reach_prob * w_avg,
-            });
+        }
+    } else {
+        // Opponent-node accumulation. `traverser_idx` is None here,
+        // so we need to create an index for the opponent's infoset.
+        if acting_player != traverser {
+            let mut opp_strategy = [0.0f32; K];
+            let opp_idx = table.get_strategy_and_idx(
+                infoset_hash,
+                &mut opp_strategy,
+                metrics,
+            );
+            let w_avg = avg_weight(global_iteration);
+            for a in 0..K {
+                if strategy[a] <= 0.0 {
+                    continue;
+                }
+                strategy_batch.push(StrategyOp {
+                    index: opp_idx as u32,
+                    action: a as u8,
+                    prob: strategy[a] * w_avg,
+                });
+            }
         }
     }
 
