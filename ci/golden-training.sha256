@@ -1,6 +1,6 @@
 # Auto-generated. Regenerate with:
 #   GOLDEN_UPDATE=1 bash ci/scripts/golden-training.sh
 # Context: 100000 iterations, seed 42, 200 eval deals.
-a53c24ee15ab02a98aa140b236608e03cc5033252b1b9704d07886f2a25c401d  blueprint.bin
-8e6748906ac9b4f8e0012f000f54772354780bb18459c9d96fcdfab01b11d8f5  train.ckpt
-8ebfc203e1304078934a83b02cff29a23019cef2b1be4619d51a8af723955f6d  exploitability.csv
+209065e8624ba60da7ad5d167549dd0071e29a66af8782450b32d52e552bbd5f  blueprint.bin
+77ccf7715524b180dacc98879c3a6f6cfd415e76adb628a533e68b4ac212a876  train.ckpt
+be34f581e935b4d491be26f1e22630e788e4ebdca83976615697afc896b7456e  exploitability.csv
