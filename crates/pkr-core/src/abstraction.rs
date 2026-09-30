@@ -236,7 +236,19 @@ pub struct AbstractionFingerprint {
     /// post-F6 binary produces a fingerprint mismatch — as it must,
     /// because the abstract game changed.
     pub action_legal_v: u8,
-    pub _pad: [u8; 4],
+    /// F4: centroid feature-space version. 0 = legacy (EHS, EHS²)
+    /// centroids, the current tables. 1 = (mean, potential) from
+    /// `pkr_abstraction::potential::ehs_and_potential`. Every existing
+    /// checkpoint is 0; the F4 rebuild will write 1.
+    ///
+    /// This exists so a checkpoint trained on one feature space
+    /// refuses to load against tables built for the other. Before the
+    /// audit there was no such guard: the fingerprint recorded `k` but
+    /// not what the centroids meant, so a hand-fit on one feature set
+    /// could be loaded against tables from another and silently
+    /// produce nonsense infosets.
+    pub centroid_feature_v: u8,
+    pub _pad: [u8; 3],
 }
 
 impl AbstractionFingerprint {
@@ -271,7 +283,8 @@ impl AbstractionFingerprint {
             hash_algo: pkr_contracts::HASH_ALGO_FNV1A64_INFOSET,
             river_tier_shift: RIVER_TIER_SHIFT,
             action_legal_v: 1,
-            _pad: [0; 4],
+            centroid_feature_v: 0,
+            _pad: [0; 3],
         }
     }
 
@@ -292,6 +305,14 @@ impl AbstractionFingerprint {
                  pot-fraction raises are clamped to the min-raise-to; retrain or \
                  use --fresh)",
                 self.action_legal_v, expected.action_legal_v,
+            );
+        }
+        if self.centroid_feature_v != expected.centroid_feature_v {
+            return format!(
+                "centroid_feature_v mismatch: stored={} current={} (the centroid \
+                 feature space changed — 0 = legacy (EHS, EHS²), 1 = (mean, \
+                 potential). Retrain or use --fresh against the matching tables.)",
+                self.centroid_feature_v, expected.centroid_feature_v,
             );
         }
         let mut diffs = Vec::new();
