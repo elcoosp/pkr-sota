@@ -1628,3 +1628,64 @@ mod audit_regression_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod f7_allocation_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// F7: the lazy-zero helpers return a vec of the requested length,
+    /// initialized to zero, and are safely writable through the atomic
+    /// API. If the type-pun from i64 to AtomicI64 is ever wrong (size,
+    /// alignment, representation), this is where it would blow up.
+    #[test]
+    fn zeroed_atomic_i64_shape_and_write() {
+        let v = zeroed_atomic_i64(1024);
+        assert_eq!(v.len(), 1024);
+        assert_eq!(v.capacity(), 1024);
+        // All zero to start.
+        for x in v.iter() {
+            assert_eq!(x.load(Ordering::Relaxed), 0);
+        }
+        // Writable through the atomic API.
+        v[0].store(42, Ordering::Relaxed);
+        v[1023].store(-7, Ordering::Relaxed);
+        assert_eq!(v[0].load(Ordering::Relaxed), 42);
+        assert_eq!(v[1023].load(Ordering::Relaxed), -7);
+    }
+
+    #[test]
+    fn zeroed_atomic_u64_shape_and_write() {
+        let v = zeroed_atomic_u64(512);
+        assert_eq!(v.len(), 512);
+        assert_eq!(v.capacity(), 512);
+        for x in v.iter() {
+            assert_eq!(x.load(Ordering::Relaxed), 0);
+        }
+        v[0].store(1 << 63, Ordering::Relaxed);
+        assert_eq!(v[0].load(Ordering::Relaxed), 1 << 63);
+    }
+
+    /// Zero-length allocation must not panic and must return an empty
+    /// vec. `Vec::from_raw_parts` with len 0 is fine even if capacity
+    /// is also 0 (which is what vec![0i64; 0] gives).
+    #[test]
+    fn zero_length_is_safe() {
+        let v_i = zeroed_atomic_i64(0);
+        assert_eq!(v_i.len(), 0);
+        let v_u = zeroed_atomic_u64(0);
+        assert_eq!(v_u.len(), 0);
+    }
+
+    /// A freshly constructed table with a large capacity must not be
+    /// resident in full. We can't assert RSS from inside the test, but
+    /// we can assert the allocation succeeds (would fail at capacity
+    /// * 12 * 8 = 8.6 GB on a 16 GB machine if it eagerly touched all
+    /// pages).
+    #[test]
+    #[ignore]
+    fn large_capacity_constructs() {
+        let t = CompactRegretTable::with_capacity(60_000_000);
+        assert_eq!(t.capacity(), 60_000_000);
+    }
+}
