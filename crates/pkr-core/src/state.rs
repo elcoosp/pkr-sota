@@ -2003,3 +2003,94 @@ mod f3_size_aware_tests {
         assert_eq!(s.street_start_pot, 3.0, "undo restores preflop start");
     }
 }
+
+#[cfg(test)]
+mod f6_legal_action_tests {
+    //! Regression guards for the F6 fix. Before F6, the raise cap
+    //! disabled every Bet after three raises (including the jam), and
+    //! pot-fraction raises could fall below the true NLHE min-raise-to.
+    //! These tests pin the new contract.
+
+    use super::*;
+
+    /// The jam is always legal while the opponent can respond, even
+    /// after the pot-fraction raise cap has fired.
+    #[test]
+    fn jam_is_always_legal_even_after_raise_cap() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // Preflop SB calls, BB raises, SB re-raises, BB re-raises,
+        // SB re-raises (that's 3 raises from the cap's perspective).
+        // Then BB should still see the jam as an option.
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(14.0) });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(30.0) });
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(62.0) });
+
+        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        let bets: Vec<f32> = buf[..n]
+            .iter()
+            .filter_map(|a| match a.kind {
+                ActionKind::Bet(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        assert!(!bets.is_empty(), "raise cap must leave at least the jam");
+        let all_in = s.stacks[s.actor] + s.street_bets[s.actor];
+        for b in &bets {
+            assert!(
+                (*b - all_in).abs() < 1e-3,
+                "post-cap Bet {b} is not the jam (all-in {all_in}); bets={bets:?}"
+            );
+        }
+    }
+
+    /// Facing the forced BB preflop, the smallest offered raise must
+    /// be at least 2x the BB. Before F6, `opp_bet + pot * 0.5` could
+    /// produce a smaller number, which real engines reject.
+    #[test]
+    fn facing_bb_min_raise_clears_legal_floor() {
+        let s = GameState::new(200.0, 1.0, 2.0);
+        // actor = 0 (SB) facing BB street_bet 2.0. pot = 3.0.
+        // Pre-F6 the smallest offered raise would be
+        //   2.0 + 3.0 * 0.5 = 3.5, which is below the legal min of 4.0.
+        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        let bb = s.street_bets[1];
+        let legal_min = 2.0 * bb;
+        for a in buf[..n].iter() {
+            if let ActionKind::Bet(v) = a.kind {
+                assert!(
+                    v >= legal_min - 1e-3,
+                    "offered raise {v} is below legal min-raise-to {legal_min}"
+                );
+            }
+        }
+    }
+
+    /// Facing a raise where our previous bet was already on the street,
+    /// the min-raise-to is `opp_bet + last_raise_delta`, which for
+    /// preflop SB facing BB after a limp is still 2*BB. After an
+    /// actual raise, the min is 2*opp_bet - our_bet.
+    #[test]
+    fn facing_raise_min_raise_clears_legal_floor() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // SB calls (2 total), BB raises to 6, actor = 0.
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+        // opp_bet = 6, our_bet = 2, raises_this_street = 1.
+        // Legal min-raise-to = 6 + (6 - 2) = 10.
+        let legal_min = 2.0 * s.street_bets[1] - s.street_bets[0];
+        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        for a in buf[..n].iter() {
+            if let ActionKind::Bet(v) = a.kind {
+                assert!(
+                    v >= legal_min - 1e-3,
+                    "offered raise {v} is below legal min-raise-to {legal_min}"
+                );
+            }
+        }
+    }
+}
