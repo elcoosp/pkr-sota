@@ -330,3 +330,52 @@ mod atomic_write_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod f8_purify_tests {
+    use super::*;
+
+    /// Threshold 0 is a no-op.
+    #[test]
+    fn zero_threshold_is_identity() {
+        let mut s = [0.1f32, 0.2, 0.05, 0.15, 0.4, 0.1];
+        let orig = s;
+        purify(&mut s, 0.0);
+        assert_eq!(s, orig);
+    }
+
+    /// Below-threshold entries are zeroed and the rest renormalize to 1.
+    #[test]
+    fn below_threshold_zeroed_and_renormalized() {
+        let mut s = [0.01f32, 0.49, 0.01, 0.49, 0.0, 0.0];
+        purify(&mut s, 0.05);
+        assert_eq!(s[0], 0.0);
+        assert_eq!(s[2], 0.0);
+        // Remaining mass was 0.98, renormalized: 0.49/0.98 = 0.5 each.
+        assert!((s[1] - 0.5).abs() < 1e-6);
+        assert!((s[3] - 0.5).abs() < 1e-6);
+        let total: f32 = s.iter().sum();
+        assert!((total - 1.0).abs() < 1e-6);
+    }
+
+    /// A two-action infoset is left alone even with tiny mass, so the
+    /// function can't accidentally turn a 45/55 into a pure strategy.
+    #[test]
+    fn two_live_actions_are_protected() {
+        let mut s = [0.02f32, 0.98, 0.0, 0.0, 0.0, 0.0];
+        purify(&mut s, 0.1);
+        assert_eq!(s[0], 0.02);
+        assert_eq!(s[1], 0.98);
+    }
+
+    /// All-action infoset: threshold removes the smallest two.
+    #[test]
+    fn many_live_actions_pruned() {
+        let mut s = [0.05f32, 0.5, 0.02, 0.4, 0.01, 0.02];
+        purify(&mut s, 0.03);
+        assert_eq!(s[2], 0.0);
+        assert_eq!(s[4], 0.0);
+        let total: f32 = s.iter().sum();
+        assert!((total - 1.0).abs() < 1e-6);
+    }
+}
