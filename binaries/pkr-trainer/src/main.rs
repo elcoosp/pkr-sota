@@ -1032,6 +1032,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "PKR_SKIP_FORCED":      tc.skip_forced,
         "PKR_RM_PLUS":          tc.neg_floor,
         "PKR_F5_SEQUENTIAL":    tc.sequential,
+        "PKR_AVG_AT_TRAVERSER": tc.avg_at_traverser,
     });
 
     if let Some(path) = &cli.stats_json {
