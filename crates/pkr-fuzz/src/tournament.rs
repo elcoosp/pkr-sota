@@ -41,17 +41,19 @@ use rand::{RngExt, SeedableRng};
 pub struct TournamentResult {
     pub hands: u32,
     pub seed: u64,
-    /// Mean chips/deal to A when A is hero in seat 0.
-    pub mean_a_hero: f64,
-    /// Mean chips/deal to A when A is hero in seat 1 (i.e. B was in
-    /// seat 0). This is measured from A's perspective.
-    pub mean_a_villain: f64,
-    /// Headline: mean chip profit to A over B, averaged across both
-    /// seat assignments. Positive = A wins chips on average.
+    /// Mean chips/deal to whoever is in seat 0 when A is in seat 0.
+    /// Equivalently, A's mean chip profit from the SB position.
+    pub mean_a_seat0: f64,
+    /// Mean chips/deal to whoever is in seat 0 when B is in seat 0.
+    /// Equivalently, B's mean chip profit from the SB position.
+    pub mean_b_seat0: f64,
+    /// Headline: mean(A's seat-0 profit - B's seat-0 profit). Both
+    /// passes are measured from the SAME seat's perspective, which
+    /// cancels runout variance and is exactly zero when A == B.
     pub mean_diff: f64,
     /// Standard error of `mean_diff` on the per-hand paired differences.
     pub se_diff: f64,
-    /// t-statistic = mean_diff / se_diff. Sign matches mean_diff.
+    /// t-statistic = mean_diff / se_diff.
     pub t: f64,
 }
 
@@ -274,32 +276,31 @@ pub fn tournament(
     base_seed: u64,
 ) -> TournamentResult {
     let mut diffs: Vec<f64> = Vec::with_capacity(hands as usize);
-    let mut sum_a_hero = 0.0f64;
-    let mut sum_a_villain = 0.0f64;
+    let mut sum_a_seat0 = 0.0f64;
+    let mut sum_b_seat0 = 0.0f64;
 
     for i in 0..hands as u64 {
         let seed = base_seed.wrapping_add(i);
         let (h0, h1, runout) = deal_hand(seed);
 
-        // Pass 1: A in seat 0, B in seat 1.
-        let a_hero = play_one(a, b, abstraction, evaluator, h0, h1, &runout, 0, seed);
+        // Pass 1: A in seat 0, B in seat 1. Measured as seat-0 profit.
+        let a_at_seat0 = play_one(a, b, abstraction, evaluator, h0, h1, &runout, 0, seed);
 
-        // Pass 2: A in seat 1, B in seat 0.
-        let b_hero = play_one(b, a, abstraction, evaluator, h0, h1, &runout, 0, seed);
+        // Pass 2: B in seat 0, A in seat 1. Measured as seat-0 profit.
+        let b_at_seat0 = play_one(b, a, abstraction, evaluator, h0, h1, &runout, 0, seed);
 
-        // Chips to A in each pass.
-        let a_as_seat0 = a_hero as f64;
-        let a_as_seat1 = -b_hero as f64;
-        let diff = a_as_seat0 - a_as_seat1;
+        // Same-seat paired diff: how much more does A win from the
+        // SB than B does from the SB, on the same deal?
+        let diff = a_at_seat0 as f64 - b_at_seat0 as f64;
 
-        sum_a_hero += a_as_seat0;
-        sum_a_villain += a_as_seat1;
+        sum_a_seat0 += a_at_seat0 as f64;
+        sum_b_seat0 += b_at_seat0 as f64;
         diffs.push(diff);
     }
 
     let n = diffs.len().max(1) as f64;
-    let mean_a_hero = sum_a_hero / n;
-    let mean_a_villain = sum_a_villain / n;
+    let mean_a_seat0 = sum_a_seat0 / n;
+    let mean_b_seat0 = sum_b_seat0 / n;
     let mean_diff = diffs.iter().sum::<f64>() / n;
     let var = if diffs.len() > 1 {
         diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / (n - 1.0)
@@ -312,8 +313,8 @@ pub fn tournament(
     TournamentResult {
         hands,
         seed: base_seed,
-        mean_a_hero,
-        mean_a_villain,
+        mean_a_seat0,
+        mean_b_seat0,
         mean_diff,
         se_diff,
         t,
