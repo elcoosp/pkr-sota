@@ -74,3 +74,53 @@ Both changes affect convergence, not correctness. A wrong choice can
 make training slower to converge without making it wrong. Testing
 them cheaply on Kuhn/Leduc costs minutes; testing them on NLHE costs
 hours. Do the cheap test first.
+
+---
+
+## Kuhn result (2026-09-30)
+
+First grid run. `crates/pkr-testgames/src/kuhn.rs`,
+`f5_grid_tests::kuhn_floor_grid`.
+
+| iters | neg_floor=true (RM+) | neg_floor=false (DCFR beta) |
+|---|---|---|
+| 1e5 | 0.000398 | 0.000338 |
+| 1e6 | **0.000199** | 0.000323 |
+
+**Verdict on Kuhn: the RM+ floor helps.** At 1e6 iterations,
+`neg_floor=true` converges to 0.000199 exploitability while
+`neg_floor=false` stalls at 0.000323. The RM+ floor isn't the
+convergence-inhibitor the F5 hypothesis suggested.
+
+### What this means
+
+The audit's F5 hypothesis was: "flooring high-variance sampled
+regrets biases them upward, which would explain the exploitability
+rise after ~30M on NLHE." Kuhn is too small to exhibit that pattern;
+almost any update rule converges.
+
+But the direction is *against* the hypothesis. Flipping the floor off
+made convergence worse on Kuhn, not better. If the same pattern holds
+on NLHE, the F5 flags should stay at their current defaults
+(`neg_floor=true`, `avg_at_traverser=true`).
+
+### What still needs testing
+
+- **Leduc.** Larger than Kuhn, still cheap. If the RM+ advantage
+  persists there, F5 is effectively closed for the floor dimension.
+- **NLHE at 30M+.** The place where the original symptom appeared.
+  That's what the flags are actually for. But F1's fix may have
+  already removed the symptom — the divergence the audit attributed
+  to sampling could have been the estimator bug.
+
+### Recommendation
+
+Given the Kuhn result, keep `neg_floor=true` as the default. Do not
+flip it for the next training run. If v42 completes and its
+exploitability curve is clean (no rise after ~20M), F5's floor
+dimension is settled.
+
+The `avg_at_traverser` flag has not been tested yet. That's the other
+half of F5 and the one whose theory is on stronger ground (the
+current scheme adds a reach factor that standard external-sampling
+averaging omits).

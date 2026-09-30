@@ -565,3 +565,69 @@ mod t03_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod f5_grid_tests {
+    //! F5 grid: run the Kuhn CFR harness under a few combinations of
+    //! the update-rule flags and report the convergence.
+    //!
+    //! The full 24-config grid is documented in
+    //! `docs/experiments/f5-grid.md`. This test runs the two configs
+    //! that matter most:
+    //!
+    //!   baseline: neg_floor=true, momentum off, avg_power=2
+    //!   variant:  neg_floor=false, momentum off, avg_power=2
+    //!
+    //! and prints the exploitability at 1e5 and 1e6 iterations for each.
+    //!
+    //! Marked `#[ignore]` because it takes ~30s (Kuhn is fast but the
+    //! full iteration count is high). Run manually:
+    //!
+    //!   cargo test --release -p pkr-testgames --lib \
+    //!       f5_grid_tests -- --ignored --nocapture
+
+    use super::*;
+
+    fn run_kuhn(iters: u32) -> (f32, u32) {
+        let mut cfr = KuhnCfr::new_full(DiscountMode::PRODUCTION, MomentumMode::Off);
+        for _ in 0..iters {
+            cfr.iterate();
+        }
+        (cfr.exploitability(), iters)
+    }
+
+    #[test]
+    #[ignore]
+    fn kuhn_floor_grid() {
+        // Reads whatever `TrainConfig` resolved at process start.
+        // To A/B the two floor modes, run this test twice:
+        //
+        //   cargo test --release -p pkr-testgames --lib \
+        //       kuhn_floor_grid -- --ignored --nocapture
+        //   PKR_RM_PLUS=0 cargo test --release -p pkr-testgames --lib \
+        //       kuhn_floor_grid -- --ignored --nocapture
+        //
+        // `TrainConfig` is a per-process singleton, so a single run
+        // cannot test both. The test prints whichever mode it saw so
+        // the output is unambiguous.
+        let mode = if std::env::var("PKR_RM_PLUS").as_deref() == Ok("0") {
+            "neg_floor=false (DCFR beta)"
+        } else {
+            "neg_floor=true (RM+)"
+        };
+        let (e5, _) = run_kuhn(100_000);
+        let (e6, _) = run_kuhn(1_000_000);
+
+        println!();
+        println!("=== F5 Kuhn grid: {mode} ===");
+        println!("    1e5 iters: expl = {:.6}", e5);
+        println!("    1e6 iters: expl = {:.6}", e6);
+
+        // Both modes should converge. Kuhn's exact Nash is
+        // -1/18, exploitability of the converged strategy tends to 0.
+        assert!(
+            e6 < 1e-2,
+            "Kuhn should converge below 1e-2, got {e6}"
+        );
+    }
+}
