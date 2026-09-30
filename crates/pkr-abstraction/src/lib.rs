@@ -438,6 +438,13 @@ impl KMeansAbstraction {
         }
     }
 
+    /// Number of centroids on the default (preflop) table. Used by the
+    /// evaluator to build the right `AbstractionFingerprint` before
+    /// loading a checkpoint, without re-reading the centroids file.
+    pub fn k(&self) -> usize {
+        self.default_centroids.len()
+    }
+
     pub fn from_store(store: CentroidStore, evaluator: Arc<dyn Evaluator>) -> Self {
         Self::new(store.centroids, evaluator)
     }
