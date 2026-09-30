@@ -360,7 +360,7 @@ mod tests {
             dir.join("centroids.bin").to_str().unwrap(),
         )
         .expect("smoke centroids");
-        let mut abs = pkr_abstraction::KMeansAbstraction::from_store(
+        let abs = pkr_abstraction::KMeansAbstraction::from_store(
             store,
             std::sync::Arc::new(pkr_eval::NlheEvaluator),
         );
