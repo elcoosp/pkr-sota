@@ -183,6 +183,33 @@ mod tests {
         std::env::remove_var("PKR_EXPLORE_EPSILON");
     }
 
+    /// F2 regression guard.
+    ///
+    /// The audit found the code defaults did not match the experiment
+    /// scripts: momentum was ON, avg_power was 0, eps was 0.05. Runs
+    /// launched with `./run.sh` therefore produced different behavior
+    /// than the published A/Bs.
+    ///
+    /// This test pins the defaults so a future change to `Default`
+    /// cannot silently revert them. If a default changes on purpose,
+    /// update this test *and* note the change in `docs/experiments/`.
+    #[test]
+    fn experiment_defaults_are_stable() {
+        let d = TrainConfig::default();
+        assert!(!d.momentum, "F2: momentum must default OFF");
+        assert_eq!(d.avg_power, 2.0, "F2: avg_power must default to 2.0");
+        assert_eq!(d.explore_epsilon, 0.01, "F2: eps must default to 0.01");
+        assert_eq!(d.dcfr_alpha, 1.5, "F2: dcfr_alpha must default to 1.5");
+        assert!(!d.hs_dcfr, "F2: hs_dcfr must default OFF");
+        assert!(!d.alt_updates, "F2: alt_updates must default OFF");
+        assert!(!d.phase_profile, "F2: phase_profile must default OFF");
+        assert!(d.neg_floor, "F2: neg_floor must default ON");
+        assert!(d.sequential, "F2: sequential must default ON");
+        assert!(d.avg_at_traverser, "F2: avg_at_traverser must default ON");
+        assert!(!d.strict_bets, "F2: strict_bets must default OFF");
+        assert!(!d.skip_forced, "F2: skip_forced must default OFF");
+    }
+
     #[test]
     fn out_of_range_values_are_ignored() {
         std::env::set_var("PKR_EXPLORE_EPSILON", "5.0");
