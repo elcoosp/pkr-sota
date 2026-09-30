@@ -20,45 +20,10 @@
 
 use pkr_abstraction::{load_centroids, KMeansAbstraction};
 use pkr_cfr::table::CompactRegretTable;
-use pkr_contracts::{BlueprintProvider, SotaAdvice};
 use pkr_core::abstraction::AbstractionFingerprint;
+use pkr_fuzz::provider::TableProvider;
 use pkr_fuzz::{run_eval_harness, EvalContext};
 use std::sync::Arc;
-
-/// Wrap a `CompactRegretTable` as a `BlueprintProvider`.
-///
-/// `lookup` reads the average strategy, converts it to a u8 CDF, and
-/// returns it in `SotaAdvice`. This is the same encoding the exporter
-/// uses, so a checkpoint evaluated through this path and a blueprint
-/// evaluated through `SolverHandle` should give the same bb/100.
-struct TableProvider<'a> {
-    table: &'a CompactRegretTable,
-}
-
-impl<'a> BlueprintProvider for TableProvider<'a> {
-    fn lookup(&self, infoset_hash: u64) -> Option<SotaAdvice> {
-        let strat = self.table.get_average_strategy_slice(infoset_hash)?;
-        // Encode as a cumulative CDF over 6 buckets.
-        let total: f32 = strat.iter().sum();
-        let mut out = [0u8; 16];
-        let mut cum = 0.0f32;
-        let mut prev = 0u8;
-        for i in 0..6 {
-            cum += if total > 1e-9 { strat[i] / total } else { 0.0 };
-            let b = (cum * 255.0).round().clamp(0.0, 255.0) as u8;
-            out[i] = b.max(prev);
-            prev = out[i];
-        }
-        // Extend to 16 slots with 255 (the exporter's convention).
-        for i in 6..16 {
-            out[i] = 255;
-        }
-        Some(SotaAdvice {
-            cdf_probabilities: out,
-            len: 6,
-        })
-    }
-}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -128,7 +93,7 @@ fn main() {
     });
     eprintln!("checkpoint loaded: {} keys", table.len());
 
-    let provider = TableProvider { table: &table };
+    let provider = TableProvider::new(&table);
     let ev = pkr_eval::NlheEvaluator;
     let ctx = EvalContext {
         provider: &provider,

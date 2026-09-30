@@ -1511,3 +1511,5 @@ mod e3b_tests {
 }
 
 pub mod tournament;
+
+pub mod provider;
