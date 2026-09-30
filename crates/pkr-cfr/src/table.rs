@@ -223,6 +223,30 @@ fn warn_nonfinite_regret_once(iteration: u32) {
     });
 }
 
+/// F7: allocate `n` lazily-zeroed `AtomicI64`s backed by
+/// `alloc_zeroed`. See the SAFETY note in `with_capacity`.
+fn zeroed_atomic_i64(n: usize) -> Vec<AtomicI64> {
+    // `vec![0i64; n]` uses `alloc_zeroed`. Take ownership of the buffer
+    // without dropping the i64 view, and reinterpret the pointer as
+    // AtomicI64. Same size, same alignment, all-zero is a valid value.
+    let v: Vec<i64> = vec![0i64; n];
+    let mut v = std::mem::ManuallyDrop::new(v);
+    let ptr = v.as_mut_ptr() as *mut AtomicI64;
+    let len = v.len();
+    let cap = v.capacity();
+    unsafe { Vec::from_raw_parts(ptr, len, cap) }
+}
+
+/// F7: same for u64 / AtomicU64.
+fn zeroed_atomic_u64(n: usize) -> Vec<AtomicU64> {
+    let v: Vec<u64> = vec![0u64; n];
+    let mut v = std::mem::ManuallyDrop::new(v);
+    let ptr = v.as_mut_ptr() as *mut AtomicU64;
+    let len = v.len();
+    let cap = v.capacity();
+    unsafe { Vec::from_raw_parts(ptr, len, cap) }
+}
+
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
     /// Interleaved regret+momentum, i32 fixed-point at scale 1000.
@@ -270,10 +294,28 @@ impl CompactRegretTable {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut data: Vec<AtomicI64> = Vec::with_capacity(capacity * RM_STRIDE);
-        data.resize_with(capacity * RM_STRIDE, || AtomicI64::new(0));
-        let mut strategy_sum: Vec<AtomicU64> = Vec::with_capacity(capacity * SUM_STRIDE);
-        strategy_sum.resize_with(capacity * SUM_STRIDE, || AtomicU64::new(0));
+        // F7: allocate lazily-zeroed pages instead of eagerly writing
+        // zeros with resize_with. At `capacity = 60_000_000` the data
+        // array is 60M * 12 * 8 = 5.76 GB and the strategy_sum array is
+        // 60M * 6 * 8 = 2.88 GB. resize_with(_, AtomicI64::new(0))
+        // touches every page up front; `vec![0i64; n]` goes through
+        // `alloc_zeroed`, which on macOS/Linux gives anonymous
+        // demand-zero pages that only materialize when first written.
+        //
+        // At 1.0M infosets reached, that's ~1.4 GB resident instead of
+        // 8.6 GB virtual. RSS was measured at ~700 MB in v36 even with
+        // the eager path (macOS memory compression), but Linux CI does
+        // not compress and the eager path was pushing the 16 GB budget.
+        //
+        // SAFETY: AtomicI64 and AtomicU64 have the same size, alignment,
+        // and validity domain as i64 and u64 (std guarantee: "Atomic
+        // types have the same size and alignment as the corresponding
+        // non-atomic type"). Every bit pattern of i64 is a valid
+        // AtomicI64 in the relaxed sense — the only contract is that
+        // concurrent access must be through the atomic API, which is
+        // exactly what the rest of this file does.
+        let data = zeroed_atomic_i64(capacity * RM_STRIDE);
+        let strategy_sum = zeroed_atomic_u64(capacity * SUM_STRIDE);
         let map = PapayaMap::with_hasher(FoldHasher::default());
         map.pin().reserve(4_000_000.min(capacity));
         Self {
