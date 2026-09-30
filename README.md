@@ -146,28 +146,36 @@ The `pkr-trainer` binary exposes a `clap::Parser` CLI. Verified from `Cli` struc
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--iterations <N>` | `100000` | Total iterations before auto-export. |
+| `--iterations <N>` | `30000000` | Total iterations before auto-export. 30M is the current sweet spot per `docs/experiments/v38-30M-sweetspot.md`. |
 | `--output <path>` | `blueprint.bin` | Blueprint output path. |
 | `--centroids <path>` | `centroids.bin` | Default centroids file (bincode-serialised `CentroidStore`). |
 | `--flop_centroids <path>` | none | Optional per-street centroids. |
 | `--turn_centroids <path>` | none | Optional per-street centroids. |
 | `--river_centroids <path>` | none | Optional per-street centroids. |
-| `--preflop_table <path>` | none | Optional mmap'd preflop abstraction table. |
-| `--flop_table <path>` | none | Optional mmap'd flop abstraction table. |
-| `--turn_table <path>` | none | Optional mmap'd turn abstraction table. |
-| `--river_table <path>` | none | Optional mmap'd river abstraction table. |
-| `--flop_buckets <path>` | none | Optional flop-bucket array (raw `u8`). |
-| `--rank_table <path>` | `hand_ranks.bin` | `TableEvaluator` hand-rank lookup table. |
+| `--preflop-table <path>` | none | Optional mmap'd preflop abstraction table. |
+| `--flop-table <path>` | none | Optional mmap'd flop abstraction table. |
+| `--turn-table <path>` | none | Optional mmap'd turn abstraction table. |
+| `--river-table <path>` | none | Optional mmap'd river abstraction table. |
+| `--flop-buckets <path>` | none | Optional flop-bucket array (raw `u8`). |
+| `--rank-table <path>` | `hand_ranks.bin` | `TableEvaluator` hand-rank lookup table. |
+| `--evaluator <name>` | `table` | `table` (exact) or `fast7` (LUT). |
 | `--threads <N>` | autodetect | Rayon pool size. 32 MiB stack per worker. |
 | `--checkpoint <path>` | none | Enables rolling checkpoint save. |
-| `--checkpoint-every <N>` | `10000` | Iterations between checkpoint writes. |
-| `--capacity <N>` | `5_000_000` | Initial `CompactRegretTable` slot count. |
+| `--checkpoint-every <N>` | `500000` | Iterations between checkpoint writes. |
+| `--capacity <N>` | `60000000` | Initial `CompactRegretTable` slot count. |
 | `--bench-seconds <N>` | `0` (off) | Time-bounded benchmark mode. |
 | `--metrics-csv <path>` | none | Per-interval CSV row. |
 | `--stats-json <path>` | none | End-of-run JSON summary. |
-| `--report-every <N>` | `10000` | Iterations between progress + CSV rows. |
+| `--report-every <N>` | `1000000` | Iterations between progress + CSV rows. |
+| `--iters-per-sync <N>` | `2048` | Iterations per rayon dispatch. |
 | `--eval-every <N>` | `0` (off) | Sampled exploitability check interval. |
 | `--eval-deals <N>` | `2000` | Deals sampled per exploitability check. |
+| `--promote-gate <mbb>` | `3` | Allow a promoted reading to be up to this much worse than the best so far. |
+| `--promote-min-sigma <N>` | `2` | Require an improvement over the best to clear N BR standard errors before promoting (winner's-curse guard). |
+| `--stop-on-plateau <N>` | `0` | Stop after N consecutive evals without a new historical minimum. 0 = off. |
+| `--seed <u64>` | `0x5EED_1F70` | Worker RNG seed. Same seed + same inputs = identical training run. |
+| `--fresh` | off | Ignore any existing checkpoint. |
+| `--log-json` | off | Emit progress and eval lines as one-line JSON on stderr. |
 
 ### Metrics CSV columns
 
@@ -289,7 +297,7 @@ Verified from `CHANGELOG.md` (Unreleased section) and the actual code:
 The following claims appear in the project's existing `README.md` but are **not verifiable from the code in this snapshot** — the relevant source files (`pkr-cfr`, `pkr-export`, `pkr-runtime`, `pkr-eval`, `pkr-core`, `pkr-contracts`, `pkr-testgames`) were not included in the dump. They're listed here so a maintainer can either re-add them once the source is reviewed or update them if they've drifted.
 
 - **Throughput numbers** — `~27,000 it/s` steady state, `15196 / 21159 / 27772 it/s` at iter 5120 / 51200 / 100000, `~2.3 billion iterations/day`. Verifiable by running `./bench.sh` on M1, not by reading code.
-- **CFR variant** — "external-sampling MCCFR with DCFR discounting and PCFR+ momentum." The `pkr-cfr` crate source is not in this snapshot; only `Trainer::run_iterations_parallel(batch)` is callable from `main.rs`.
+- **CFR variant** — external-sampling MCCFR with DCFR discounting. Momentum (PCFR+) defaults OFF as of the F2 audit fix; set `PKR_MOMENTUM=1` to enable. Effective hyperparameters are read once via `pkr_cfr::config::TrainConfig` and recorded in `stats.json` under `env`.
 - **Regret table internals** — `i32 regret + i64 strategy_sum at fixed-point scale 1000`, thread-local idx cache, "16 local iterations then merge + flush" inside the 256-iter batch. The `CompactRegretTable` source is not in this snapshot.
 - **`blueprint.bin` layout** — `FileHeader` (32 bytes: magic, version, variant, count, k, hash_algo), `key_count: u32`, `cdf_size: u32`, `keys: u64 × key_count` (sorted), `cdf: u8 × cdf_size`. The `pkr-export/src/writer.rs` source is not in this snapshot.
 - **Runtime API** — `MmapReader`, `SolverHandle`, `get_advice_fast(hash)`, "O(log n) binary search over sorted key array", "p99 < 1 ms". The `pkr-runtime` source is not in this snapshot (only `SolverHandle::debug_keys()` and the crate-root re-export are mentioned in `CHANGELOG.md`).
