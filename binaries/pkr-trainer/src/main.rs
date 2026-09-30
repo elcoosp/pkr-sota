@@ -1012,24 +1012,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Capture every training-affecting env flag so stats.json is a
     // complete reproduction record. Add a flag here when it starts
-    // affecting the training run.
-    //
-    // Variables with a compile-time default are recorded as their
-    // effective value, not just "set"/"unset".
-    let env_flag = |name: &str, default: &str| -> String {
-        std::env::var(name).unwrap_or_else(|_| default.to_string())
-    };
+    // F2: read the effective hyperparameter config from the single
+    // source of truth. Before this, the trainer built the JSON by
+    // reading env vars with its own defaults, and those defaults
+    // ("momentum=on", "avg_power=2", "eps=0.05") did not match what
+    // the experiment scripts actually set. Now every field reflects
+    // the value `pkr_cfr` is using.
+    let tc = pkr_cfr::config::TrainConfig::global();
     let env_config = serde_json::json!({
-        "PKR_MOMENTUM":          env_flag("PKR_MOMENTUM", "on"),
-        "PKR_AVG_POWER":         env_flag("PKR_AVG_POWER", "2"),
-        "PKR_EXPLORE_EPSILON":   env_flag("PKR_EXPLORE_EPSILON", "0.05"),
-        "PKR_DCFR_ALPHA":        env_flag("PKR_DCFR_ALPHA", "1.5"),
-        "PKR_HS_DCFR":           env_flag("PKR_HS_DCFR", "0"),
-        "PKR_HS_DCFR_TOTAL":     env_flag("PKR_HS_DCFR_TOTAL", ""),
-        "PKR_ALT_UPDATES":       env_flag("PKR_ALT_UPDATES", "0"),
-        "PKR_PHASE_PROFILE":     env_flag("PKR_PHASE_PROFILE", "0"),
-        "PKR_STRICT_BETS":       env_flag("PKR_STRICT_BETS", "0"),
-        "PKR_SKIP_FORCED":       env_flag("PKR_SKIP_FORCED", "0"),
+        "PKR_MOMENTUM":         tc.momentum,
+        "PKR_AVG_POWER":        tc.avg_power,
+        "PKR_EXPLORE_EPSILON":  tc.explore_epsilon,
+        "PKR_DCFR_ALPHA":       tc.dcfr_alpha,
+        "PKR_HS_DCFR":          tc.hs_dcfr,
+        "PKR_HS_DCFR_TOTAL":    tc.hs_dcfr_total,
+        "PKR_ALT_UPDATES":      tc.alt_updates,
+        "PKR_PHASE_PROFILE":    tc.phase_profile,
+        "PKR_STRICT_BETS":      tc.strict_bets,
+        "PKR_SKIP_FORCED":      tc.skip_forced,
+        "PKR_RM_PLUS":          tc.neg_floor,
+        "PKR_F5_SEQUENTIAL":    tc.sequential,
     });
 
     if let Some(path) = &cli.stats_json {

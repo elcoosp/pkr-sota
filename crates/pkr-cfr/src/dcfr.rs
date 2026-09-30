@@ -203,9 +203,7 @@ pub struct DcfrStep {
 /// over the training horizon. See docs/experiments/sota-ab-plan.md.
 #[inline]
 fn hs_dcfr_enabled() -> bool {
-    use std::sync::OnceLock;
-    static E: OnceLock<bool> = OnceLock::new();
-    *E.get_or_init(|| std::env::var("PKR_HS_DCFR").as_deref() == Ok("1"))
+    crate::config::TrainConfig::global().hs_dcfr
 }
 
 /// Schedule for `alpha` at training progress `p in [0, 1]`.
@@ -241,15 +239,7 @@ fn schedule_gamma(p: f64) -> f64 {
 /// `--iterations`). If unset, falls back to 200M.
 #[inline]
 fn hs_progress(iteration: u32) -> f64 {
-    use std::sync::OnceLock;
-    static T: OnceLock<f64> = OnceLock::new();
-    let total = *T.get_or_init(|| {
-        std::env::var("PKR_HS_DCFR_TOTAL")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|&v| v > 0.0)
-            .unwrap_or(200_000_000.0)
-    });
+    let total = crate::config::TrainConfig::global().hs_dcfr_total;
     (iteration as f64 / total).clamp(0.0, 1.0)
 }
 
@@ -259,15 +249,7 @@ fn hs_progress(iteration: u32) -> f64 {
 /// Values outside [0.5, 3.0] are ignored.
 #[inline]
 fn configured_alpha() -> f64 {
-    use std::sync::OnceLock;
-    static A: OnceLock<f64> = OnceLock::new();
-    *A.get_or_init(|| {
-        std::env::var("PKR_DCFR_ALPHA")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|&v| (0.5..=3.0).contains(&v))
-            .unwrap_or(ALPHA as f64)
-    })
+    crate::config::TrainConfig::global().dcfr_alpha
 }
 
 #[inline]

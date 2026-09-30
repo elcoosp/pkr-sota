@@ -36,16 +36,17 @@ pub struct FlushMode {
 }
 
 impl FlushMode {
+    /// Read the effective config from `TrainConfig::global()`.
+    ///
+    /// F2: before this, `PKR_MOMENTUM` was read as a boolean with the
+    /// historical default ON, and `PKR_F5_SEQUENTIAL` defaulted ON.
+    /// Both now come from the shared config, so a run started with a
+    /// clean environment gets the experiment configuration.
     pub fn from_env() -> Self {
-        let off = |n: &str| {
-            matches!(
-                std::env::var(n).as_deref(),
-                Ok("0") | Ok("off") | Ok("false")
-            )
-        };
+        let cfg = crate::config::TrainConfig::global();
         Self {
-            sequential: !off("PKR_F5_SEQUENTIAL"),
-            momentum: !off("PKR_MOMENTUM"),
+            sequential: cfg.sequential,
+            momentum: cfg.momentum,
         }
     }
     pub fn production() -> Self {
@@ -1170,17 +1171,48 @@ mod tests {
                 delta: 0.5,
             },
         ];
-        let (input, unique) = table.flush_cpu_batch(&mut batch);
-        assert_eq!(input, 5);
-        assert_eq!(unique, 2);
-
-        // Sequential per-iteration PCFR+ fold (audit F5) at t=1 (warmup,
-        // discount=1, gamma=1/sqrt(2)): each delta folds with its own
-        // momentum state rather than collapsing to one update.
+        // F2: this test pins the PCFR+ momentum behaviour explicitly
+        // rather than relying on FlushMode::production() (which after
+        // the F2 change defaults to momentum=false, matching the
+        // experiment config). The sequential PCFR+ fold at t=1 (warmup,
+        // discount=1, gamma=1/sqrt(2)) folds each delta with its own
+        // momentum state rather than collapsing to one update:
         //   i1: 100 -> r=71; +300 -> r=304; +400 -> r=655  => 0.655
         //   i2: 200 -> r=141; +500 -> r=536                => 0.536
+        let mode = FlushMode { sequential: true, momentum: true };
+        let (input, unique) = table.flush_cpu_batch_with(&mut batch, mode);
+        assert_eq!(input, 5);
+        assert_eq!(unique, 2);
         assert!((table.get_regret(0xBEEF_0001, 0) - 0.655).abs() < 0.01);
         assert!((table.get_regret(0xBEEF_0002, 2) - 0.536).abs() < 0.01);
+
+        // Control: with momentum OFF (the F2 default), the same batch
+        // folds as plain DCFR. Values differ — that's the point.
+        let table2 = CompactRegretTable::with_capacity(4096);
+        let j1 = table2.get_or_create_idx(0xBEEF_0001);
+        let j2 = table2.get_or_create_idx(0xBEEF_0002);
+        let mut batch2 = vec![
+            BatchItem { index: j1 as u32, action: 0, iteration: 1, delta: 0.1 },
+            BatchItem { index: j2 as u32, action: 2, iteration: 1, delta: 0.2 },
+            BatchItem { index: j1 as u32, action: 0, iteration: 1, delta: 0.3 },
+            BatchItem { index: j1 as u32, action: 0, iteration: 1, delta: 0.4 },
+            BatchItem { index: j2 as u32, action: 2, iteration: 1, delta: 0.5 },
+        ];
+        let mode_no_mom = FlushMode { sequential: true, momentum: false };
+        let _ = table2.flush_cpu_batch_with(&mut batch2, mode_no_mom);
+        // Plain DCFR at t=1 (warmup, discount=1) sums the deltas:
+        //   i1: 100 + 300 + 400 = 800 => 0.8
+        //   i2: 200 + 500 = 700       => 0.7
+        assert!(
+            (table2.get_regret(0xBEEF_0001, 0) - 0.8).abs() < 0.01,
+            "momentum-off fold should sum deltas, got {}",
+            table2.get_regret(0xBEEF_0001, 0)
+        );
+        assert!(
+            (table2.get_regret(0xBEEF_0002, 2) - 0.7).abs() < 0.01,
+            "momentum-off fold should sum deltas, got {}",
+            table2.get_regret(0xBEEF_0002, 2)
+        );
     }
 
     /// Regression for the fixed-point truncation bug: an infoset whose

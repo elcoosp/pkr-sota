@@ -36,19 +36,13 @@ fn skip_forced_nodes() -> bool {
 /// Epsilon-uniform exploration on top of regret-matching restores
 /// reachability. EPSILON=0.05 keeps the sampled distribution close to the
 /// intended strategy while ensuring every legal action has nonzero
-/// probability. Override via PKR_EXPLORE_EPSILON for A/B testing.
-/// PKR_AVG_POWER=p -> strategy-sum weight t^p (0 = uniform, 1 = linear, 2 = DCFR gamma).
-/// Default 0 reproduces the current behaviour exactly.
+/// probability.
+///
+/// F2: reads from `TrainConfig::global().avg_power` (default 2.0,
+/// matching the experiment config). Set PKR_AVG_POWER=0 to reproduce
+/// the historical uniform-averaging default.
 fn avg_weight_power() -> f32 {
-    use std::sync::OnceLock;
-    static P: OnceLock<f32> = OnceLock::new();
-    *P.get_or_init(|| {
-        std::env::var("PKR_AVG_POWER")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .filter(|p| (0.0..=4.0).contains(p))
-            .unwrap_or(0.0)
-    })
+    crate::config::TrainConfig::global().avg_power
 }
 
 #[inline]
@@ -67,15 +61,9 @@ fn avg_weight(t: u32) -> f32 {
 }
 
 fn exploration_epsilon() -> f32 {
-    use std::sync::OnceLock;
-    static E: OnceLock<f32> = OnceLock::new();
-    *E.get_or_init(|| {
-        std::env::var("PKR_EXPLORE_EPSILON")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .filter(|e| (0.0..1.0).contains(e))
-            .unwrap_or(0.05)
-    })
+    // F2: reads from the shared config (default 0.01, matching the
+    // experiment scripts). Historical code default was 0.05.
+    crate::config::TrainConfig::global().explore_epsilon
 }
 
 /// Sample one action bucket from the ε-mixed distribution over LEGAL

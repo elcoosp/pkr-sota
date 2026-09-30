@@ -8,6 +8,7 @@ pub mod riversolve;
 pub mod table;
 pub mod traversal;
 pub mod valuenet;
+pub mod config;
 
 use crate::gpu::BatchItem;
 use crate::metrics::LocalMetrics;
@@ -25,9 +26,7 @@ use std::sync::Arc;
 /// (CFR+ semantics). Default off. See docs/experiments/sota-ab-plan.md.
 #[inline]
 fn alt_updates_enabled() -> bool {
-    use std::sync::OnceLock;
-    static E: OnceLock<bool> = OnceLock::new();
-    *E.get_or_init(|| std::env::var("PKR_ALT_UPDATES").as_deref() == Ok("1"))
+    crate::config::TrainConfig::global().alt_updates
 }
 
 pub struct Trainer {
