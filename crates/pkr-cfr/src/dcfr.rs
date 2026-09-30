@@ -105,7 +105,17 @@ pub fn update_regret_full(
     let w_neg = discount_factor_mode(t, BETA, discount);
 
     let discounted_regret = w_pos * r_pos + w_neg * r_neg;
-    let new_regret = (discounted_regret + predicted_delta).max(0.0);
+    let summed = discounted_regret + predicted_delta;
+    // F5: same neg_floor contract as the i64 path. When off, negative
+    // regrets persist (bounded), so DCFR's beta=0 discount actually
+    // takes effect. Regret matching ignores negatives, so the argmax
+    // is unchanged.
+    let cfg = crate::config::TrainConfig::global();
+    let new_regret = if cfg.neg_floor {
+        summed.max(0.0)
+    } else {
+        summed.max(-1.0e9)
+    };
 
     (new_regret, predicted_delta)
 }
