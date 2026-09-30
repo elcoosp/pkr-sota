@@ -26,6 +26,21 @@ pub const SIG_V2_STREET_MONEY: bool = false;
 /// Version tag stored in bits 60..64 of `history_signature_v2()`.
 pub const SIG_V2_VERSION: u64 = 2;
 
+/// F3: enable the size-aware signature `history_signature_v3`.
+///
+/// When true, `infoset_signature_into` emits 8 bytes of v3 signature:
+/// street, current-street action-bucket sequence, street-start pot
+/// class, and total raises. When false (default), it emits the current
+/// 4-byte v1 signature.
+///
+/// Turning this on invalidates every existing checkpoint: the abstract
+/// game changes because the infoset key can now distinguish bet sizes
+/// and pot classes. Retrain or `--fresh`.
+pub const SIG_V3_SIZE_AWARE: bool = false;
+
+/// Version tag written into the top 4 bits of the v3 signature.
+pub const SIG_V3_VERSION: u64 = 3;
+
 /// When `SIG_V2_STREET_MONEY` is on, controls whether the
 /// `last_bet_fraction_bucket` bits (24..28) participate in the hash.
 ///
@@ -78,6 +93,11 @@ pub struct UndoRecord {
     abstract_history_len: u8,
     board_len: u8,
     folded: [bool; 2],
+    /// F3: pot at the moment the current street began. Used by the
+    /// size-aware signature (`history_signature_v3`) to describe
+    /// which pot class the current betting round is playing for.
+    /// Restored by `undo_action`.
+    street_start_pot: f32,
 }
 
 /// Stack-allocated game state. No heap allocations during traversal.
@@ -107,6 +127,12 @@ pub struct GameState {
     pub total_raises: u8,
     pub abstract_history: [u8; 48], // abstract action buckets
     pub abstract_history_len: u8,
+    /// F3: pot size at the moment the current street started. Set on
+    /// `advance_street_in_place` (from the pre-advance pot) and at
+    /// hand start (to the blinds' forced total). Never reset within a
+    /// street. Off-by-default consumer; the size-aware signature is
+    /// gated on `SIG_V3_SIZE_AWARE`.
+    pub street_start_pot: f32,
     pub undo_stack: [UndoRecord; 48],
     pub undo_len: u8,
 }
@@ -135,6 +161,8 @@ impl GameState {
             total_raises: 0,
             abstract_history: [0u8; 48],
             abstract_history_len: 0,
+            // F3: the pot at preflop start is the two forced bets.
+            street_start_pot: sb + bb,
             undo_stack: [UndoRecord {
                 actor: 0,
                 street: Street::Preflop,
@@ -149,6 +177,7 @@ impl GameState {
                 abstract_history_len: 0,
                 board_len: 0,
                 folded: [false; 2],
+                street_start_pot: 0.0,
             }; 48],
             undo_len: 0,
         }
@@ -359,6 +388,7 @@ impl GameState {
             abstract_history_len: self.abstract_history_len,
             board_len: self.board_len,
             folded: self.folded,
+            street_start_pot: self.street_start_pot,
         };
         self.undo_stack[self.undo_len as usize] = record;
         self.undo_len += 1;
@@ -507,6 +537,7 @@ impl GameState {
         self.board_len = rec.board_len;
         self.folded = rec.folded;
         self.abstract_history_len = rec.abstract_history_len;
+        self.street_start_pot = rec.street_start_pot;
     }
 
     pub fn is_street_complete(&self) -> bool {
@@ -566,6 +597,10 @@ impl GameState {
         self.actor = 1 - self.dealer;
         self.actions_this_street = 0;
         self.raises_this_street = 0;
+        // F3: the pot as of now is the pot at the start of the next
+        // street. `push_undo` already captured the previous value, so
+        // an `undo_action` restores it.
+        self.street_start_pot = self.pot;
     }
 }
 
@@ -651,6 +686,49 @@ impl GameState {
     ///   bits 60..64 : version tag = SIG_V2_VERSION
     ///
     /// Not yet wired into the traverser. See `SIG_V2_STREET_MONEY`.
+    /// F3: size-aware signature.
+    ///
+    /// Layout (low -> high bits):
+    ///
+    ///   bits  0.. 3  street (0..3)
+    ///   bits  3..10  current-street action-bucket sequence (up to 7
+    ///                actions, 3 bits each — see `BET_SIZINGS` doc)
+    ///   bits 10..14  current-street action count (0..7)
+    ///   bits 14..19  street-start pot class (log2 BB, 0..8)
+    ///   bits 19..22  total_raises this street (0..7)
+    ///   bits 60..64  version tag = SIG_V3_VERSION
+    ///
+    /// The pot class is `floor(log2(pot_bb)).min(8)` where `pot_bb` is
+    /// the street-start pot expressed in big blinds. So pot sizes 1, 2,
+    /// 4, 8, ..., 256+ bb map to classes 0..8. That is a coarse but
+    /// real distinction: a 2 bb pot plays differently from a 100 bb
+    /// pot.
+    ///
+    /// The action buckets here come from `abstract_history` (the same
+    /// per-action bucket the traversal computes), so the current-street
+    /// sequence reuses state the engine already maintains.
+    pub fn history_signature_v3(&self) -> u64 {
+        let n_actions = (self.actions_this_street as usize).min(7);
+        let end = self.abstract_history_len as usize;
+        let start = end.saturating_sub(n_actions);
+        let mut seq: u64 = 0;
+        for (i, &b) in self.abstract_history[start..end].iter().enumerate() {
+            let b3 = (b as u64) & 0x7;
+            seq |= b3 << (i * 3);
+        }
+        let street = (self.street as u64) & 0x3;
+        let pot_bb = (self.street_start_pot / 2.0).max(1.0);
+        let pot_class = (pot_bb.log2().floor() as u64).min(8) & 0xF;
+        let raises = (self.total_raises as u64).min(7) & 0x7;
+
+        (street)
+            | (seq << 3)
+            | ((n_actions as u64 & 0x7) << 10)
+            | (pot_class << 14)
+            | (raises << 19)
+            | (SIG_V3_VERSION << 60)
+    }
+
     pub fn history_signature_v2(&self) -> u64 {
         let v1 = self.history_signature() as u64;
         let lbf = if SIG_V2_INCLUDE_LBF {
@@ -672,7 +750,11 @@ impl GameState {
     /// .to_le_bytes()`, so training is unaffected.
     #[inline]
     pub fn infoset_signature_into(&self, out: &mut [u8; 8]) -> usize {
-        if SIG_V2_STREET_MONEY {
+        // F3 dispatch: v3 takes precedence when enabled.
+        if SIG_V3_SIZE_AWARE {
+            out.copy_from_slice(&self.history_signature_v3().to_le_bytes());
+            8
+        } else if SIG_V2_STREET_MONEY {
             out.copy_from_slice(&self.history_signature_v2().to_le_bytes());
             8
         } else {
@@ -1847,5 +1929,77 @@ mod p2_undo_size_tests {
     fn undo_record_is_compact() {
         let sz = std::mem::size_of::<UndoRecord>();
         assert!(sz <= 48, "UndoRecord grew to {} bytes; revisit packing", sz);
+    }
+}
+
+
+#[cfg(test)]
+mod f3_size_aware_tests {
+    use super::*;
+
+    /// When SIG_V3_SIZE_AWARE is off (default), the signature is the
+    /// legacy v1 4-byte form. This test documents the gate.
+    #[test]
+    fn gate_off_emits_v1_signature() {
+        let s = GameState::new(200.0, 1.0, 2.0);
+        let mut buf = [0u8; 8];
+        let n = s.infoset_signature_into(&mut buf);
+        assert_eq!(n, if SIG_V3_SIZE_AWARE { 8 } else { 4 });
+    }
+
+    /// `history_signature_v3` includes the top-bits version tag even
+    /// when the gate is off — the function is callable for tests.
+    #[test]
+    fn v3_signature_carries_version_tag() {
+        let s = GameState::new(200.0, 1.0, 2.0);
+        let v3 = s.history_signature_v3();
+        assert_eq!(v3 >> 60, SIG_V3_VERSION, "top 4 bits are version tag");
+    }
+
+    /// Two states that differ only in the street-start pot must produce
+    /// different v3 signatures when the pot classes differ. This is the
+    /// whole point of F3: the current key cannot see pot size.
+    #[test]
+    fn v3_distinguishes_street_start_pot_class() {
+        let mut a = GameState::new(200.0, 1.0, 2.0);
+        a.street_start_pot = 4.0;   // pot_bb = 2.0  -> class 1
+        let mut b = GameState::new(200.0, 1.0, 2.0);
+        b.street_start_pot = 256.0; // pot_bb = 128 -> class 7
+        assert_ne!(
+            a.history_signature_v3(),
+            b.history_signature_v3(),
+            "different pot classes must hash differently",
+        );
+    }
+
+    /// Same pot class collapses to the same bits — coarse on purpose.
+    #[test]
+    fn v3_collapses_pots_within_one_class() {
+        let mut a = GameState::new(200.0, 1.0, 2.0);
+        a.street_start_pot = 8.0;  // pot_bb = 4.0 -> log2 = 2
+        let mut b = GameState::new(200.0, 1.0, 2.0);
+        b.street_start_pot = 12.0; // pot_bb = 6.0 -> log2 floor = 2
+        assert_eq!(a.history_signature_v3(), b.history_signature_v3());
+    }
+
+    /// `advance_street_in_place` records the current pot as the new
+    /// street's start, and `undo_action` restores the previous value.
+    #[test]
+    fn street_start_pot_survives_advance_and_undo() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        assert_eq!(s.street_start_pot, 3.0, "preflop start = SB + BB");
+
+        // SB calls (pot 4), BB checks (pot 4 still 4: check adds nothing).
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        let pot_before = s.pot;
+        s.advance_street_in_place(&[0, 4, 8]);
+        assert_eq!(
+            s.street_start_pot, pot_before,
+            "flop street_start_pot = preflop pot",
+        );
+
+        s.undo_action();
+        assert_eq!(s.street_start_pot, 3.0, "undo restores preflop start");
     }
 }

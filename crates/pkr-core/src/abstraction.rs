@@ -261,7 +261,9 @@ impl AbstractionFingerprint {
             sizing_large: BET_SIZINGS[2],
             threshold_small: BUCKET_THRESHOLD_SMALL,
             threshold_large: BUCKET_THRESHOLD_LARGE,
-            sig_version: if crate::state::SIG_V2_STREET_MONEY {
+            sig_version: if crate::state::SIG_V3_SIZE_AWARE {
+                3
+            } else if crate::state::SIG_V2_STREET_MONEY {
                 2
             } else {
                 1
