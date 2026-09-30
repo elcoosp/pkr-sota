@@ -468,7 +468,13 @@ fn decide_from_blueprint(
             }
             let pot = state.pot.max(1.0);
             let pot_odds = to_call / (pot + to_call);
-            let strength = (hole[0] as f32 + hole[1] as f32) / 100.0;
+            // F8b: rank-based strength, not card-ID. Cards are encoded
+            // as `suit * 13 + rank`, so `hole[0] + hole[1]` was summing
+            // suit-weighted IDs — a heart 2 plus a spade 2 scored far
+            // higher than a club ace plus a club king. Ranks here are
+            // 0=Two .. 12=Ace.
+            let rank = |c: u8| (c % 13) as f32;
+            let strength = (rank(hole[0]) + rank(hole[1])) / 24.0;
             if strength >= pot_odds {
                 for act in buf.iter().take(n_legal) {
                     if matches!(act.kind, ActionKind::Call) {

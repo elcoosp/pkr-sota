@@ -14,6 +14,39 @@ const K: usize = 6;
 /// closes at 255 on the last action with non-zero probability. This
 /// prevents rounding slack from landing on an action whose probability
 /// is zero (e.g. an illegal bucket).
+/// Zero probabilities below `thresh` and renormalize.
+///
+/// The average strategy drifts mass onto actions that were never
+/// actually chosen (tail noise from ε-exploration and rare regrets).
+/// Zeroing that tail before quantization reduces the exported CDF's
+/// entropy without changing the argmax, which the audit (F8) suggested
+/// as a cheap win to test by tournament.
+///
+/// Skips infosets with only one or two live actions — those are
+/// already effectively pure, and thresholding them can flip a genuine
+/// 45/55 split into a pure strategy.
+pub(crate) fn purify(strat: &mut [f32; K], thresh: f32) {
+    if thresh <= 0.0 {
+        return;
+    }
+    let live = strat.iter().filter(|&&p| p > 0.0).count();
+    if live <= 2 {
+        return;
+    }
+    let mut tot = 0.0f32;
+    for p in strat.iter_mut() {
+        if *p < thresh {
+            *p = 0.0;
+        }
+        tot += *p;
+    }
+    if tot > 0.0 {
+        for p in strat.iter_mut() {
+            *p /= tot;
+        }
+    }
+}
+
 pub(crate) fn quantize_cdf(strat: &[f32; K]) -> [u8; K] {
     let mut out = [0u8; K];
     let total: f32 = strat.iter().sum();
@@ -53,6 +86,13 @@ pub fn write_blueprint(
     keys: &[u64],
     fingerprint: &AbstractionFingerprint,
 ) -> std::io::Result<()> {
+    // F8: purification threshold from the environment. 0.0 disables.
+    let purify_thresh: f32 = std::env::var("PKR_PURIFY")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|t| (0.0..0.1).contains(t))
+        .unwrap_or(0.0);
+
     // Defensive sort (reader uses binary search). If the caller already
     // passed sorted keys (the trainer's export_blueprint does), skip the
     // `to_vec()` + sort entirely. `is_sorted()` is O(n) with no alloc.
@@ -73,6 +113,12 @@ pub fn write_blueprint(
     for &key in keys {
         key_bytes.extend_from_slice(&key.to_le_bytes());
         table.get_average_strategy_into(key, &mut strat);
+        // F8: optional purification. Off by default (0.0). Set
+        // PKR_PURIFY=0.03 (or any threshold in (0, 0.1)) to zero the
+        // tail and renormalize before quantization.
+        if purify_thresh > 0.0 {
+            purify(&mut strat, purify_thresh);
+        }
         cdf_bytes.extend_from_slice(&quantize_cdf(&strat));
     }
 
