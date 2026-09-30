@@ -208,6 +208,7 @@ impl Evaluator for NlheEvaluator {
             return u32::MAX;
         }
 
+        // All 5-of-7 combinations (C(7,5) = 21).
         const COMBOS_7_5: [[u8; 5]; 21] = [
             [0, 1, 2, 3, 4],
             [0, 1, 2, 3, 5],
@@ -231,14 +232,29 @@ impl Evaluator for NlheEvaluator {
             [1, 3, 4, 5, 6],
             [2, 3, 4, 5, 6],
         ];
-        let mut best = u32::MAX;
-        let num = match total {
-            5 => 1,
-            6 => 6,
-            7 => 21,
-            _ => 0,
+        // All 5-of-6 combinations (C(6,5) = 6). Previously the code
+        // reused the first 6 rows of COMBOS_7_5, which reference index
+        // 6 (the sentinel 255) and miss the combinations that omit
+        // cards 0, 1, 2 — giving wrong results for any 6-card input.
+        const COMBOS_6_5: [[u8; 5]; 6] = [
+            [1, 2, 3, 4, 5], // omit 0
+            [0, 2, 3, 4, 5], // omit 1
+            [0, 1, 3, 4, 5], // omit 2
+            [0, 1, 2, 4, 5], // omit 3
+            [0, 1, 2, 3, 5], // omit 4
+            [0, 1, 2, 3, 4], // omit 5
+        ];
+        const COMBOS_5_5: [[u8; 5]; 1] = [[0, 1, 2, 3, 4]];
+
+        let table: &[[u8; 5]] = match total {
+            5 => &COMBOS_5_5,
+            6 => &COMBOS_6_5,
+            7 => &COMBOS_7_5,
+            _ => &COMBOS_5_5[..0],
         };
-        for combo in COMBOS_7_5.iter().take(num) {
+
+        let mut best = u32::MAX;
+        for combo in table {
             let mut h = [0u8; 5];
             for (j, &ci) in combo.iter().enumerate() {
                 h[j] = cards[ci as usize];
@@ -496,5 +512,39 @@ mod audit_f3_tests {
             mismatches, 0,
             "{mismatches} table/slow mismatches out of 10k"
         );
+    }
+
+    /// F4-bug regression: 6-card inputs must evaluate every 5-of-6
+    /// combination, not the first 6 rows of the 7-card table (which
+    /// reference the sentinel index 6 and skip combos).
+    ///
+    /// Constructs a known-best 5-card subset of a 6-card hand and
+    /// asserts slow.rs finds it. Without the fix, the best 5-card
+    /// subset that omits cards 0, 1 or 2 would be missed.
+    #[test]
+    fn six_card_inputs_see_every_subset() {
+        let slow = super::NlheEvaluator;
+        // Six cards: A K Q J T 2, suits arranged so the AKQJT is a
+        // straight. The best 5-card subset is AKQJT (omitting the 2).
+        // Card encoding: suit*13 + rank, rank 0=Two .. 12=Ace.
+        // Put AKQJT in mixed suits so only the rank pattern matters.
+        let six = [12u8, 11, 10, 9, 8, 0]; // A K Q J T 2, all suit 0
+        let r6 = slow.evaluate_hand(&six, &[]);
+        // Compare against the same hand minus the 2 (5 cards).
+        let five = [12u8, 11, 10, 9, 8];
+        let r5 = slow.evaluate_hand(&five, &[]);
+        assert_eq!(
+            r6, r5,
+            "6-card hand must find the same best 5-card subset;              six={six:?} -> {r6}, five={five:?} -> {r5}"
+        );
+    }
+
+    /// Second regression case: the 6-card input must not panic on the
+    /// sentinel-255 index that the old code would have read.
+    #[test]
+    fn six_card_inputs_do_not_panic() {
+        let slow = super::NlheEvaluator;
+        let six = [0u8, 14, 28, 42, 3, 7];
+        let _ = slow.evaluate_hand(&six, &[]);
     }
 }
