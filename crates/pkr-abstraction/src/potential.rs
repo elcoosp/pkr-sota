@@ -189,9 +189,15 @@ mod tests {
         let t0 = std::time::Instant::now();
         let n = 1000usize;
         let mut acc = 0.0f64;
+        // Deterministic, in-range synthetic hands. `as u8` truncates
+        // and can land outside [0, 52); use % 52 everywhere.
         for i in 0..n {
             let hole = [(i % 52) as u8, ((i + 7) % 52) as u8];
-            let board = [(i + 13) as u8, (i + 21) as u8, (i + 33) as u8];
+            let board = [
+                ((i + 13) % 52) as u8,
+                ((i + 21) % 52) as u8,
+                ((i + 33) % 52) as u8,
+            ];
             let (m, _p) = ehs_and_potential(&hole, &board, &e, 20);
             acc += m as f64;
         }
