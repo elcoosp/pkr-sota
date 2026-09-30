@@ -136,6 +136,7 @@ cargo run --release -p pkr-trainer -- \
     --eval-deals "$EVAL_DEALS" \
     --stop-on-plateau "$STOP_ON_PLATEAU" \
     --promote-gate "$PROMOTE_GATE" \
+    --promote-min-sigma "$PROMOTE_MIN_SIGMA" \
     --exploitability-csv "$OUT/exploitability.csv" \
     --metrics-csv "$OUT/metrics.csv" \
     --stats-json "$OUT/stats.json" \

@@ -68,6 +68,10 @@ EVAL_EVERY="${EVAL_EVERY:-5000000}"
 STOP_ON_PLATEAU="${STOP_ON_PLATEAU:-5}"
 EVAL_DEALS="${EVAL_DEALS:-5000}"
 PROMOTE_GATE="${PROMOTE_GATE:-3.0}"
+# Winner's-curse protection: require an improvement over the current
+# best to clear this many BR standard errors before promoting. 0 = off.
+# See the E3 note in docs/roadmap/post-ab-plan.md.
+PROMOTE_MIN_SIGMA="${PROMOTE_MIN_SIGMA:-2.0}"
 
 # ---------- CFR dynamics (r3 V2 / E4) ----------
 # Epsilon-uniform exploration at opponent nodes to prevent the sampling
