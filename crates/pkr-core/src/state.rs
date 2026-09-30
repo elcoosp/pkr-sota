@@ -219,22 +219,19 @@ impl GameState {
                         n += 1;
                     }
                 }
-                if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                    // C2: see legal_actions — all-in total is
-                    // stacks + street_bets, not stacks alone.
-                    let all_in_amount = self.stacks[self.actor] + self.street_bets[self.actor];
-                    // Dedup: skip the all-in push when a pot-fraction sizing
-                    // already offers (numerically) the same total.
-                    let already_offered = (0..n).any(|i| {
-                        matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
-                    });
-                    if !already_offered {
-                        out[n] = Action {
-                            player: self.actor,
-                            kind: ActionKind::Bet(all_in_amount),
-                        };
-                        n += 1;
-                    }
+            }
+            // F6: jam is always legal while opponent can respond.
+            if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
+                let all_in_amount = self.stacks[self.actor] + self.street_bets[self.actor];
+                let already_offered = (0..n).any(|i| {
+                    matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
+                });
+                if !already_offered {
+                    out[n] = Action {
+                        player: self.actor,
+                        kind: ActionKind::Bet(all_in_amount),
+                    };
+                    n += 1;
                 }
             }
         } else {
@@ -251,11 +248,32 @@ impl GameState {
             if can_raise {
                 let pot = self.pot;
                 let opp_bet = self.street_bets[1 - self.actor];
+                // F6: true NLHE min-raise-to is
+                //     opp_bet + (size of the last bet or raise)
+                //
+                // Two cases:
+                //   * No voluntary raise this street yet. The opponent's
+                //     current bet IS the last aggressive action. Preflop
+                //     that's the forced BB; postflop it's their own first
+                //     bet. Either way, min-raise-to = 2 * opp_bet.
+                //   * A raise already happened this street. The last
+                //     raise delta is (opp_bet - our_bet), because our_bet
+                //     was the previous raise level. min-raise-to =
+                //     opp_bet + (opp_bet - our_bet) = 2*opp_bet - our_bet.
+                //
+                // Before this fix `opp_bet + pot * frac` could produce
+                // sizes below the legal minimum (audit F6), which real
+                // engines reject and which inflated the abstract game.
+                let min_raise_to = if self.raises_this_street == 0 {
+                    2.0 * opp_bet
+                } else {
+                    2.0 * opp_bet - self.street_bets[self.actor]
+                };
                 for &frac in &crate::abstraction::BET_SIZINGS {
                     if n >= 8 {
                         break;
                     }
-                    let raise = opp_bet + pot * frac; // C1.5
+                    let raise = (opp_bet + pot * frac).max(min_raise_to); // C1.5
                     let chips_needed = raise - self.street_bets[self.actor];
                     if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
                         out[n] = Action {
@@ -265,18 +283,22 @@ impl GameState {
                         n += 1;
                     }
                 }
-                if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
-                    let all_in_amount = self.stacks[self.actor] + self.street_bets[self.actor];
-                    let already_offered = (0..n).any(|i| {
-                        matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
-                    });
-                    if !already_offered {
-                        out[n] = Action {
-                            player: self.actor,
-                            kind: ActionKind::Bet(all_in_amount),
-                        };
-                        n += 1;
-                    }
+            }
+            // F6: the all-in is always legal while the opponent can
+            // still respond, even after MAX_RAISES_PER_STREET. Without
+            // this, a legitimate 4-bet jam in a 3-raise-capped spot is
+            // silently disallowed. Moved out of `can_raise`.
+            if n < 8 && self.stacks[self.actor] > 0.0 && self.opp_can_respond() {
+                let all_in_amount = self.stacks[self.actor] + self.street_bets[self.actor];
+                let already_offered = (0..n).any(|i| {
+                    matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
+                });
+                if !already_offered {
+                    out[n] = Action {
+                        player: self.actor,
+                        kind: ActionKind::Bet(all_in_amount),
+                    };
+                    n += 1;
                 }
             }
         }
@@ -1753,7 +1775,11 @@ mod b7_single_source_tests {
 
     #[test]
     fn legal_actions_carries_raise_cap() {
-        // After 3 raises this street, no more Bet should be offered.
+        // F6 contract: after MAX_RAISES_PER_STREET pot-fraction raises,
+        // the ONLY Bet action still offered is the all-in jam. The
+        // cap exists to bound tree size, not to forbid a legit 4-bet
+        // shove. Before F6, the cap disabled every Bet including the
+        // jam — a real bug the audit caught.
         let mut s = fresh_state();
         let mut raises = 0u32;
         while raises < 3 && !s.is_terminal() {
@@ -1762,33 +1788,51 @@ mod b7_single_source_tests {
                 kind: ActionKind::Fold,
             }; 8];
             let n = s.legal_actions_into(&mut buf);
-            let mut bet_idx: Option<usize> = None;
+            // Pick the smallest Bet, which is a pot-fraction raise, not
+            // the jam. That way the loop advances through the cap.
+            let mut smallest: Option<(usize, f32)> = None;
             for (i, a) in buf[..n].iter().enumerate() {
-                if let ActionKind::Bet(_) = a.kind {
-                    bet_idx = Some(i);
-                    break;
+                if let ActionKind::Bet(x) = a.kind {
+                    match smallest {
+                        None => smallest = Some((i, x)),
+                        Some((_, cur)) if x < cur => smallest = Some((i, x)),
+                        _ => {}
+                    }
                 }
             }
-            match bet_idx {
-                Some(i) => {
+            match smallest {
+                Some((i, _)) => {
                     s.apply_action_in_place(&buf[i]);
                     raises += 1;
                 }
                 None => break,
             }
         }
-        // Now the current street should have zero Bet actions in the offered set.
+
         let a = s.legal_actions();
-        let bets = a
+        let bets: Vec<f32> = a
             .iter()
-            .filter(|x| matches!(x.kind, ActionKind::Bet(_)))
-            .count();
-        assert_eq!(
-            bets,
-            0,
-            "raise cap not honored by legal_actions: {:?}",
-            a.iter().map(|x| x.kind).collect::<Vec<_>>()
+            .filter_map(|x| match x.kind {
+                ActionKind::Bet(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+
+        // At most one Bet should be offered, and if there is one, it
+        // must be the all-in (the actor's full stack plus their street
+        // bet).
+        assert!(
+            bets.len() <= 1,
+            "raise cap allows at most the jam, got bets={:?}",
+            bets
         );
+        if let Some(&b) = bets.first() {
+            let all_in = s.stacks[s.actor] + s.street_bets[s.actor];
+            assert!(
+                (b - all_in).abs() < 1e-6,
+                "only the jam should survive the cap; got {b} != all-in {all_in}",
+            );
+        }
     }
 }
 

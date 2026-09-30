@@ -229,7 +229,14 @@ pub struct AbstractionFingerprint {
     /// any valid shift, so a pre-T2.2 checkpoint loaded against a post-
     /// T2.2 binary produces a fingerprint mismatch (correct behaviour).
     pub river_tier_shift: u8,
-    pub _pad: [u8; 5],
+    /// F6: action-legality version. 0 = pre-F6 (raise cap forbade the
+    /// jam, pot-fraction sizes unclamped). 1 = F6 (jam always legal,
+    /// raises clamped to the true min-raise-to). Old checkpoints have
+    /// `_pad[0] = 0` here, so a pre-F6 checkpoint loaded against a
+    /// post-F6 binary produces a fingerprint mismatch — as it must,
+    /// because the abstract game changed.
+    pub action_legal_v: u8,
+    pub _pad: [u8; 4],
 }
 
 impl AbstractionFingerprint {
@@ -261,7 +268,8 @@ impl AbstractionFingerprint {
             },
             hash_algo: pkr_contracts::HASH_ALGO_FNV1A64_INFOSET,
             river_tier_shift: RIVER_TIER_SHIFT,
-            _pad: [0; 5],
+            action_legal_v: 1,
+            _pad: [0; 4],
         }
     }
 
@@ -273,6 +281,15 @@ impl AbstractionFingerprint {
                 "river_tier_shift mismatch: stored={} current={} (T2.2 changed the \
                  river hash shift; retrain or use --fresh)",
                 self.river_tier_shift, expected.river_tier_shift,
+            );
+        }
+        if self.action_legal_v != expected.action_legal_v {
+            return format!(
+                "action_legal_v mismatch: stored={} current={} (F6 changed the \
+                 legal action tree — the raise cap no longer forbids the jam and \
+                 pot-fraction raises are clamped to the min-raise-to; retrain or \
+                 use --fresh)",
+                self.action_legal_v, expected.action_legal_v,
             );
         }
         let mut diffs = Vec::new();
