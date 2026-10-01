@@ -53,3 +53,34 @@ The promote gate (`--promote-min-sigma 2`, ~256 mbb) means the saved
 artifact is often NOT the best reading (v45: reading 3302 @ 6M, saved
 3392 @ 3M). A/B decisions must use READINGS; shipping uses ARTIFACTS,
 and those can differ by ~100 mbb. See f4-abstraction-rebuild-plan.md.
+
+## RESOLVED: the turn-up is an estimator artifact (2026-10-01)
+
+Deal-sensitivity of v42's 18M checkpoint, same eval-now path:
+
+| deals | expl_mbb | SE |
+|---|---|---|
+| 5,000 | 3795.8 | 146 |
+| 20,000 | 1707.3 | 55 |
+
+**The reading more than halves with 4x the deals.** In-sample BR
+overfitting is enormous -- far bigger than the ~300 mbb "turn-up". As
+training adds infosets, the 5000-deal BR overfits them, inflating the
+reported number. The rise after 3-6M is therefore substantially (likely
+mostly) an artifact of the 5000-deal in-sample estimator, NOT real
+policy degradation.
+
+Implications:
+- **The turn-up needs no fix.** It is a measurement artifact. Hypothesis
+  B (estimator artifact) wins; hypothesis A (abstraction saturates) is
+  not required to explain it.
+- **Cross-run A/Bs remain valid**: both sides use the same 5000 deals
+  (eval seed = iteration), so the *paired difference* is trustworthy
+  even though the absolute level is inflated. v46 vs v42 stands.
+- **Absolute exploitability numbers in every experiment doc are
+  inflated ~2x.** They compare fine to each other at 5000 deals but
+  overstate true exploitability. Use >=20000 deals for any quoted
+  absolute figure (matches the earlier arena hand-count lesson).
+- **`--eval-now` uses a DIFFERENT seed** (`EVAL_SEED ^ iter`) than the
+  in-loop eval (`iter` as seed), so eval-now readings don't match the
+  training curve. Both are inflated; do not mix them.
