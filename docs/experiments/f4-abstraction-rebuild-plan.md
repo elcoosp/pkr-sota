@@ -98,3 +98,48 @@ first:
 
 Both are smaller than the rebuild itself. Then the flop rebuild is a
 2h background job and the turn a 2.5d one.
+
+---
+
+## Rebuild completed (2026-10-01)
+
+The flop table rebuild finished in 8 minutes, not the ~2h the earlier
+timing estimate predicted. Measured: `centroids-potential 500 200`
+took 6 seconds; `abs-potential` on 26M entries took 8m42s.
+
+What changed between old and new:
+
+| | old (EHS, EHS²) | new (mean, potential) |
+|---|---|---|
+| bytes differing | — | 25,892,395 / 25,989,600 (99.6%) |
+| distinct buckets | 193 | 200 |
+| bucket entropy | 6.687 bits | 6.557 bits |
+
+**99.6% of bucket assignments changed.** The potential feature is
+doing real work; it's not a reshuffle of the same information.
+
+Centroid coordinate stats:
+- mean EHS = 0.2854, sd = 0.2276
+- mean potential = 0.2626, sd = 0.0888
+
+The potential dimension carries ~40% of the EHS dimension's spread —
+meaningful but not equal. A more aggressive build could weight it up,
+but that's a follow-up.
+
+### v45 training run
+
+`outputs/v45-potential/` runs the standard 30M config with the new
+flop table. Same as v42 otherwise, so the A/B is clean.
+
+### Known issue: fingerprint doesn't reflect the new feature space
+
+`centroid_feature_v` should be `1` for v45, but the trainer writes the
+default `0` because it doesn't know what feature space the tables
+describe. The A/B itself is valid (v45 trains and evaluates against
+its own tables consistently), but a future load of v45's checkpoint
+against v34long's tables would NOT fail the fingerprint — both claim
+`centroid_feature_v=0`.
+
+The fix is a `--centroid-feature-v` CLI flag or deriving the value
+from a manifest file next to `centroids.bin`. Tracked as a follow-up;
+not worth restarting v45 for.
