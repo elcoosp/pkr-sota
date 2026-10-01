@@ -174,6 +174,13 @@ struct Cli {
     #[arg(long, default_value_t = 2.0)]
     promote_min_sigma: f64,
 
+    /// Also export the blueprint on every new best READING, even when
+    /// the sigma gate rejects promoting it. Use when the artifact you
+    /// ship should be the best-ever model rather than the best
+    /// statistically-significant one. Default off (preserves behaviour).
+    #[arg(long, default_value_t = false)]
+    save_best_reading: bool,
+
     /// Stop training after this many consecutive evaluations fail to
     /// produce a new historical minimum. 0 = off (run to completion).
     ///
@@ -270,6 +277,13 @@ fn export_blueprint(
 /// at `max_iters` loses its final data point entirely (v23a bug: 5M
 /// run with eval_every=2.5M only produced the 2.5M row).
 #[inline]
+/// True when `reading` is a new all-time-low raw exploitability.
+/// None means no reading has been seen yet, so any reading is a new min.
+/// Extracted from the --save-best-reading path so it is unit-testable.
+fn is_new_raw_min(best: Option<f64>, reading: f64) -> bool {
+    best.map_or(true, |b| reading < b)
+}
+
 fn should_eval(done: u32, last_eval_iter: u32, eval_every: u32, max_iters: u32) -> bool {
     eval_every > 0 && (done >= last_eval_iter.saturating_add(eval_every) || done == max_iters)
 }
@@ -579,6 +593,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     let mut best_expl_mbb: Option<f64> = None;
+    // Best raw reading ever seen, for --save-best-reading. Distinct from
+    // best_expl_mbb, which is the best *significant* reading that drives
+    // the gate and the plateau counter.
+    let mut best_raw_mbb: Option<f64> = None;
     // Count consecutive evals that did NOT produce a new minimum.
     // Reset to 0 whenever the promote gate accepts. When this reaches
     // `cli.stop_on_plateau` (and the threshold is > 0), the loop breaks.
@@ -807,6 +825,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None => false,
                 };
                 if rejected {
+                    // Optional: save the best-ever READING even when the
+                    // significance gate refuses to promote it. Without
+                    // this, a run whose best reading is a sub-sigma
+                    // improvement over its first eval (v45: 3302 @ 6M
+                    // vs 3392 @ 3M, improvement 90 < 2*SE 256) ships
+                    // the worse first-eval model.
+                    if cli.save_best_reading {
+                        if is_new_raw_min(best_raw_mbb, br.exploitability_mbb) {
+                            let best_path = cli.output.with_file_name(format!(
+                                "{}.best.bin",
+                                cli.output
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("blueprint")
+                            ));
+                            match export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint) {
+                                Ok(n) => eprintln!(
+                                    "SAVE-BEST iter={} expl_mbb={:.2} (raw minimum; gate rejected promotion) -> {} ({} infosets)",
+                                    done, br.exploitability_mbb, cli.output.display(), n
+                                ),
+                                Err(e) => eprintln!(
+                                    "WARNING: save-best export failed at iter {done}: {e}"
+                                ),
+                            }
+                            if let Err(e) = export_blueprint(
+                                &trainer, &best_path, cli.min_visits, &fingerprint,
+                            ) {
+                                eprintln!(
+                                    "WARNING: save-best .best.bin export failed at iter {done}: {e}"
+                                );
+                            }
+                            best_raw_mbb = Some(br.exploitability_mbb);
+                        }
+                    }
                     let improvement = best_expl_mbb
                         .map(|b| b - br.exploitability_mbb)
                         .unwrap_or(0.0);
@@ -912,6 +964,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 eprintln!("         (also saved to {})", best_path.display());
                             }
                             best_expl_mbb = Some(br.exploitability_mbb);
+                            best_raw_mbb = Some(br.exploitability_mbb);
                             promoted = true;
                         }
                         Err(e) => {
@@ -1176,6 +1229,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod should_eval_tests {
+    use super::*;
+
+    #[test]
+    fn new_raw_min_basic() {
+        assert!(is_new_raw_min(None, 3400.0), "first reading is a min");
+        assert!(is_new_raw_min(Some(3400.0), 3300.0), "lower is a min");
+        assert!(!is_new_raw_min(Some(3300.0), 3400.0), "higher is not");
+        assert!(!is_new_raw_min(Some(3300.0), 3300.0), "equal is not a new min");
+    }
+
     use super::should_eval;
 
     #[test]
