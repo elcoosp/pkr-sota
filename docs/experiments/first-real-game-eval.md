@@ -78,3 +78,27 @@ abstract exploitability number.
 - The audit's F9 item 3 (LBR lower bound) is still open. That's the
   measurement that would tell us how exploitable the strategy is in
   the *real* game, not the abstract game the trainer plays.
+
+---
+
+## Hand-count sensitivity (2026-10-01)
+
+Same v42 checkpoint, seed 42, different `--hands`:
+
+| hands | aggregate | vs station | vs nit | vs aggro |
+|---|---|---|---|---|
+| 500 | +345.8 | +554.8 | +38.2 | +444.3 |
+| 2000 | +209.6 | +317.7 | +42.3 | +268.8 |
+| 5000 | +210.0 | +258.0 | +41.8 | +330.4 |
+
+**Convergence is around 2000 hands.** 500 hands overstates the
+aggregate by 65%. NitBot's reading is stable at ~40 bb/100 across all
+three, but StationBot and AggroBot have very high per-hand variance
+(large pots, all-in confrontations) and need more samples.
+
+**Practical guidance:** use `--hands 5000` minimum for any reading you
+intend to quote. 2000 is enough to catch a regression direction; 500
+is not.
+
+The NitBot stability also shows something useful: the tightest opponent
+is intrinsically the least variable, because it plays small pots.
