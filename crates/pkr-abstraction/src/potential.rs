@@ -96,6 +96,19 @@ fn equity_vs_random(
 /// card, with each next-card's own sampling variance subtracted out.
 /// The subtraction is what makes the potential a property of the hand
 /// rather than a property of the RNG.
+///
+/// Bias note (2026-10-01 audit): the per-next-card sampling-variance
+/// estimator is `e * (1 - e) / inner`, which is the exact variance of
+/// a Bernoulli mean but an *overestimate* for the `{0, 0.5, 1}` equity
+/// sample used here. For a next card where the hero wins with
+/// probability `p` and ties with probability `q`, the true per-sample
+/// variance is `p + 0.25q - (p + 0.5q)^2`, while `mu(1-mu)` with
+/// `mu = p + 0.5q` exceeds it by exactly `0.25q`. The estimator is
+/// therefore conservative (subtracts too much), which biases
+/// `potential` slightly low wherever exact ties are common. On flop
+/// and turn boards ties are rare, so the effect is small; a future
+/// revision could track wins and ties separately and subtract the
+/// exact variance.
 pub fn ehs_and_potential(
     hole: &[u8],
     board: &[u8],
