@@ -3,12 +3,12 @@
 //!
 //! Usage:
 //!   pkr-arena \
-//!     --checkpoint outputs/v41-post-f6/train.ckpt \
-//!     --centroids  outputs/v41-post-f6/centroids.bin \
-//!     --preflop-table outputs/v41-post-f6/preflop_abstraction.bin \
-//!     --flop-table    outputs/v41-post-f6/abstraction.bin \
-//!     --turn-table    outputs/v41-post-f6/turn_abstraction.bin \
-//!     --river-table   outputs/v41-post-f6/river_buckets.bin \
+//!     --checkpoint outputs/v42-post-audit/train.ckpt \
+//!     --centroids  outputs/v42-post-audit/centroids.bin \
+//!     --preflop-table outputs/v42-post-audit/preflop_abstraction.bin \
+//!     --flop-table    outputs/v42-post-audit/abstraction.bin \
+//!     --turn-table    outputs/v42-post-audit/turn_abstraction.bin \
+//!     --river-table   outputs/v42-post-audit/river_buckets.bin \
 //!     --hands 5000 --seed 42
 //!
 //! Reports bb/100 against each of the scripted bots and the aggregate
