@@ -124,3 +124,37 @@ The `avg_at_traverser` flag has not been tested yet. That's the other
 half of F5 and the one whose theory is on stronger ground (the
 current scheme adds a reach factor that standard external-sampling
 averaging omits).
+
+---
+
+## Correction (2026-10-01): the avg_power dimension was never tested
+
+The grid above defines a 4th axis — strategy-sum weight power
+(`PKR_AVG_POWER`, default 2.0) — and the Kuhn test comment claimed it
+was run at `avg_power=2`. **That was wrong.** `crates/pkr-testgames/
+src/kuhn.rs` accumulates its strategy sum uniformly
+(`s[a] * reach[self]`, no `t^p`), so every Kuhn result in this doc was
+produced with *uniform* averaging, regardless of the `avg_power`
+setting. Only the `neg_floor` axis was actually varied.
+
+Consequences:
+
+- The Kuhn verdict ("RM+ floor helps") stands — it tested what it
+  tested — but says nothing about `avg_power`.
+- The NLHE A/B (`v42-vs-v43-ab.md`) held `avg_power=2` fixed on both
+  sides, so it also says nothing about `avg_power`.
+- Therefore "F5 is closed for both dimensions" should read "closed for
+  the floor and averaging-site dimensions". **`avg_power` remains
+  untested on any game.**
+
+`avg_weight(t) = t^p` with `p=2` is standard DCFR (Brown & Sandholm),
+so it is not obviously wrong. But whether `p=2` beats `p=0` (uniform)
+or `p=1` (linear / CFR+) *on this abstraction* is an open empirical
+question, and a plausible contributor to the ~3–6M exploitability
+turn-up that v42, v43 and v45 all share: quadratic recency weighting
+lets the noisiest late iterations dominate the exported average.
+
+The harness has since been wired to read `TrainConfig::avg_power`, so
+the `p ∈ {0, 1, 2}` sweep can be run on Kuhn. Treat any Kuhn result
+with the same caveat as the floor grid: Kuhn may be too small to
+exhibit the long-run pattern the sweep is looking for.

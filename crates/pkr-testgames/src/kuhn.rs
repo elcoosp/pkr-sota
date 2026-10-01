@@ -575,8 +575,14 @@ mod f5_grid_tests {
     //! `docs/experiments/f5-grid.md`. This test runs the two configs
     //! that matter most:
     //!
-    //!   baseline: neg_floor=true, momentum off, avg_power=2
-    //!   variant:  neg_floor=false, momentum off, avg_power=2
+    //!   baseline: neg_floor=true, momentum off
+    //!   variant:  neg_floor=false, momentum off
+    //!
+    //! NOTE: this harness accumulates the strategy sum UNIFORMLY
+    //! (`s[a] * reach[self]`, no `t^p`). The `avg_power` dimension of
+    //! the F5 grid was therefore never exercised here, despite earlier
+    //! text claiming avg_power=2. See the correction note in
+    //! docs/experiments/f5-grid.md.
     //!
     //! and prints the exploitability at 1e5 and 1e6 iterations for each.
     //!
