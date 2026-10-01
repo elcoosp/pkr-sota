@@ -264,6 +264,20 @@ impl AbstractionFingerprint {
     /// dimensions; the F2b commit keeps this constructor's signature
     /// stable and adds those fields when needed.
     pub fn from_constants(preflop_k: u32) -> Self {
+        // F4: which feature space the centroid tables describe.
+        //
+        //   0 = legacy (EHS, EHS²), every pre-F4 checkpoint
+        //   1 = (mean, potential) from pkr_abstraction::potential
+        //
+        // Read from PKR_CENTROID_FEATURE_V so the trainer, arena, and
+        // tournament all pick the same value without any plumbing. The
+        // launcher for an F4 run exports it once. Defaults to 0 so
+        // every existing path is unchanged.
+        let centroid_feature_v: u8 = std::env::var("PKR_CENTROID_FEATURE_V")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
         Self {
             preflop_k,
             flop_k: 0,
@@ -283,7 +297,7 @@ impl AbstractionFingerprint {
             hash_algo: pkr_contracts::HASH_ALGO_FNV1A64_INFOSET,
             river_tier_shift: RIVER_TIER_SHIFT,
             action_legal_v: 1,
-            centroid_feature_v: 0,
+            centroid_feature_v,
             _pad: [0; 3],
         }
     }

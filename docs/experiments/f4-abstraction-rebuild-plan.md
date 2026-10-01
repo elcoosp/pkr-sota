@@ -143,3 +143,18 @@ against v34long's tables would NOT fail the fingerprint — both claim
 The fix is a `--centroid-feature-v` CLI flag or deriving the value
 from a manifest file next to `centroids.bin`. Tracked as a follow-up;
 not worth restarting v45 for.
+
+---
+
+## Follow-up: `centroid_feature_v` now env-driven
+
+`AbstractionFingerprint::from_constants` reads `PKR_CENTROID_FEATURE_V`
+(0 or 1, default 0). A launcher for an F4 run exports it once and every
+component — trainer, arena, tournament — builds the same fingerprint.
+
+Values:
+- `0` = legacy (EHS, EHS²). Every pre-F4 checkpoint.
+- `1` = (mean, potential). The v45 tables.
+
+Update the v45 launcher to export it before launching. Fingerprint
+mismatches now correctly reject cross-feature-space loads.
