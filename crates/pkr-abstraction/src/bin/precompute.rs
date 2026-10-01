@@ -96,6 +96,32 @@ fn main() {
             let _ = generate_centroids(num_samples, k, rank_table_path, output);
             println!("Done.");
         }
+        "centroids-potential" => {
+            // F4: fit k-means on the (mean, potential) 2D feature space
+            // instead of (EHS, EHS^2). Samples are (hole, flop) pairs
+            // drawn from a random subset of flops.
+            //
+            //   num_samples = number of flops to sample from (default 500)
+            //   k           = number of centroids (default 200)
+            //
+            // Each flop contributes HANDS_PER_FLOP hand samples. Total
+            // pairs = num_samples * HANDS_PER_FLOP.
+            let num_flops = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
+            let k = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
+            let rank_table_path = args.get(4).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            let output = args.get(5).map(|s| s.as_str()).unwrap_or("centroids_pot.bin");
+            let _ = generate_centroids_potential(num_flops, k, rank_table_path, output);
+            println!("Done.");
+        }
+        "abs-potential" => {
+            // F4: build the flop hand table using the (mean, potential)
+            // feature space instead of (EHS, EHS^2).
+            let centroids_path = args.get(2).map(|s| s.as_str()).unwrap_or("centroids_pot.bin");
+            let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            let output = args.get(4).map(|s| s.as_str()).unwrap_or("abstraction_pot.bin");
+            let _ = generate_abstraction_table_potential(centroids_path, rank_table_path, output);
+            println!("Done.");
+        }
         "turn" => {
             let centroids_path = args
                 .get(2)
@@ -783,6 +809,206 @@ fn generate_all7_scores(
     println!(
         "Generated all7 scores table with {} entries -> {}",
         total, output
+    );
+    Ok(())
+}
+
+/// F4: fit k-means on the (mean, potential) feature space.
+///
+/// Enumerates `num_flops` distinct flops (a subset of the 22,100
+/// possible), samples `HANDS_PER_FLOP` random hands for each, computes
+/// `ehs_and_potential` for every (hole, flop) pair, and runs k-means.
+///
+/// `inner` = 10 is enough: per-card sampling variance is subtracted out
+/// by `ehs_and_potential`, so the "potential" dimension is a property of
+/// the hand, not the RNG. The full table rebuild uses the same inner.
+fn generate_centroids_potential(
+    num_flops: usize,
+    k: usize,
+    rank_table_path: &str,
+    output: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use pkr_abstraction::potential::ehs_and_potential;
+
+    const HANDS_PER_FLOP: usize = 200;
+    const INNER: usize = 10;
+
+    let evaluator = make_evaluator(rank_table_path)?;
+    let total_flops = choose(52, 3) as usize;
+    let flops_to_use = num_flops.min(total_flops);
+    eprintln!(
+        "  potential: sampling {} flops x {} hands = {} pairs (inner={})",
+        flops_to_use,
+        HANDS_PER_FLOP,
+        flops_to_use * HANDS_PER_FLOP,
+        INNER,
+    );
+
+    let data: Vec<(f32, f32)> = (0..flops_to_use)
+        .into_par_iter()
+        .flat_map(|flop_idx| {
+            let board = combinadic_unrank_3(flop_idx as u32);
+            let mut rng = StdRng::seed_from_u64(0x9E37_0000 + flop_idx as u64);
+            // Remaining deck excludes the 3 board cards.
+            let avail: Vec<u8> = (0..52u8).filter(|c| !board.contains(c)).collect();
+            let mut out = Vec::with_capacity(HANDS_PER_FLOP);
+            for _ in 0..HANDS_PER_FLOP {
+                let i = rng.random_range(0..avail.len());
+                let mut j = rng.random_range(0..avail.len());
+                if j == i {
+                    j = (j + 1) % avail.len();
+                }
+                let hole = [avail[i], avail[j]];
+                out.push(ehs_and_potential(&hole, &board, evaluator.as_ref(), INNER));
+            }
+            out
+        })
+        .collect();
+
+    eprintln!("  potential: fitting k-means on {} pairs, k={}", data.len(), k);
+    let centroids = kmeans_2d(&data, k, 50);
+
+    // Report centroid coordinate stats so we can see whether the
+    // "potential" dimension is doing work.
+    let n = centroids.len().max(1) as f32;
+    let mean_m: f32 = centroids.iter().map(|c| c.0).sum::<f32>() / n;
+    let mean_p: f32 = centroids.iter().map(|c| c.1).sum::<f32>() / n;
+    let var_m: f32 = centroids.iter().map(|c| (c.0 - mean_m).powi(2)).sum::<f32>() / n;
+    let var_p: f32 = centroids.iter().map(|c| (c.1 - mean_p).powi(2)).sum::<f32>() / n;
+    eprintln!(
+        "  centroids: mean(EHS)={:.4} sd(EHS)={:.4}   mean(pot)={:.4} sd(pot)={:.4}",
+        mean_m, var_m.sqrt(), mean_p, var_p.sqrt(),
+    );
+
+    let store = CentroidStore { centroids };
+    save_centroids(output, &store)?;
+    println!(
+        "Generated {} potential centroids (EHS, potential) -> {}",
+        k, output,
+    );
+    Ok(())
+}
+
+/// k-means for 2D feature vectors, returns `k` centroids.
+fn kmeans_2d(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)> {
+    let n = data.len();
+    if n == 0 || k == 0 {
+        return vec![];
+    }
+    let k = k.min(n);
+    let mut rng = StdRng::seed_from_u64(42);
+    let mut centroids: Vec<(f32, f32)> = (0..k)
+        .map(|_| data[rng.random_range(0..n)])
+        .collect();
+    let mut assignments = vec![0usize; n];
+
+    for _ in 0..max_iters {
+        let mut counts = vec![0usize; k];
+        let mut sums = vec![(0.0f32, 0.0f32); k];
+        for (i, &(x, y)) in data.iter().enumerate() {
+            let mut best_dist = f32::MAX;
+            let mut best_idx = 0;
+            for (c_idx, &(cx, cy)) in centroids.iter().enumerate() {
+                let d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+                if d < best_dist {
+                    best_dist = d;
+                    best_idx = c_idx;
+                }
+            }
+            assignments[i] = best_idx;
+            counts[best_idx] += 1;
+            sums[best_idx].0 += x;
+            sums[best_idx].1 += y;
+        }
+        let mut moved = false;
+        for c_idx in 0..k {
+            if counts[c_idx] > 0 {
+                let new_x = sums[c_idx].0 / counts[c_idx] as f32;
+                let new_y = sums[c_idx].1 / counts[c_idx] as f32;
+                if (new_x - centroids[c_idx].0).abs() > 1e-6
+                    || (new_y - centroids[c_idx].1).abs() > 1e-6
+                {
+                    moved = true;
+                }
+                centroids[c_idx] = (new_x, new_y);
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    centroids
+}
+
+/// F4: same as `generate_abstraction_table` but matches against
+/// `(mean, potential)` centroids produced by `centroids-potential`.
+///
+/// The table layout is identical: `u8` bucket id per (5-card combo,
+/// 2-card mask) pair, 10 entries per combo. Only the feature used to
+/// pick the bucket changes.
+fn generate_abstraction_table_potential(
+    centroids_path: &str,
+    rank_table_path: &str,
+    output: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use pkr_abstraction::potential::ehs_and_potential;
+
+    const INNER: usize = 10;
+
+    let store = load_centroids(centroids_path)?;
+    assert!(
+        store.centroids.len() <= 255,
+        "centroid count must be <= 255 for u8 ids"
+    );
+    let centroids = &store.centroids;
+    let evaluator = make_evaluator(rank_table_path)?;
+    let total_combos = choose(52, 5) as usize;
+    let entries = total_combos * 10;
+    let mut table: Vec<u8> = vec![0u8; entries];
+
+    let mask: [[usize; 2]; 10] = [
+        [0, 1], [0, 2], [0, 3], [0, 4], [1, 2],
+        [1, 3], [1, 4], [2, 3], [2, 4], [3, 4],
+    ];
+
+    table
+        .par_chunks_mut(10)
+        .enumerate()
+        .for_each(|(combo_idx, chunk)| {
+            let cards = pkr_eval::lookup_fast::combinadic_unrank_5(combo_idx as u32);
+            for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+                let pos = mask[mask_idx];
+                let hole: [u8; 2] = [cards[pos[0]], cards[pos[1]]];
+                let mut board = [0u8; 3];
+                let mut b_idx = 0;
+                for j in 0..5 {
+                    if j != pos[0] && j != pos[1] {
+                        board[b_idx] = cards[j];
+                        b_idx += 1;
+                    }
+                }
+                let (m, p) = ehs_and_potential(&hole, &board, evaluator.as_ref(), INNER);
+                let mut best_idx = 0u8;
+                let mut best_dist = f32::MAX;
+                for (idx, c) in centroids.iter().enumerate() {
+                    let dx = m - c.0;
+                    let dy = p - c.1;
+                    let dist = dx * dx + dy * dy;
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_idx = idx as u8;
+                    }
+                }
+                *slot = best_idx;
+            }
+        });
+
+    let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
+    file.write_all(&table).map_err(|e| format!("write: {}", e))?;
+    println!(
+        "Generated potential flop table with {} entries -> {}",
+        total_combos * 10,
+        output,
     );
     Ok(())
 }
