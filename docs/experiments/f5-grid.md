@@ -182,3 +182,28 @@ NOT close the question. It only removes the weakest form of the
 hypothesis ("quadratic weighting is simply wrong"). The remaining
 form — "quadratic weighting tracks late noise once the abstraction
 saturates" — needs an NLHE run.
+
+## NLHE avg_power A/B — preliminary (v46 vs v42)
+
+v46 = `PKR_AVG_POWER=1` vs v42 = `PKR_AVG_POWER=2`, same seed/tables/
+schedule, evaluated on identical deals (eval seed = iteration number).
+
+| iter | v42 (p=2) | v46 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3313.4 | 3231.8 | -81.5 |
+| 6M | 3430.3 | 3300.5 | -129.8 |
+| 9M | 3374.6 | 3275.0 | -99.6 |
+| 12M | 3531.8 | 3377.3 | -154.5 |
+
+Every paired point favors p=1 (mean -116 mbb), but:
+- best-vs-best is -81.5, INSIDE the pre-registered +/-260 equivalence
+  band, so the pre-registered verdict is "equivalent";
+- the points are serially correlated (one run), so the consistency is
+  suggestive, not a clean significance test;
+- the ~3-6M turn-up persists under p=1 — the averaging weight is NOT
+  the cause of the plateau.
+
+Interpretation: p=1 may be mildly better than p=2, but neither the
+magnitude nor the evidence clears the bar to switch the default.
+A multi-seed paired A/B would settle it if it matters. The turn-up
+remains unexplained by floor, site, power, or feature space.
