@@ -158,3 +158,20 @@ Values:
 
 Update the v45 launcher to export it before launching. Fingerprint
 mismatches now correctly reject cross-feature-space loads.
+
+---
+
+## v45 first eval (3M)
+
+| | v42 (legacy EHS/EHS²) | v45 (mean/potential) |
+|---|---|---|
+| 3M reading | 3313.4 mbb | **3392.3 mbb** |
+| SE | 131.5 | 142.1 |
+
+Delta +78.9 mbb, well within the ~137 pooled SE. One eval, not
+conclusive. The curve shape over the next 4-5 evals is what matters:
+if v45 turns up at 3-6M like v42 does, the new feature doesn't change
+the fundamental pattern.
+
+Compare against the arena once v45 has a loadable checkpoint and a
+full run.
