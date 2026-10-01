@@ -220,3 +220,23 @@ remaining candidate; see the correction note in `f5-grid.md`.
    checkpoint trained with =1. The guard correctly refused to load —
    but the watcher must export the var. This is the same class of
    footgun the `resolve_tables_dir` warning covers for `tournament`.
+
+### Promote gate discards the best model (recurring)
+
+`--promote-min-sigma 2` rejects any eval whose improvement over the
+current best is below `2 * SE` (~256 mbb at SE~128). When that happens,
+`best_expl_mbb` is NOT updated and the artifact is NOT re-exported. So
+the "best reading" and the saved blueprint can diverge:
+
+- v45 best reading: 3302.3 @ 6M. Promoted artifact: 3392.3 @ 3M.
+  The 6M point was 90 mbb better but under the sigma gate, so the
+  better model was never saved.
+- v46 will hit the same trap: 3M promotes at 3231.8, so nothing above
+  3231.8 - 256 = 2976 can ever promote.
+
+The gate is defensible (winner's-curse protection: a sub-sigma win may
+be luck), but for A/B decisions we compare READINGS, not artifacts, so
+the decision is unaffected. It only bites when SHIPPING the best model.
+A `--save-best-reading` flag (export on every new minimum, regardless
+of the gate) is the clean fix; deferred until v46 finishes so its
+binary stays valid.

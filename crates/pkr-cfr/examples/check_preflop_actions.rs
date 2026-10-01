@@ -65,7 +65,7 @@ fn main() {
     }
 
     // Print fold/call/raise for each cluster.
-    println!("{:>8}  {:>8}  {:>8}  {:>8}  {}", "cluster", "fold", "call", "raise", "example");
+    println!("{:>8}  {:>8}  {:>8}  {:>8}  example", "cluster", "fold", "call", "raise");
     for cid in 0..200usize {
         if let Some(hole) = cluster_example[cid] {
             let hash = abs_arc.get_infoset_hash(&hole, board, hist, street);

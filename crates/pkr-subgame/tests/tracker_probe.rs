@@ -66,7 +66,7 @@ fn tracker_is_nonuniform_at_river() {
     let mut checked_river = false;
 
     for (i, (_actor, kind)) in line.iter().enumerate() {
-        let action = Action { player: 0, kind: kind.clone() };
+        let action = Action { player: 0, kind: *kind };
         let _ = tracker.apply_action(action);
 
         // Advance the street after each completed street, using a fixed
@@ -80,7 +80,7 @@ fn tracker_is_nonuniform_at_river() {
         }
         if tracker.state().is_street_complete()
             && !matches!(tracker.state().street, pkr_core::state::Street::River)
-            && pending_street_advance == false
+            && !pending_street_advance
         {
             // Pick the next 3-card board from the pool for flop, then 1
             // card on turn, 1 on river.

@@ -297,7 +297,7 @@ fn subgame_strategy_differs_from_blueprint_at_river() {
             st.advance_street_in_place(cards);
             session.observe_street(cards);
         } else {
-            let a = Action { player: *player, kind: kind.clone() };
+            let a = Action { player: *player, kind: *kind };
             st.apply_action_in_place(&a);
             session.observe_action(a);
         }
