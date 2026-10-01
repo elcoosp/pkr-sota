@@ -158,3 +158,27 @@ The harness has since been wired to read `TrainConfig::avg_power`, so
 the `p ∈ {0, 1, 2}` sweep can be run on Kuhn. Treat any Kuhn result
 with the same caveat as the floor grid: Kuhn may be too small to
 exhibit the long-run pattern the sweep is looking for.
+
+---
+
+## avg_power sweep result (2026-10-01, Kuhn)
+
+Harness wired to read `avg_power` (commit `de13676`, fixed `e896146`).
+
+| p | 1e5 exploitability | 1e6 exploitability |
+|---|---|---|
+| 0 (uniform) | 0.000398 | 0.000199 |
+| 1 (CFR+) | 0.000302 | 0.000129 |
+| 2 (DCFR, production) | 0.000318 | **0.000093** |
+
+**At convergence the production default (p=2) wins.** The quadratic
+recency weighting is not harmful on Kuhn — if anything it converges
+fastest at 1e6. This is the third dimension where the toy game
+validates the current default (floor: RM+ wins; site: equivalent;
+power: p=2 wins).
+
+Kuhn is far too small to exhibit the ~3-6M NLHE turn-up, so this does
+NOT close the question. It only removes the weakest form of the
+hypothesis ("quadratic weighting is simply wrong"). The remaining
+form — "quadratic weighting tracks late noise once the abstraction
+saturates" — needs an NLHE run.
