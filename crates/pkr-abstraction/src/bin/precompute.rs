@@ -97,20 +97,21 @@ fn main() {
             println!("Done.");
         }
         "centroids-potential" => {
-            // F4: fit k-means on the (mean, potential) 2D feature space
-            // instead of (EHS, EHS^2). Samples are (hole, flop) pairs
-            // drawn from a random subset of flops.
+            // F4: fit k-means on the (mean, potential) 2D feature space.
             //
-            //   num_samples = number of flops to sample from (default 500)
-            //   k           = number of centroids (default 200)
+            //   num_boards = number of distinct boards to sample (default 500)
+            //   k          = number of centroids (default 200)
+            //   rank_table = hand_ranks.bin
+            //   output     = centroids_pot.bin
+            //   street     = "flop" (default) or "turn"
             //
-            // Each flop contributes HANDS_PER_FLOP hand samples. Total
-            // pairs = num_samples * HANDS_PER_FLOP.
-            let num_flops = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
+            // Each board contributes HANDS_PER_BOARD hand samples.
+            let num_boards = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
             let k = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
             let rank_table_path = args.get(4).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             let output = args.get(5).map(|s| s.as_str()).unwrap_or("centroids_pot.bin");
-            let _ = generate_centroids_potential(num_flops, k, rank_table_path, output);
+            let street = args.get(6).map(|s| s.as_str()).unwrap_or("flop");
+            let _ = generate_centroids_potential(num_boards, k, rank_table_path, output, street);
             println!("Done.");
         }
         "abs-potential" => {
@@ -120,6 +121,14 @@ fn main() {
             let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             let output = args.get(4).map(|s| s.as_str()).unwrap_or("abstraction_pot.bin");
             let _ = generate_abstraction_table_potential(centroids_path, rank_table_path, output);
+            println!("Done.");
+        }
+        "turn-potential" => {
+            // F4: turn hand table against (mean, potential) centroids.
+            let centroids_path = args.get(2).map(|s| s.as_str()).unwrap_or("centroids_turn_pot.bin");
+            let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
+            let output = args.get(4).map(|s| s.as_str()).unwrap_or("turn_table_pot.bin");
+            let _ = generate_turn_table_potential(centroids_path, rank_table_path, output);
             println!("Done.");
         }
         "turn" => {
@@ -823,36 +832,66 @@ fn generate_all7_scores(
 /// by `ehs_and_potential`, so the "potential" dimension is a property of
 /// the hand, not the RNG. The full table rebuild uses the same inner.
 fn generate_centroids_potential(
-    num_flops: usize,
+    num_boards: usize,
     k: usize,
     rank_table_path: &str,
     output: &str,
+    street: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use pkr_abstraction::potential::ehs_and_potential;
 
-    const HANDS_PER_FLOP: usize = 200;
+    const HANDS_PER_BOARD: usize = 200;
     const INNER: usize = 10;
 
+    let board_len: usize = match street {
+        "flop" => 3,
+        "turn" => 4,
+        other => {
+            return Err(format!("centroids-potential: unknown street '{other}' (expected flop or turn)").into());
+        }
+    };
+
     let evaluator = make_evaluator(rank_table_path)?;
-    let total_flops = choose(52, 3) as usize;
-    let flops_to_use = num_flops.min(total_flops);
+    // For flop, enumerate 3-card boards directly. For turn, enumerate
+    // 6-card combos and split: the first two become a hole, the
+    // remaining four are the board. There's no combinadic_unrank_4
+    // because the turn table itself uses the same 6-into-(2,4) split.
+    let total_boards = if board_len == 3 {
+        choose(52, 3) as usize
+    } else {
+        choose(52, 6) as usize
+    };
+    let boards_to_use = num_boards.min(total_boards);
     eprintln!(
-        "  potential: sampling {} flops x {} hands = {} pairs (inner={})",
-        flops_to_use,
-        HANDS_PER_FLOP,
-        flops_to_use * HANDS_PER_FLOP,
+        "  potential[{}]: sampling {} boards x {} hands = {} pairs (inner={})",
+        street,
+        boards_to_use,
+        HANDS_PER_BOARD,
+        boards_to_use * HANDS_PER_BOARD,
         INNER,
     );
 
-    let data: Vec<(f32, f32)> = (0..flops_to_use)
+    let data: Vec<(f32, f32)> = (0..boards_to_use)
         .into_par_iter()
-        .flat_map(|flop_idx| {
-            let board = combinadic_unrank_3(flop_idx as u32);
-            let mut rng = StdRng::seed_from_u64(0x9E37_0000 + flop_idx as u64);
-            // Remaining deck excludes the 3 board cards.
+        .flat_map(|board_idx| {
+            let (board, fixed_hole): (Vec<u8>, Option<[u8; 2]>) = if board_len == 3 {
+                (combinadic_unrank_3(board_idx as u32).to_vec(), None)
+            } else {
+                let cards = combinadic_unrank_6(board_idx as u32);
+                ([cards[2], cards[3], cards[4], cards[5]].to_vec(), Some([cards[0], cards[1]]))
+            };
+            let mut rng = StdRng::seed_from_u64(0x9E37_0000 + board_idx as u64);
             let avail: Vec<u8> = (0..52u8).filter(|c| !board.contains(c)).collect();
-            let mut out = Vec::with_capacity(HANDS_PER_FLOP);
-            for _ in 0..HANDS_PER_FLOP {
+            let mut out = Vec::with_capacity(HANDS_PER_BOARD);
+            // For turn, the first hand is the fixed (hole, board) split
+            // from the 6-combo. That makes the sample include the pair
+            // the table will actually be queried on. Additional random
+            // hands broaden the centroid fit.
+            if let Some(h) = fixed_hole {
+                out.push(ehs_and_potential(&h, &board, evaluator.as_ref(), INNER));
+            }
+            let target = if fixed_hole.is_some() { HANDS_PER_BOARD - 1 } else { HANDS_PER_BOARD };
+            for _ in 0..target {
                 let i = rng.random_range(0..avail.len());
                 let mut j = rng.random_range(0..avail.len());
                 if j == i {
@@ -1010,6 +1049,131 @@ fn generate_abstraction_table_potential(
         total_combos * 10,
         output,
     );
+    Ok(())
+}
+
+/// F4: turn hand table against (mean, potential) centroids.
+///
+/// Same layout and resume logic as `generate_turn_table`, but the
+/// feature used to pick the bucket is `ehs_and_potential` instead of
+/// `(calculate_ehs, ..)`.
+fn generate_turn_table_potential(
+    centroids_path: &str,
+    rank_table_path: &str,
+    output: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use pkr_abstraction::potential::ehs_and_potential;
+
+    const INNER: usize = 10;
+
+    let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
+    assert!(
+        store.centroids.len() <= 255,
+        "turn table uses u8 bucket ids; keep centroid count <= 255"
+    );
+    let centroids = &store.centroids;
+    let evaluator = make_evaluator(rank_table_path)?;
+    let total_combos = choose(52, 6) as usize;
+    let entries = total_combos * 15;
+
+    let tmp_path = format!("{}.tmp", output);
+    let prog_path = format!("{}.progress", output);
+    let mut table: Vec<u8> = vec![0u8; entries];
+    let mut resume_from: usize = 0;
+    if let Ok(prog_bytes) = std::fs::read(&prog_path) {
+        if prog_bytes.len() == 8 {
+            let p = u64::from_le_bytes(prog_bytes.try_into().unwrap()) as usize;
+            if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
+                if let Ok(disk) = std::fs::read(&tmp_path) {
+                    let copy = disk.len().min(table.len());
+                    table[..copy].copy_from_slice(&disk[..copy]);
+                    resume_from = p;
+                    eprintln!(
+                        "  turn-potential: resuming from combo {} / {} ({:.1}%)",
+                        p,
+                        total_combos,
+                        100.0 * p as f64 / total_combos as f64,
+                    );
+                }
+            }
+        }
+    }
+
+    let masks: [[usize; 2]; 15] = [
+        [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
+        [1, 2], [1, 3], [1, 4], [1, 5],
+        [2, 3], [2, 4], [2, 5],
+        [3, 4], [3, 5],
+        [4, 5],
+    ];
+
+    let checkpoint_every: usize = 5_000_000;
+    let t_start = std::time::Instant::now();
+    let mut done = resume_from;
+    while done < total_combos {
+        let end = (done + checkpoint_every).min(total_combos);
+        let lo_off = done * 15;
+        let hi_off = end * 15;
+
+        table[lo_off..hi_off]
+            .par_chunks_mut(15)
+            .enumerate()
+            .for_each(|(rel_idx, chunk)| {
+                let combo_idx = done + rel_idx;
+                let cards = combinadic_unrank_6(combo_idx as u32);
+                for (mask_idx, slot) in chunk.iter_mut().enumerate() {
+                    let pos = masks[mask_idx];
+                    let hole = [cards[pos[0]], cards[pos[1]]];
+                    let mut board = [0u8; 4];
+                    let mut b_idx = 0;
+                    for j in 0..6 {
+                        if j != pos[0] && j != pos[1] {
+                            board[b_idx] = cards[j];
+                            b_idx += 1;
+                        }
+                    }
+                    let (m, p) = ehs_and_potential(&hole, &board, evaluator.as_ref(), INNER);
+                    let mut best_idx = 0u8;
+                    let mut best_dist = f32::MAX;
+                    for (ci, c) in centroids.iter().enumerate() {
+                        let dx = m - c.0;
+                        let dy = p - c.1;
+                        let dist = dx * dx + dy * dy;
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_idx = ci as u8;
+                        }
+                    }
+                    *slot = best_idx;
+                }
+            });
+
+        done = end;
+
+        let mut f = File::create(&tmp_path).map_err(|e| format!("create {}: {}", tmp_path, e))?;
+        f.write_all(&table).map_err(|e| format!("write {}: {}", tmp_path, e))?;
+        f.sync_all().ok();
+        let mut pf = File::create(&prog_path).map_err(|e| format!("create {}: {}", prog_path, e))?;
+        pf.write_all(&(done as u64).to_le_bytes())
+            .map_err(|e| format!("write {}: {}", prog_path, e))?;
+        pf.sync_all().ok();
+
+        let pct = 100.0 * done as f64 / total_combos as f64;
+        let elapsed = t_start.elapsed().as_secs_f64();
+        let eta = if done > resume_from {
+            elapsed * (total_combos - done) as f64 / (done - resume_from).max(1) as f64
+        } else { 0.0 };
+        eprintln!(
+            "  turn-potential: {}/{} combos ({:.1}%), {:.0}s elapsed, ETA {:.0}s",
+            done, total_combos, pct, elapsed, eta,
+        );
+    }
+
+    let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
+    file.write_all(&table).map_err(|e| format!("write: {}", e))?;
+    let _ = std::fs::remove_file(&tmp_path);
+    let _ = std::fs::remove_file(&prog_path);
+    println!("Generated potential turn table with {} entries -> {}", entries, output);
     Ok(())
 }
 
