@@ -175,3 +175,48 @@ the fundamental pattern.
 
 Compare against the arena once v45 has a loadable checkpoint and a
 full run.
+
+---
+
+## RESULT (2026-10-01): F4 is EQUIVALENT — keep legacy
+
+v45 finished at 18.0M iterations (plateau-stop 5).
+
+| iter | v42 (legacy) | v45 (potential) |
+|---|---|---|
+| 3.0M | **3313.4** | 3392.3 |
+| 6.0M | 3430.3 | **3302.3** |
+| 9.0M | 3374.6 | 3501.0 |
+| 12.0M | 3531.8 | 3593.7 |
+| 15.0M | 3709.4 | 3499.6 |
+| 18.0M | 3780.4 | 3612.5 |
+| **best** | **3313.4** | **3302.3** |
+
+delta of bests = -11.0 mbb, combined SE ~192. Per the decision rule
+(within +/-260 = equivalent): **keep the legacy (EHS, EHS-squared)
+centroid feature. Do NOT launch the 2.5-day turn rebuild.**
+
+### Both curves turn up in the same place
+
+Best early (3-6M), then rising exploitability — the same shape as
+v42-vs-v43. F4 does not fix the turn-up. With F5 neutral on the
+averaging site and RM+ helping on the floor (Kuhn), the turn-up is
+still unexplained. The untested `avg_power` dimension is the leading
+remaining candidate; see the correction note in `f5-grid.md`.
+
+### Two operational findings
+
+1. **The promote gate froze v45 at 3M.** The 6M reading (3302.3) was
+   never promoted: the gate needs `2*SE ~ 280` mbb of improvement, but
+   it was only 90 mbb better than the 3M best. So `blueprint.bin` on
+   disk is the 3M model (3392.3), ~90 mbb WORSE than v42's 3313.4.
+   Best-reading comparison says "equivalent"; best-artifact comparison
+   says v42 wins. Revisit `--promote-min-sigma 2`: it discards real
+   100-200 mbb improvements. The 6M eval point was not a checkpoint
+   boundary, so it cannot be recovered retroactively.
+
+2. **The watcher's arena step failed on the fingerprint guard.** It ran
+   `arena` with `PKR_CENTROID_FEATURE_V` unset (=0) against a
+   checkpoint trained with =1. The guard correctly refused to load —
+   but the watcher must export the var. This is the same class of
+   footgun the `resolve_tables_dir` warning covers for `tournament`.
