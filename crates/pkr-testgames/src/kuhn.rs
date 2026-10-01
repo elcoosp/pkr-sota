@@ -38,6 +38,9 @@ pub struct KuhnCfr {
     pub mode: DiscountMode,
     pub momentum: MomentumMode,
     pub nan_flag: bool,
+    /// F5 avg_power: strategy-sum weight exponent. 0.0 = uniform (the
+    /// historical harness behaviour), 1.0 = linear (CFR+), 2.0 = DCFR.
+    pub avg_power: f32,
 }
 
 impl KuhnCfr {
@@ -54,6 +57,7 @@ impl KuhnCfr {
             mode,
             momentum,
             nan_flag: false,
+            avg_power: 0.0,
         }
     }
 
@@ -107,6 +111,12 @@ impl KuhnCfr {
             strat[i] = self.strategy_at(i);
         }
 
+        let avg_weight = if self.avg_power == 0.0 {
+            1.0f32
+        } else {
+            (t as f32).powf(self.avg_power)
+        };
+
         let mut delta_accum = [[0.0f32; N_ACTIONS]; N_INFOSETS];
         for c0 in 0..3u8 {
             for c1 in 0..3u8 {
@@ -120,6 +130,7 @@ impl KuhnCfr {
                     [c0, c1],
                     &[],
                     [1.0, 1.0],
+                    avg_weight,
                 );
             }
         }
@@ -158,6 +169,7 @@ impl KuhnCfr {
         cards: [u8; 2],
         history: &[u8],
         reach: [f32; 2],
+        avg_weight: f32,
     ) -> f32 {
         match history.len() {
             0 => {
@@ -168,6 +180,7 @@ impl KuhnCfr {
                     strategy_sum,
                     delta_accum,
                     cards,
+                    avg_weight,
                     &[0],
                     [reach[0] * s[0], reach[1]],
                 );
@@ -176,6 +189,7 @@ impl KuhnCfr {
                     strategy_sum,
                     delta_accum,
                     cards,
+                    avg_weight,
                     &[1],
                     [reach[0] * s[1], reach[1]],
                 );
@@ -184,7 +198,7 @@ impl KuhnCfr {
                 delta_accum[infoset][0] += (v0 - v) * w;
                 delta_accum[infoset][1] += (v1 - v) * w;
                 for a in 0..N_ACTIONS {
-                    strategy_sum[infoset][a] += s[a] * reach[0];
+                    strategy_sum[infoset][a] += s[a] * reach[0] * avg_weight;
                 }
                 v
             }
@@ -197,6 +211,7 @@ impl KuhnCfr {
                     strategy_sum,
                     delta_accum,
                     cards,
+                    avg_weight,
                     &[history[0], 0],
                     [reach[0], reach[1] * s[0]],
                 );
@@ -205,6 +220,7 @@ impl KuhnCfr {
                     strategy_sum,
                     delta_accum,
                     cards,
+                    avg_weight,
                     &[history[0], 1],
                     [reach[0], reach[1] * s[1]],
                 );
@@ -214,7 +230,7 @@ impl KuhnCfr {
                 delta_accum[infoset][0] += (v - v0) * w;
                 delta_accum[infoset][1] += (v - v1) * w;
                 for a in 0..N_ACTIONS {
-                    strategy_sum[infoset][a] += s[a] * reach[1];
+                    strategy_sum[infoset][a] += s[a] * reach[1] * avg_weight;
                 }
                 v
             }
@@ -231,7 +247,7 @@ impl KuhnCfr {
                     delta_accum[infoset][0] += (vs[0] - v) * w;
                     delta_accum[infoset][1] += (vs[1] - v) * w;
                     for a in 0..N_ACTIONS {
-                        strategy_sum[infoset][a] += s[a] * reach[0];
+                        strategy_sum[infoset][a] += s[a] * reach[0] * avg_weight;
                     }
                     v
                 }
@@ -635,5 +651,33 @@ mod f5_grid_tests {
             e6 < 1e-2,
             "Kuhn should converge below 1e-2, got {e6}"
         );
+    }
+}
+
+#[cfg(test)]
+mod f5_avg_power_tests {
+    use super::*;
+
+    fn run_with_power(iters: u32, p: f32) -> f32 {
+        let mut cfr = KuhnCfr::new_full(DiscountMode::PRODUCTION, MomentumMode::Off);
+        cfr.avg_power = p;
+        for _ in 0..iters {
+            cfr.iterate();
+        }
+        cfr.exploitability()
+    }
+
+    /// F5 avg_power sweep. p=0 is uniform (historical harness behaviour),
+    /// p=1 is CFR+, p=2 is DCFR. The default TrainConfig uses p=2.
+    #[test]
+    #[ignore]
+    fn kuhn_avg_power_sweep() {
+        println!();
+        println!("=== F5 Kuhn avg_power sweep ===");
+        for p in [0.0f32, 1.0, 2.0] {
+            let e5 = run_with_power(100_000, p);
+            let e6 = run_with_power(1_000_000, p);
+            println!("  p={p}: 1e5={e5:.6}  1e6={e6:.6}");
+        }
     }
 }
