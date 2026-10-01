@@ -73,7 +73,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Postflop: BB (P1) acts first (OOP in HU), then SB (P0).
     // Every action is applied with `player = st.actor` so the
     // debug_assert in `apply_action_internal` stays quiet.
-    let runouts: &[&[u8]] = &[&[2, 6, 10], &[14], &[18]];
+    // Declared but unused: this example stops before P0 responds, so the
+    // runout is never consumed. Kept to document the intended board.
+    let _runouts: &[&[u8]] = &[&[2, 6, 10], &[14], &[18]];
 
     let mut st = root.clone();
 

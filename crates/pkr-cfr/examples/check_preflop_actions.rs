@@ -26,7 +26,7 @@ fn main() {
     // preflop table index maps to that cluster.
     println!();
     println!("=== cluster -> bucket strategy (SB preflop root) ===");
-    use pkr_abstraction::{load_centroids, KMeansAbstraction, save_centroids};
+    use pkr_abstraction::{load_centroids, KMeansAbstraction};
     use pkr_contracts::AbstractionBuilder;
     use std::sync::Arc;
     let store = load_centroids("outputs/v34long/centroids.bin").expect("centroids");
