@@ -207,3 +207,35 @@ Interpretation: p=1 may be mildly better than p=2, but neither the
 magnitude nor the evidence clears the bar to switch the default.
 A multi-seed paired A/B would settle it if it matters. The turn-up
 remains unexplained by floor, site, power, or feature space.
+
+## NLHE avg_power A/B — FINAL (v46 vs v42)
+
+| iter | v42 (p=2) | v46 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3313.4 | 3231.8 | -81.5 |
+| 6M | 3430.3 | 3300.5 | -129.8 |
+| 9M | 3374.6 | 3275.0 | -99.6 |
+| 12M | 3531.8 | 3377.3 | -154.5 |
+| 15M | 3709.4 | 3581.4 | -128.0 |
+| 18M | 3780.4 | 3632.2 | -148.2 |
+
+**Verdict (pre-registered rule): EQUIVALENT.** Best-vs-best is -81.5,
+inside the +/-260 band -> keep p=2 (fewer moving parts, more
+checkpoints match).
+
+**But the paired data is suggestive:** 6/6 points favor p=1, mean
+-124 mbb, and both bests are at 3M (so the best-reading comparison is
+itself paired on the same deals). A paired SE is well below the
+unpaired ~183, so -81.5 is arguably borderline-significant. The catch:
+ONE seed. A second seed could flip it. If ~100 mbb matters, run
+v47 = p=1 seed 43 vs v42 seed 43; otherwise keep p=2 and move on.
+
+**Both curves turn up identically** (best at 3M, rising after 6M under
+both p). This RULES OUT the averaging weight as the cause of the
+turn-up. Four hypotheses now dead: feature space (F4), averaging site
+(F5), regret floor (F5), averaging weight (this). The turn-up is either
+intrinsic to the k=200 abstraction or an estimator artifact (the
+in-sample BR overfitting a growing infoset table — untested).
+
+Kuhn said p=2 wins; NLHE says p=1 is mildly better. Toy-game verdicts
+do not transfer.
