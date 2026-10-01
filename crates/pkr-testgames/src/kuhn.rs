@@ -180,18 +180,18 @@ impl KuhnCfr {
                     strategy_sum,
                     delta_accum,
                     cards,
-                    avg_weight,
                     &[0],
                     [reach[0] * s[0], reach[1]],
+                    avg_weight,
                 );
                 let v1 = Self::traverse(
                     strat,
                     strategy_sum,
                     delta_accum,
                     cards,
-                    avg_weight,
                     &[1],
                     [reach[0] * s[1], reach[1]],
+                    avg_weight,
                 );
                 let v = s[0] * v0 + s[1] * v1;
                 let w = reach[1];
@@ -211,18 +211,18 @@ impl KuhnCfr {
                     strategy_sum,
                     delta_accum,
                     cards,
-                    avg_weight,
                     &[history[0], 0],
                     [reach[0], reach[1] * s[0]],
+                    avg_weight,
                 );
                 let v1 = Self::traverse(
                     strat,
                     strategy_sum,
                     delta_accum,
                     cards,
-                    avg_weight,
                     &[history[0], 1],
                     [reach[0], reach[1] * s[1]],
+                    avg_weight,
                 );
                 let v = s[0] * v0 + s[1] * v1;
                 // P1 minimizes v_to_P0, so regret for action a is v - v_a.
