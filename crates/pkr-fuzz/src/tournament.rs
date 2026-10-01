@@ -35,6 +35,7 @@ use pkr_contracts::{AbstractionBuilder, BlueprintProvider, Evaluator};
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
+use std::path::{Path, PathBuf};
 
 /// Per-opponent paired result.
 #[derive(Debug, Clone)]
@@ -262,6 +263,67 @@ fn decide_via(
     (buf[idx], true)
 }
 
+/// Where the abstraction tables for a tournament come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablesDirSource {
+    /// The caller passed `--tables DIR`.
+    Explicit,
+    /// No `--tables` was given, so A's parent directory is used.
+    AParent,
+}
+
+/// Resolved tables-directory choice for a tournament run.
+#[derive(Debug, Clone)]
+pub struct TablesDir {
+    /// Directory the abstraction tables are loaded from.
+    pub dir: PathBuf,
+    /// Which rule produced `dir`.
+    pub source: TablesDirSource,
+    /// True when `source == AParent` AND A's and B's parent
+    /// directories differ. Both checkpoints will be loaded against A's
+    /// tables; if B was trained against a different abstraction the
+    /// comparison is meaningless. The fingerprint check catches a
+    /// feature-version mismatch only when the `PKR_CENTROID_FEATURE_V`
+    /// environment variable is exported to match one of the two, so
+    /// the default (unset) path can silently pair two checkpoints from
+    /// different abstractions. The caller should warn when this is
+    /// true.
+    pub a_b_diverge: bool,
+}
+
+/// Resolve the abstraction-tables directory for a tournament.
+///
+/// `explicit` (`--tables DIR`) always wins. Otherwise A's parent
+/// directory is used. Pure function; no filesystem access. Callers
+/// that want the divergence warning log it themselves using
+/// [`TablesDir::a_b_diverge`].
+pub fn resolve_tables_dir(
+    a: &Path,
+    b: &Path,
+    explicit: Option<&Path>,
+) -> TablesDir {
+    if let Some(d) = explicit {
+        return TablesDir {
+            dir: d.to_path_buf(),
+            source: TablesDirSource::Explicit,
+            a_b_diverge: false,
+        };
+    }
+    let a_parent: &Path = a
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let b_parent: &Path = b
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    TablesDir {
+        dir: a_parent.to_path_buf(),
+        source: TablesDirSource::AParent,
+        a_b_diverge: a_parent != b_parent,
+    }
+}
+
 /// Duplicate tournament between two blueprints.
 ///
 /// Prefer this over two independent `run_eval_harness` calls whenever
@@ -325,6 +387,45 @@ pub fn tournament(
 mod tests {
     use super::*;
     use pkr_contracts::SotaAdvice;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn resolve_tables_dir_explicit_wins() {
+        let a = Path::new("/x/a/ckpt.bin");
+        let b = Path::new("/y/b/ckpt.bin");
+        let r = resolve_tables_dir(a, b, Some(Path::new("/z/tables")));
+        assert_eq!(r.dir, PathBuf::from("/z/tables"));
+        assert_eq!(r.source, TablesDirSource::Explicit);
+        assert!(!r.a_b_diverge);
+    }
+
+    #[test]
+    fn resolve_tables_dir_falls_back_to_a_parent() {
+        let a = Path::new("/x/a/ckpt.bin");
+        let b = Path::new("/y/b/ckpt.bin");
+        let r = resolve_tables_dir(a, b, None);
+        assert_eq!(r.dir, PathBuf::from("/x/a"));
+        assert_eq!(r.source, TablesDirSource::AParent);
+        assert!(r.a_b_diverge, "different parents must set a_b_diverge");
+    }
+
+    #[test]
+    fn resolve_tables_dir_same_parent_no_warning() {
+        let a = Path::new("/x/a/ckpt_a.bin");
+        let b = Path::new("/x/a/ckpt_b.bin");
+        let r = resolve_tables_dir(a, b, None);
+        assert_eq!(r.dir, PathBuf::from("/x/a"));
+        assert!(!r.a_b_diverge);
+    }
+
+    #[test]
+    fn resolve_tables_dir_bare_filenames_use_cwd() {
+        let a = Path::new("ckpt_a.bin");
+        let b = Path::new("ckpt_b.bin");
+        let r = resolve_tables_dir(a, b, None);
+        assert_eq!(r.dir, PathBuf::from("."));
+        assert!(!r.a_b_diverge);
+    }
 
     /// A trivial provider that always returns uniform over 6 buckets.
     struct Uniform;

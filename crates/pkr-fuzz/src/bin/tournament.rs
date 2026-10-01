@@ -60,9 +60,21 @@ fn main() {
     });
 
     // Abstraction tables live in --tables DIR, or in A's parent.
-    let tdir = tables.unwrap_or_else(|| {
-        a_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
-    });
+    let td = pkr_fuzz::tournament::resolve_tables_dir(
+        &a_path,
+        &b_path,
+        tables.as_deref(),
+    );
+    if td.a_b_diverge {
+        eprintln!(
+            "WARNING: A and B live in different directories and no --tables DIR was given. \
+             Both checkpoints will be loaded against A's tables ({}). If B was trained \
+             against a different abstraction, this comparison is meaningless. Pass \
+             --tables DIR explicitly, or copy the shared tables into one directory.",
+            td.dir.display(),
+        );
+    }
+    let tdir = td.dir;
 
     let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap())
         .unwrap_or_else(|e| { eprintln!("load centroids: {e}"); std::process::exit(1); });
