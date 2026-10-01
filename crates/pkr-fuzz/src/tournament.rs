@@ -198,10 +198,39 @@ fn decide_via(
     let advice = match ctx.provider.lookup(hash) {
         Some(a) => a,
         None => {
-            // Fallback: check/call if legal, else fold.
-            for a in buf.iter().take(n) {
-                if matches!(a.kind, ActionKind::Check | ActionKind::Call) {
-                    return (*a, false);
+            // Fallback: byte-for-byte the same policy as
+            // `crate::decide_from_blueprint`, so arena and tournament
+            // resolve the same checkpoint to the same concrete action
+            // on a hash miss.
+            //
+            // Before this fix the miss path was "check/call if legal,
+            // else fold", which made the two F9 tools measure
+            // different agents whenever the blueprint missed. Keep in
+            // sync with lib.rs.
+            let to_call = state.bet_to_call();
+            if to_call <= 0.0 {
+                for act in buf.iter().take(n) {
+                    if matches!(act.kind, ActionKind::Check) {
+                        return (*act, false);
+                    }
+                }
+                return (buf[0], false);
+            }
+            let pot = state.pot.max(1.0);
+            let pot_odds = to_call / (pot + to_call);
+            // F8b: rank-based strength, not card-ID.
+            let rank = |c: u8| (c % 13) as f32;
+            let strength = (rank(hole[0]) + rank(hole[1])) / 24.0;
+            if strength >= pot_odds {
+                for act in buf.iter().take(n) {
+                    if matches!(act.kind, ActionKind::Call) {
+                        return (*act, false);
+                    }
+                }
+            }
+            for act in buf.iter().take(n) {
+                if matches!(act.kind, ActionKind::Fold) {
+                    return (*act, false);
                 }
             }
             return (buf[0], false);
