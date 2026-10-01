@@ -107,6 +107,14 @@ fn mirror_to_seat0(state: &GameState) -> GameState {
     m.folded.swap(0, 1);
     m.hole.swap(0, 1);
     m.actor = 1 - m.actor;
+    // Bug hunt find: the dealer must swap too. `advance_street_in_place`
+    // computes the next street's first actor as `1 - dealer`, so a
+    // mirrored state with the wrong dealer would hand the first
+    // postflop action to the wrong seat whenever the subgame spans a
+    // street boundary. River-only subgames never advance, so the
+    // shipped config was safe, but turn subgames (`enabled_streets[2]`)
+    // were not.
+    m.dealer = 1 - m.dealer;
     m
 }
 
