@@ -796,9 +796,11 @@ impl CompactRegretTable {
         for i in 0..entries_sum {
             strat_mass += f64::from_bits(self.strategy_sum[i].load(Ordering::Relaxed));
         }
-        // B4: allocated() reflects true slot consumption (races leak slots
-        // that len() would not count); this is what is_near_capacity uses.
-        let infosets = self.allocated();
+        // B4: report actual map entries (deterministic). allocated()
+        // includes slots orphaned by the get_or_create_idx race, whose
+        // count is timing-dependent; is_near_capacity still uses
+        // allocated() for capacity accounting.
+        let infosets = self.len();
         TableSnapshot {
             infosets,
             capacity: self.capacity,
@@ -1444,7 +1446,7 @@ mod audit_regression_tests {
             t.get_or_create_idx(0xB4_0000 + k);
         }
         let snap = t.snapshot();
-        assert_eq!(snap.infosets, t.allocated());
+        assert_eq!(snap.infosets, t.len());
         assert_eq!(snap.infosets, 10);
     }
 
