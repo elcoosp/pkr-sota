@@ -29,6 +29,11 @@ fn hash_key(key: u64, seed: u64) -> u64 {
     key.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(seed)
 }
 
+/// S15: only called when `PKR_EMIT_FMPH=1` (writer.rs); off in every
+/// production path. The retry loop below can take minutes-hours on large
+/// tables, so the writer deliberately keeps it opt-in. Move behind a
+/// `fmph` cargo feature if it ever needs to be off the default build
+/// entirely.
 pub fn build_fmph(keys: &[u64]) -> FmphData {
     let unique: Vec<u64> = {
         let mut set = HashSet::new();
