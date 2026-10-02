@@ -67,12 +67,12 @@ fn main() {
     );
     if td.a_b_diverge {
         eprintln!(
-            "WARNING: A and B live in different directories and no --tables DIR was given. \
-             Both checkpoints will be loaded against A's tables ({}). If B was trained \
-             against a different abstraction, this comparison is meaningless. Pass \
-             --tables DIR explicitly, or copy the shared tables into one directory.",
+            "ERROR: A and B live in different directories and no --tables DIR was given. \
+             Both would load against A's tables ({}), silently comparing two different \
+             abstractions. Pass --tables DIR explicitly.",
             td.dir.display(),
         );
+        std::process::exit(1);
     }
     let tdir = td.dir;
 
