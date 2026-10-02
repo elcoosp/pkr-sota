@@ -36,7 +36,15 @@ pub const SIG_V2_VERSION: u64 = 2;
 /// Turning this on invalidates every existing checkpoint: the abstract
 /// game changes because the infoset key can now distinguish bet sizes
 /// and pot classes. Retrain or `--fresh`.
-pub const SIG_V3_SIZE_AWARE: bool = false;
+/// Runtime gate for the size-aware V3 infoset signature (env `PKR_SIG_V3=1`).
+/// Default OFF. When ON, `history_signature_v3` is used and the fingerprint
+/// records `sig_version=3`; V1/V2 checkpoints then refuse to load, as they
+/// must (the infoset keys differ). Env read once.
+pub fn sig_v3_size_aware() -> bool {
+    use std::sync::OnceLock;
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| std::env::var("PKR_SIG_V3").as_deref() == Ok("1"))
+}
 
 /// Version tag written into the top 4 bits of the v3 signature.
 pub const SIG_V3_VERSION: u64 = 3;
@@ -131,7 +139,7 @@ pub struct GameState {
     /// `advance_street_in_place` (from the pre-advance pot) and at
     /// hand start (to the blinds' forced total). Never reset within a
     /// street. Off-by-default consumer; the size-aware signature is
-    /// gated on `SIG_V3_SIZE_AWARE`.
+    /// gated on `sig_v3_size_aware()` (`PKR_SIG_V3=1`).
     pub street_start_pot: f32,
     /// Big blind, in chips. Set once in `new`; immutable after. Stored so
     /// signatures and bucketing that reason in bb are correct for any
@@ -723,11 +731,15 @@ impl GameState {
         let pot_class = (pot_bb.log2().floor() as u64).min(8) & 0xF;
         let raises = (self.total_raises as u64).min(7) & 0x7;
 
-        (street)
-            | (seq << 3)
-            | ((n_actions as u64 & 0x7) << 10)
-            | (pot_class << 14)
-            | (raises << 19)
+        // Non-overlapping layout: street 0..2 | seq 2..23 | n_actions
+        // 23..26 | pot_class 26..30 | raises 30..33 | version 60..64.
+        // The old layout ORed n_actions/pot_class/raises into seq's
+        // bits (3..24), colliding. V3 never ran, so nothing depends on it.
+        (street & 0x3)
+            | ((seq & 0x1F_FFFF) << 2)
+            | ((n_actions as u64 & 0x7) << 23)
+            | ((pot_class & 0xF) << 26)
+            | ((raises & 0x7) << 30)
             | (SIG_V3_VERSION << 60)
     }
 
@@ -753,7 +765,7 @@ impl GameState {
     #[inline]
     pub fn infoset_signature_into(&self, out: &mut [u8; 8]) -> usize {
         // F3 dispatch: v3 takes precedence when enabled.
-        if SIG_V3_SIZE_AWARE {
+        if sig_v3_size_aware() {
             out.copy_from_slice(&self.history_signature_v3().to_le_bytes());
             8
         } else if SIG_V2_STREET_MONEY {
@@ -1939,14 +1951,14 @@ mod p2_undo_size_tests {
 mod f3_size_aware_tests {
     use super::*;
 
-    /// When SIG_V3_SIZE_AWARE is off (default), the signature is the
+    /// When `sig_v3_size_aware()` is off (default), the signature is the
     /// legacy v1 4-byte form. This test documents the gate.
     #[test]
     fn gate_off_emits_v1_signature() {
         let s = GameState::new(200.0, 1.0, 2.0);
         let mut buf = [0u8; 8];
         let n = s.infoset_signature_into(&mut buf);
-        assert_eq!(n, if SIG_V3_SIZE_AWARE { 8 } else { 4 });
+        assert_eq!(n, if sig_v3_size_aware() { 8 } else { 4 });
     }
 
     /// `history_signature_v3` includes the top-bits version tag even
