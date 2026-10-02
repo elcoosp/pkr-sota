@@ -281,9 +281,10 @@ fn export_blueprint(
 /// at `max_iters` loses its final data point entirely (v23a bug: 5M
 /// run with eval_every=2.5M only produced the 2.5M row).
 #[inline]
-/// True when `reading` is a new all-time-low raw exploitability.
-/// None means no reading has been seen yet, so any reading is a new min.
-/// Extracted from the --save-best-reading path so it is unit-testable.
+fn should_eval(done: u32, last_eval_iter: u32, eval_every: u32, max_iters: u32) -> bool {
+    eval_every > 0 && (done >= last_eval_iter.saturating_add(eval_every) || done == max_iters)
+}
+
 /// RNG seed for an exploitability eval at iteration `iter`. BOTH the
 /// in-loop eval and --eval-now must use this so their readings are
 /// comparable. The raw-iteration scheme is canonical: it predates
@@ -294,12 +295,11 @@ fn eval_seed_for(iter: u32) -> u64 {
     iter as u64
 }
 
+/// True when `reading` is a new all-time-low raw exploitability.
+/// None means no reading has been seen yet, so any reading is a new min.
+/// Extracted from the --save-best-reading path so it is unit-testable.
 fn is_new_raw_min(best: Option<f64>, reading: f64) -> bool {
     best.map_or(true, |b| reading < b)
-}
-
-fn should_eval(done: u32, last_eval_iter: u32, eval_every: u32, max_iters: u32) -> bool {
-    eval_every > 0 && (done >= last_eval_iter.saturating_add(eval_every) || done == max_iters)
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
