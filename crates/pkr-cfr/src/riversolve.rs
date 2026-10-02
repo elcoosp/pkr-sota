@@ -1,9 +1,13 @@
-//! Runtime river re-solve — exact CFR re-solve over the river subgame.
-//!
-//! At river start the board is complete, so hand strengths are exact (no MC).
-//! A depth-limited CFR solve over river ranges (~1700 combos × K actions × ~200
-//! iterations) completes in milliseconds, giving near-solver river play
-//! without any training. (Roadmap §5.1)
+//! **WIP — DO NOT WIRE.** This stub is NOT a working solver. Known defects:
+//! (1) every `Bet(_)` maps to the Call branch in `action_ev`, so all bet
+//! sizings have identical EV — the regret update is meaningless;
+//! (2) `RiverResolver::new` excludes BOTH players' hole cards from both
+//! ranges (the villain range must exclude only hero+board);
+//! (3) `update_regrets` re-enumerates the villain range inside the hero
+//! loop (~900 allocs × 200 iters) — seconds, not "milliseconds";
+//! (4) `abstract_to_action` builds `Bet` as chips-to-add, but the engine
+//! means total street commitment. Dead code (only its own tests call it).
+//! Use the `pkr-subgame` public-tree solver instead.
 
 use pkr_contracts::Evaluator;
 use pkr_core::state::{Action, ActionKind, GameState, Street};
