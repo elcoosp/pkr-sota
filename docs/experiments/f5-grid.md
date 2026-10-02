@@ -313,3 +313,43 @@ turn-up. Best so far: p=2 3332.6 @ 6M, p=1 3217.5 @ 6M (-115.1).
 3/3 points favor p=1 on seed 43 (seed 42: 6/6). Both curves turn up
 at the same place; p=1 sits ~100-125 mbb lower without fixing the
 turn-up. Best so far: p=2 3332.6 @ 6M, p=1 3217.5 @ 6M (-115.1).
+
+## avg_power seed-43 FINAL — p=1 wins 12/12 across two seeds
+
+| iter | v47 (p=2) | v48 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3357.5 | 3230.0 | -127.5 |
+| 6M | 3332.6 | 3217.5 | -115.1 |
+| 9M | 3493.8 | 3398.5 | -95.3 |
+| 12M | 3565.8 | 3438.8 | -126.9 |
+| 15M | 3652.4 | 3497.7 | -154.6 |
+| 18M | 3691.0 | 3555.8 | -135.1 |
+
+Seed 42: 6/6. Seed 43: 6/6. **12/12 paired points favor
+avg_power=1**, mean ~-125 mbb. Best-vs-best -115.1 is inside the
++/-260 equivalence band, but the consistency across two seeds and
+twelve points is strong evidence this is a real ~125 mbb improvement,
+not seed noise. Both curves turn up after 6M (the estimator artifact),
+so p=1 does not fix that — it sits lower throughout.
+
+**Recommendation: flip the default to PKR_AVG_POWER=1.**
+
+## avg_power seed-43 FINAL — p=1 wins 12/12 across two seeds
+
+| iter | v47 (p=2) | v48 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3357.5 | 3230.0 | -127.5 |
+| 6M | 3332.6 | 3217.5 | -115.1 |
+| 9M | 3493.8 | 3398.5 | -95.3 |
+| 12M | 3565.8 | 3438.8 | -126.9 |
+| 15M | 3652.4 | 3497.7 | -154.6 |
+| 18M | 3691.0 | 3555.8 | -135.1 |
+
+Seed 42: 6/6. Seed 43: 6/6. **12/12 paired points favor
+avg_power=1**, mean ~-125 mbb. Best-vs-best -115.1 is inside the
++/-260 equivalence band, but the consistency across two seeds and
+twelve points is strong evidence this is a real ~125 mbb improvement,
+not seed noise. Both curves turn up after 6M (the estimator artifact),
+so p=1 does not fix that — it sits lower throughout.
+
+**Recommendation: flip the default to PKR_AVG_POWER=1.**
