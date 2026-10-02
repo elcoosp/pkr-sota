@@ -46,7 +46,7 @@ Two consequences drive everything:
 │                                                                  │
 │  pkr-cfr::Trainer                                                │
 │    ├── CompactRegretTable                                        │
-│    │     ├── data: Vec<AtomicI32>      (regret + momentum interleaved) │
+│    │     ├── data: Vec<AtomicI64>      (regret + momentum interleaved) │
 │    │     ├── strategy_sum: Vec<AtomicI64>                        │
 │    │     ├── hash_to_idx: PapayaMap<u64, usize>                  │
 │    │     └── thread-local idx cache                              │
