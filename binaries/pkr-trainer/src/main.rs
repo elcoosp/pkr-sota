@@ -280,6 +280,16 @@ fn export_blueprint(
 /// True when `reading` is a new all-time-low raw exploitability.
 /// None means no reading has been seen yet, so any reading is a new min.
 /// Extracted from the --save-best-reading path so it is unit-testable.
+/// RNG seed for an exploitability eval at iteration `iter`. BOTH the
+/// in-loop eval and --eval-now must use this so their readings are
+/// comparable. The raw-iteration scheme is canonical: it predates
+/// --eval-now and every recorded training curve uses it. (Before this,
+/// --eval-now used `EVAL_SEED ^ iter`, so its readings were on a
+/// different deal set than the curve.)
+fn eval_seed_for(iter: u32) -> u64 {
+    iter as u64
+}
+
 fn is_new_raw_min(best: Option<f64>, reading: f64) -> bool {
     best.map_or(true, |b| reading < b)
 }
@@ -500,7 +510,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             abstraction_for_eval.as_ref(),
             evaluator_for_eval.as_ref(),
             cli.eval_deals,
-            EVAL_SEED ^ (start_iter as u64),
+            eval_seed_for(start_iter),
         );
         if cli.log_json {
             json_progress(&[
@@ -755,7 +765,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     abstraction_for_eval.as_ref(),
                     evaluator_for_eval.as_ref(),
                     cli.eval_deals,
-                    done as u64,
+                    eval_seed_for(done),
                 );
                 if cli.log_json {
                     json_progress(&[
@@ -1230,6 +1240,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod should_eval_tests {
     use super::*;
+
+    #[test]
+    fn eval_seed_is_raw_iteration() {
+        // Both eval paths must use this. --eval-now historically used
+        // EVAL_SEED ^ iter, which put its readings on a different deal
+        // set than the training curve.
+        assert_eq!(eval_seed_for(0), 0);
+        assert_eq!(eval_seed_for(3_000_000), 3_000_000);
+        assert_eq!(eval_seed_for(18_000_000), 18_000_000);
+        // Not the old xor scheme.
+        assert_ne!(eval_seed_for(3_000_000), EVAL_SEED ^ 3_000_000u64);
+    }
 
     #[test]
     fn new_raw_min_basic() {
