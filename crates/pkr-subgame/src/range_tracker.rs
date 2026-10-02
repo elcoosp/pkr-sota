@@ -155,6 +155,12 @@ impl<'a> RangeTracker<'a> {
 
         // Update range BEFORE applying the action (the blueprint prob is
         // evaluated at the pre-action state).
+        //
+        // L7: Fold is deliberately skipped. Blueprint fold probabilities do
+        // carry information, but a fold ends the deal, so the folder's
+        // posterior is never consumed downstream. If that changes (e.g. a
+        // showdown-range diagnostic reads range(folder)), this must be fixed
+        // to multiply by sigma(fold | hand).
         if !matches!(action.kind, ActionKind::Fold) {
             self.update_range_for_action(actor, &action);
         }
