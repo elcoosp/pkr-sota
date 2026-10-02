@@ -1096,6 +1096,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "PKR_RM_PLUS":          tc.neg_floor,
         "PKR_F5_SEQUENTIAL":    tc.sequential,
         "PKR_AVG_AT_TRAVERSER": tc.avg_at_traverser,
+        // The centroid feature-space version lives on the fingerprint,
+        // not TrainConfig. Recording it here makes stats.json a
+        // complete reproduction record: without it you cannot tell
+        // from a checkpoint whether it used legacy (EHS, EHS^2)
+        // centroids or the F4 (mean, potential) space -- which is the
+        // value the v45 arena watcher failed to export.
+        "PKR_CENTROID_FEATURE_V": fingerprint.centroid_feature_v,
     });
 
     if let Some(path) = &cli.stats_json {
