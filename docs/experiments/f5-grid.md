@@ -267,3 +267,25 @@ running; decide on the full-run bests, not the 3M point.
 
 p=1 lower on both seeds at the 3M point. Full curves (v47/v48) still
 running; decide on the full-run bests, not the 3M point.
+
+### seed-43 confirmation, 6M point
+
+| iter | v47 (p=2) | v48 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3357.5 | 3230.0 | -127.5 |
+| 6M | 3332.6 | 3217.5 | -115.1 |
+
+p=1 lower at both points on seed 43 too. Combined with seed 42, the
+~100-125 mbb p=1 edge is repeatable across two seeds — not seed-42
+luck. Full curves still running; decide on the full-run bests.
+
+### seed-43 confirmation, 6M point
+
+| iter | v47 (p=2) | v48 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3357.5 | 3230.0 | -127.5 |
+| 6M | 3332.6 | 3217.5 | -115.1 |
+
+p=1 lower at both points on seed 43 too. Combined with seed 42, the
+~100-125 mbb p=1 edge is repeatable across two seeds — not seed-42
+luck. Full curves still running; decide on the full-run bests.
