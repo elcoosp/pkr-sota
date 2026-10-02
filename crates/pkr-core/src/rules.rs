@@ -6,7 +6,7 @@ pub struct NlheRuleset;
 
 impl GameRules for NlheRuleset {
     fn max_actions_per_node(&self) -> u8 {
-        4 // fold, check/call, bet/raise (various sizes abstracted), all-in
+        6 // fold, check/call, 3 bet sizings, jam — the abstract bucket count
     }
 
     fn deck_size(&self) -> usize {
@@ -27,8 +27,8 @@ mod tests {
         let rules = NlheRuleset;
         assert_eq!(
             rules.max_actions_per_node(),
-            4,
-            "max_actions_per_node must be 4"
+            6,
+            "max_actions_per_node must be 6"
         );
         assert_eq!(rules.deck_size(), 52, "deck_size must be 52");
         assert_eq!(rules.hand_size(), 2, "hand_size must be 2");
