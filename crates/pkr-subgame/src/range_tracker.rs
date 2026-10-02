@@ -61,6 +61,28 @@ fn hole_from_index_raw(idx: usize) -> [u8; 2] {
     [c0 as u8, c1]
 }
 
+/// Uniform distribution over hands that share no card with `board`.
+/// The fallback when a range collapses to zero: never put mass on an
+/// impossible (board-containing) hand. Pure — used by the tracker and
+/// asserted directly in tests.
+fn uniform_board_free(board: &[u8]) -> [f64; N_HANDS] {
+    let cache = hole_cache();
+    let mut r = [0.0f64; N_HANDS];
+    let mut legal = 0usize;
+    for i in 0..N_HANDS {
+        let h = cache[i];
+        if !board.contains(&h[0]) && !board.contains(&h[1]) {
+            legal += 1;
+        }
+    }
+    let u = if legal > 0 { 1.0 / legal as f64 } else { 0.0 };
+    for i in 0..N_HANDS {
+        let h = cache[i];
+        r[i] = if !board.contains(&h[0]) && !board.contains(&h[1]) { u } else { 0.0 };
+    }
+    r
+}
+
 fn hole_cache() -> &'static [[u8; 2]; N_HANDS] {
     static CACHE: OnceLock<Box<[[u8; 2]; N_HANDS]>> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -225,22 +247,7 @@ impl<'a> RangeTracker<'a> {
             // non-zero on hands sharing a card with the board. That
             // violated the tracker's own board-exclusion invariant
             // and would hand the subgame solver an impossible deal.
-            let mut legal = 0usize;
-            for i in 0..N_HANDS {
-                let h = cache[i];
-                if !board_slice.contains(&h[0]) && !board_slice.contains(&h[1]) {
-                    legal += 1;
-                }
-            }
-            let u = if legal > 0 { 1.0 / legal as f64 } else { 0.0 };
-            for i in 0..N_HANDS {
-                let h = cache[i];
-                range[i] = if !board_slice.contains(&h[0]) && !board_slice.contains(&h[1]) {
-                    u
-                } else {
-                    0.0
-                };
-            }
+            *range = uniform_board_free(board_slice);
         }
     }
 
@@ -456,24 +463,10 @@ mod fallback_board_exclusion_tests {
         let board_slice: &[u8] = &board;
         let cache = hole_cache();
 
-        // Emulate the fallback.
-        let mut range = [0.0f64; N_HANDS];
-        let mut legal = 0usize;
-        for i in 0..N_HANDS {
-            let h = cache[i];
-            if !board_slice.contains(&h[0]) && !board_slice.contains(&h[1]) {
-                legal += 1;
-            }
-        }
-        let u = if legal > 0 { 1.0 / legal as f64 } else { 0.0 };
-        for i in 0..N_HANDS {
-            let h = cache[i];
-            range[i] = if !board_slice.contains(&h[0]) && !board_slice.contains(&h[1]) {
-                u
-            } else {
-                0.0
-            };
-        }
+        // Call the ACTUAL fallback (not a re-implementation).
+        let range = uniform_board_free(board_slice);
+        let _ = cache;
+        let u = range[first_hand_free_of(board_slice)];
 
         // Invariant 1: every board-containing hand is zero.
         let bad = first_hand_containing(board_slice);
