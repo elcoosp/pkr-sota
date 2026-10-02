@@ -124,3 +124,81 @@ What still holds with confidence: the 5000-deal reading is
 substantially inflated, so the ~3-6M turn-up is at least partly (likely
 mostly) an estimator artifact. Cross-run paired A/Bs at 5000 deals
 remain valid (same deals both sides).
+
+---
+
+## Bug found during the 2026-10-02 hunt: exploit shifter misreads the CDF
+
+`crates/pkr-exploit/src/lib.rs::apply_archetype_shifts` decoded
+`SotaAdvice::cdf_probabilities` as a raw per-action vector
+(`byte / sum`), but it is a CUMULATIVE cdf everywhere else
+(`writer::quantize_cdf`, `pkr_fuzz::decode_cdf_into`, `reader.rs` all
+differencing successive bytes).
+
+Effect: a [64,128,192,255] uniform CDF (true probs [.251,.251,.251,.247])
+was read as [.10,.20,.30,.40]. Even the no-op `Balanced` archetype
+rewrote it to [26,77,154,255], so ANY call to `apply_shifts` silently
+corrupted the strategy, and the ±MAX_DEVIATION cap could not catch it
+because the deviation was measured in the wrong space.
+
+Its two tests missed it: one asserts only `.len`, the other
+short-circuits at the recenter interval. Fixed by difference-decoding;
+added `test_exploit_shifter_balanced_roundtrips_cdf`.
+
+---
+
+## Bug found during the 2026-10-02 hunt: exploit shifter misreads the CDF
+
+`crates/pkr-exploit/src/lib.rs::apply_archetype_shifts` decoded
+`SotaAdvice::cdf_probabilities` as a raw per-action vector
+(`byte / sum`), but it is a CUMULATIVE cdf everywhere else
+(`writer::quantize_cdf`, `pkr_fuzz::decode_cdf_into`, `reader.rs` all
+differencing successive bytes).
+
+Effect: a [64,128,192,255] uniform CDF (true probs [.251,.251,.251,.247])
+was read as [.10,.20,.30,.40]. Even the no-op `Balanced` archetype
+rewrote it to [26,77,154,255], so ANY call to `apply_shifts` silently
+corrupted the strategy, and the ±MAX_DEVIATION cap could not catch it
+because the deviation was measured in the wrong space.
+
+Its two tests missed it: one asserts only `.len`, the other
+short-circuits at the recenter interval. Fixed by difference-decoding;
+added `test_exploit_shifter_balanced_roundtrips_cdf`.
+
+### 40k-deal check: 20k is NOT converged (2026-10-02)
+
+| deals | expl_mbb | SE |
+|---|---|---|
+| 5,000 | 3796 | 146 |
+| 20,000 | 1707 | 55 |
+| 40,000 | **1222** | 35 |
+
+The reading is still falling steeply at 40k (-485 from 20k). So:
+- **20k is not a converged estimate** either; every absolute number in
+  the docs is inflated by an unknown, still-shrinking factor.
+- The decline does NOT fit `bias ~ c/deals`: that law predicts ~1707 at
+  40k, but we measured 1222. The estimator's bias decays more slowly
+  than the naive in-sample-overfit model, or the true value is well
+  below 1222.
+- Practical rule: for a QUOTED absolute exploitability, use >=40k deals
+  AND report it as an upper bound. For A/B decisions, keep using the
+  same deal count on both sides (paired) -- that remains valid.
+
+### 40k-deal check: 20k is NOT converged (2026-10-02)
+
+| deals | expl_mbb | SE |
+|---|---|---|
+| 5,000 | 3796 | 146 |
+| 20,000 | 1707 | 55 |
+| 40,000 | **1222** | 35 |
+
+The reading is still falling steeply at 40k (-485 from 20k). So:
+- **20k is not a converged estimate** either; every absolute number in
+  the docs is inflated by an unknown, still-shrinking factor.
+- The decline does NOT fit `bias ~ c/deals`: that law predicts ~1707 at
+  40k, but we measured 1222. The estimator's bias decays more slowly
+  than the naive in-sample-overfit model, or the true value is well
+  below 1222.
+- Practical rule: for a QUOTED absolute exploitability, use >=40k deals
+  AND report it as an upper bound. For A/B decisions, keep using the
+  same deal count on both sides (paired) -- that remains valid.
