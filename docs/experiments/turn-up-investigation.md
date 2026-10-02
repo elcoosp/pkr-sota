@@ -84,3 +84,35 @@ Implications:
 - **`--eval-now` uses a DIFFERENT seed** (`EVAL_SEED ^ iter`) than the
   in-loop eval (`iter` as seed), so eval-now readings don't match the
   training curve. Both are inflated; do not mix them.
+
+### Correction / limitations on the above (2026-10-02)
+
+The resolution is directionally right but I overclaimed in two places:
+
+1. **"Inflated ~2x in every doc" is from ONE checkpoint.** The 3795 ->
+   1707 drop was measured on v42's 18M model only. The inflation factor
+   is a property of the infoset table size, so it almost certainly
+   varies run to run and grows with iteration within a run. Do not
+   apply a flat 2x to other numbers without measuring.
+
+2. **The mechanism predicts the turn-up should SHRINK at high deal
+   counts.** Early checkpoints have fewer infosets -> less in-sample
+   overfitting -> less inflation; late checkpoints have more -> more
+   inflation. So at 20k+ deals the early/late gap should be smaller
+   than the ~300 mbb seen at 5000. If it reverses, the true curve
+   *descends*, and "best at 3-6M" is itself an artifact.
+
+   This is untestable with surviving artifacts: only FINAL checkpoints
+   survive (train.ckpt is overwritten each checkpoint; the 3M model
+   exists only as blueprint.bin, the average-strategy format the eval
+   cannot load as a regret table). A future run should checkpoint to
+   distinct paths to enable it.
+
+3. **20k may not even be converged.** A 40k-deal eval is running
+   (/tmp/eval40k-result.txt). If 40k reads much lower than 20k's 1707,
+   the "true" value is still below 1707 and even 20k is inflated.
+
+What still holds with confidence: the 5000-deal reading is
+substantially inflated, so the ~3-6M turn-up is at least partly (likely
+mostly) an estimator artifact. Cross-run paired A/Bs at 5000 deals
+remain valid (same deals both sides).
