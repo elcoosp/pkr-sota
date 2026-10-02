@@ -347,9 +347,10 @@ pub fn traverse(
     // F5: which node accumulates the average strategy.
     //
     // Historical (avg_at_traverser = true): at the traverser's own
-    // node, weight by `strategy · own_reach · t^p`. `reach_prob` at a
-    // traverser node is the *opponent's* reach (the traverser's own
-    // reach is the counterfactual constant).
+    // node, weight by `strategy · reach_prob · t^p`. Tracing the
+    // recursion, `reach_prob` here is the TRAVERSER's own reach
+    // (multiplied by strategy[a] at traverser nodes, unchanged at
+    // opponent nodes) — which is why the weight is correct.
     //
     // Standard external-sampling (avg_at_traverser = false): at the
     // opponent node, weight by `strategy · t^p` only, because the
