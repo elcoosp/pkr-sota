@@ -353,3 +353,103 @@ the current state. Either:
 
 We ship the CI test on `blueprint.bin` (option 1). The train.ckpt gap
 is documented here and left open.
+
+---
+
+## FOURTH SOURCE (2026-10-02): alloc_idx race orphans slots
+
+`CompactRegretTable::get_or_create_idx` is a check-then-act:
+
+    if let Some(idx) = guard.get(&hash) { return *idx; }
+    let fresh = self.alloc_idx();            // advances next_idx
+    match guard.try_insert(hash, fresh) {
+        Ok(_) => fresh,
+        Err(_) => guard.get(&hash).copied().unwrap_or(fresh), // orphan
+    }
+
+Two rayon workers that miss the *same* new hash both call `alloc_idx`;
+one wins `try_insert`, the other's index is orphaned — allocated, never
+mapped, zeroed forever.
+
+**This is NOT the float-accumulation bug** the batch-sort fix
+(00a778d) addressed; it is a separate source the earlier analysis did
+not attribute.
+
+### Impact
+
+- `snapshot.infosets` reads `allocated()` = `next_idx`. Because racy
+  threads both bump `next_idx`, the *reported* infoset count is
+  timing-dependent. **This is the "0.25% infoset divergence" the
+  original investigation opened with** — the batch-sort fix made
+  `exploitability.csv` byte-identical (that was float order), but the
+  count race is orthogonal and can still fire.
+- `is_near_capacity` (95% of `allocated()`) trips slightly early.
+- Wasted capacity: one slot per lost race.
+- **No strategy corruption**: orphans are never in `hash_to_idx`,
+  never queried, and the checkpoint writes/reads both `allocated()`
+  and `len()` consistently.
+
+### Fix (not yet applied — needs a test)
+
+The leak itself is inherent to "allocate index, then insert into a
+concurrent map"; no papaya API removes it without a per-key lock. The
+*reported metric* can be made deterministic cheaply:
+
+- report `hash_to_idx.len()` (actual map entries) as `snapshot.infosets`
+  — deterministic;
+- carry `allocated()` in a **separate** field for capacity accounting,
+  so `is_near_capacity` stays conservative.
+
+That changes the `TableSnapshot` struct and its consumers (trainer CSV,
+stats.json), so it is a follow-up with its own tests — not a hot-path
+edit under load.
+
+---
+
+## FOURTH SOURCE (2026-10-02): alloc_idx race orphans slots
+
+`CompactRegretTable::get_or_create_idx` is a check-then-act:
+
+    if let Some(idx) = guard.get(&hash) { return *idx; }
+    let fresh = self.alloc_idx();            // advances next_idx
+    match guard.try_insert(hash, fresh) {
+        Ok(_) => fresh,
+        Err(_) => guard.get(&hash).copied().unwrap_or(fresh), // orphan
+    }
+
+Two rayon workers that miss the *same* new hash both call `alloc_idx`;
+one wins `try_insert`, the other's index is orphaned — allocated, never
+mapped, zeroed forever.
+
+**This is NOT the float-accumulation bug** the batch-sort fix
+(00a778d) addressed; it is a separate source the earlier analysis did
+not attribute.
+
+### Impact
+
+- `snapshot.infosets` reads `allocated()` = `next_idx`. Because racy
+  threads both bump `next_idx`, the *reported* infoset count is
+  timing-dependent. **This is the "0.25% infoset divergence" the
+  original investigation opened with** — the batch-sort fix made
+  `exploitability.csv` byte-identical (that was float order), but the
+  count race is orthogonal and can still fire.
+- `is_near_capacity` (95% of `allocated()`) trips slightly early.
+- Wasted capacity: one slot per lost race.
+- **No strategy corruption**: orphans are never in `hash_to_idx`,
+  never queried, and the checkpoint writes/reads both `allocated()`
+  and `len()` consistently.
+
+### Fix (not yet applied — needs a test)
+
+The leak itself is inherent to "allocate index, then insert into a
+concurrent map"; no papaya API removes it without a per-key lock. The
+*reported metric* can be made deterministic cheaply:
+
+- report `hash_to_idx.len()` (actual map entries) as `snapshot.infosets`
+  — deterministic;
+- carry `allocated()` in a **separate** field for capacity accounting,
+  so `is_near_capacity` stays conservative.
+
+That changes the `TableSnapshot` struct and its consumers (trainer CSV,
+stats.json), so it is a follow-up with its own tests — not a hot-path
+edit under load.
