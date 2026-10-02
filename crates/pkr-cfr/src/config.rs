@@ -108,7 +108,7 @@ impl Default for TrainConfig {
     fn default() -> Self {
         TrainConfig {
             momentum: false,
-            avg_power: 2.0,
+            avg_power: 1.0,
             explore_epsilon: 0.01,
             dcfr_alpha: 1.5,
             hs_dcfr: false,
@@ -167,7 +167,7 @@ mod tests {
     fn defaults_match_experiment_config() {
         let c = TrainConfig::default();
         assert!(!c.momentum, "momentum must be OFF by default (F2)");
-        assert_eq!(c.avg_power, 2.0, "experiments used avg_power=2");
+        assert_eq!(c.avg_power, 1.0, "avg_power=1: 12/12 paired points vs 2.0");
         assert_eq!(c.explore_epsilon, 0.01, "experiments used eps=0.01");
         assert_eq!(c.dcfr_alpha, 1.5, "canonical DCFR alpha");
     }
@@ -197,7 +197,7 @@ mod tests {
     fn experiment_defaults_are_stable() {
         let d = TrainConfig::default();
         assert!(!d.momentum, "F2: momentum must default OFF");
-        assert_eq!(d.avg_power, 2.0, "F2: avg_power must default to 2.0");
+        assert_eq!(d.avg_power, 1.0, "avg_power=1 (was 2.0; changed 2026-10-02, see f5-grid)");
         assert_eq!(d.explore_epsilon, 0.01, "F2: eps must default to 0.01");
         assert_eq!(d.dcfr_alpha, 1.5, "F2: dcfr_alpha must default to 1.5");
         assert!(!d.hs_dcfr, "F2: hs_dcfr must default OFF");
