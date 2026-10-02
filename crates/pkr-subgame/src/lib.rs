@@ -1093,6 +1093,11 @@ impl<'a> Solver<'a> {
                 if valid.is_empty() {
                     return 0.0;
                 }
+                // L5: unlike `walk`, the BR ALWAYS enumerates when
+                // full_chance is on, ignoring chance_enumerate_max_depth —
+                // the BR is exact and should see every river. So
+                // PKR_SUBGAME_CHANCE_DEPTH affects the solve walk only, not
+                // the BR evaluation.
                 if self.full_chance {
                     let w = 1.0 / valid.len() as f64;
                     let mut total = 0.0f64;
