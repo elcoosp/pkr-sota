@@ -378,12 +378,10 @@ pub fn traverse(
         // Opponent-node accumulation. `traverser_idx` is None here,
         // so we need to create an index for the opponent's infoset.
         if acting_player != traverser {
-            let mut opp_strategy = [0.0f32; K];
-            let opp_idx = table.get_strategy_and_idx(
-                infoset_hash,
-                &mut opp_strategy,
-                metrics,
-            );
+            // S4: `strategy` was already regret-matched above; only the idx
+            // is missing. get_or_create_idx_measured avoids a second
+            // regret_match_into.
+            let opp_idx = table.get_or_create_idx_measured(infoset_hash, metrics);
             let w_avg = avg_weight(global_iteration);
             for a in 0..K {
                 if strategy[a] <= 0.0 {
