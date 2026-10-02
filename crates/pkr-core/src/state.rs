@@ -133,7 +133,11 @@ pub struct GameState {
     /// street. Off-by-default consumer; the size-aware signature is
     /// gated on `SIG_V3_SIZE_AWARE`.
     pub street_start_pot: f32,
-    pub undo_stack: [UndoRecord; 48],
+    /// Big blind, in chips. Set once in `new`; immutable after. Stored so
+    /// signatures and bucketing that reason in bb are correct for any
+    /// blind, not just the 1/2 default (L1).
+    bb: f32,
+    undo_stack: [UndoRecord; 48],
     pub undo_len: u8,
 }
 
@@ -163,6 +167,7 @@ impl GameState {
             abstract_history_len: 0,
             // F3: the pot at preflop start is the two forced bets.
             street_start_pot: sb + bb,
+            bb,
             undo_stack: [UndoRecord {
                 actor: 0,
                 street: Street::Preflop,
@@ -634,7 +639,7 @@ impl GameState {
         if to_call <= 0.0 {
             return 0;
         }
-        let pot_before = (self.pot - to_call).max(1.2);
+        let pot_before = (self.pot - to_call).max(0.6 * self.bb); // L1: 1.2 at bb=2
         let frac = to_call / pot_before;
         if frac < 0.35 {
             1
@@ -714,7 +719,7 @@ impl GameState {
             seq |= b3 << (i * 3);
         }
         let street = (self.street as u64) & 0x3;
-        let pot_bb = (self.street_start_pot / 2.0).max(1.0);
+        let pot_bb = (self.street_start_pot / self.bb.max(1e-6)).max(1.0);
         let pot_class = (pot_bb.log2().floor() as u64).min(8) & 0xF;
         let raises = (self.total_raises as u64).min(7) & 0x7;
 
