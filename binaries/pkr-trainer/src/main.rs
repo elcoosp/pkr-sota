@@ -207,6 +207,15 @@ struct Cli {
     #[arg(long, default_value_t = 10000)]
     eval_deals: u32,
 
+    /// Fixed RNG seed for every in-loop exploitability check. Unset (the
+    /// default) uses the raw iteration number, so each eval point samples
+    /// a DIFFERENT deal set — the readings are then not directly
+    /// comparable and part of any curve movement is deal-set variation.
+    /// Set this to evaluate every point on the SAME deals, making the
+    /// curve and the plateau signal trustworthy. Does not change training.
+    #[arg(long)]
+    eval_seed: Option<u64>,
+
     /// Skip exporting infosets whose reach-weighted strategy mass is below
     /// this many visits. 0 = export everything. Reduces blueprint size
     /// and removes uniform-fallback infosets from the shipped file.
@@ -293,6 +302,13 @@ fn should_eval(done: u32, last_eval_iter: u32, eval_every: u32, max_iters: u32) 
 /// different deal set than the curve.)
 fn eval_seed_for(iter: u32) -> u64 {
     iter as u64
+}
+
+/// Resolve the eval seed: a fixed `override_seed` if the caller passed
+/// `--eval-seed`, else the raw iteration (the historical scheme, under
+/// which every eval point uses a different deal set).
+fn resolve_eval_seed(override_seed: Option<u64>, iter: u32) -> u64 {
+    override_seed.unwrap_or_else(|| eval_seed_for(iter))
 }
 
 /// True when `reading` is a new all-time-low raw exploitability.
@@ -514,7 +530,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             abstraction_for_eval.as_ref(),
             evaluator_for_eval.as_ref(),
             cli.eval_deals,
-            eval_seed_for(start_iter),
+            resolve_eval_seed(cli.eval_seed, start_iter),
         );
         if cli.log_json {
             json_progress(&[
@@ -769,7 +785,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     abstraction_for_eval.as_ref(),
                     evaluator_for_eval.as_ref(),
                     cli.eval_deals,
-                    eval_seed_for(done),
+                    resolve_eval_seed(cli.eval_seed, done),
                 );
                 if cli.log_json {
                     json_progress(&[
@@ -1255,6 +1271,16 @@ mod should_eval_tests {
         assert_eq!(eval_seed_for(18_000_000), 18_000_000);
         // Not the old xor scheme.
         assert_ne!(eval_seed_for(3_000_000), EVAL_SEED ^ 3_000_000u64);
+    }
+
+    #[test]
+    fn resolve_eval_seed_honours_override() {
+        // No override: raw-iteration scheme (different deal set per point).
+        assert_eq!(resolve_eval_seed(None, 3_000_000), 3_000_000);
+        assert_eq!(resolve_eval_seed(None, 6_000_000), 6_000_000);
+        // Override: SAME seed at every iteration (same deal set).
+        assert_eq!(resolve_eval_seed(Some(42), 3_000_000), 42);
+        assert_eq!(resolve_eval_seed(Some(42), 18_000_000), 42);
     }
 
     #[test]
