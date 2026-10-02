@@ -216,6 +216,14 @@ struct Cli {
     #[arg(long)]
     eval_seed: Option<u64>,
 
+    /// Save a distinct checkpoint at every eval point
+    /// (`<checkpoint-stem>.<iter>.ckpt`) in addition to the rolling
+    /// `train.ckpt`. Lets you later compare early vs late models at a
+    /// fixed deal count — the "does longer training help?" test that is
+    /// impossible today because train.ckpt is overwritten.
+    #[arg(long, default_value_t = false)]
+    ckpt_per_eval: bool,
+
     /// Skip exporting infosets whose reach-weighted strategy mass is below
     /// this many visits. 0 = export everything. Reduces blueprint size
     /// and removes uniform-fallback infosets from the shipped file.
@@ -787,6 +795,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     cli.eval_deals,
                     resolve_eval_seed(cli.eval_seed, done),
                 );
+                // Per-eval checkpoint so early vs late models can be
+                // compared later at a fixed deal count.
+                if cli.ckpt_per_eval {
+                    if let Some(base) = &cli.checkpoint {
+                        let p = base.with_file_name(format!(
+                            "{}.{}.ckpt",
+                            base.file_stem().and_then(|s| s.to_str()).unwrap_or("train"),
+                            done
+                        ));
+                        if let Err(e) = trainer.save_checkpoint(p.to_str().unwrap(), &fingerprint) {
+                            eprintln!("WARNING: per-eval checkpoint failed at {done}: {e}");
+                        }
+                    }
+                }
                 if cli.log_json {
                     json_progress(&[
                         ("event", serde_json::json!("eval")),
