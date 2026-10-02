@@ -1,5 +1,12 @@
-/// Pseudo-harmonic mapping for off-tree action translation
-/// as per Ganzfried & Sandholm (2013).
+/// Reach-weighted linear interpolation for off-tree action translation.
+///
+/// **⚠️ NOT the Ganzfried & Sandholm (2013) pseudo-harmonic mapping** (the
+/// old doc claimed it was). Theirs is
+/// `f(x) = (B-x)(1+A) / ((B-A)(1+x))`; this is a simpler reach-weighted
+/// linear blend. It is also **unwired** — no caller in the repo; the live
+/// runtime uses hard `action_bucket` thresholds instead (a known exploit
+/// vector, see the 2026-10-02 competitiveness review §R6). Either wire a
+/// correct pseudo-harmonic mapping at runtime or delete this.
 ///
 /// Given two abstract actions (`lower` and `upper`) with their reach
 /// probabilities under the opponent's current strategy, and an actual
