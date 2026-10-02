@@ -353,3 +353,25 @@ not seed noise. Both curves turn up after 6M (the estimator artifact),
 so p=1 does not fix that — it sits lower throughout.
 
 **Recommendation: flip the default to PKR_AVG_POWER=1.**
+
+### DEFAULT CHANGED: avg_power 2.0 -> 1.0 (2026-10-02)
+
+Commit flips `TrainConfig::default().avg_power` to 1.0, per the 12/12
+paired-point result above. `PKR_AVG_POWER=2` restores the old
+behaviour. `ci/golden-training.sha256` regenerated (all three hashes
+change — the default affects training output). Any checkpoint trained
+before this commit used p=2; its `stats.json` records the value.
+
+Impact: ~125 mbb better on the 5000-deal reading (which is itself
+inflated — see turn-up-investigation.md), consistent across two seeds.
+
+### DEFAULT CHANGED: avg_power 2.0 -> 1.0 (2026-10-02)
+
+Commit flips `TrainConfig::default().avg_power` to 1.0, per the 12/12
+paired-point result above. `PKR_AVG_POWER=2` restores the old
+behaviour. `ci/golden-training.sha256` regenerated (all three hashes
+change — the default affects training output). Any checkpoint trained
+before this commit used p=2; its `stats.json` records the value.
+
+Impact: ~125 mbb better on the 5000-deal reading (which is itself
+inflated — see turn-up-investigation.md), consistent across two seeds.
