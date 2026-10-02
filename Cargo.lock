@@ -1257,6 +1257,7 @@ dependencies = [
  "pkr-contracts",
  "pkr-core",
  "pkr-eval",
+ "pkr-export",
  "pkr-runtime",
  "pkr-subgame",
  "rand",

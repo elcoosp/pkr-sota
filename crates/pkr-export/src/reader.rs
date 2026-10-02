@@ -72,6 +72,26 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
     let fp_size = if fh.version >= FORMAT_VERSION_V4 { 40 } else { 0 };
     let after_header = fh_size + anchors_size + fp_size;
 
+    // v4 carries a 40-byte AbstractionFingerprint. Read it and warn (do
+    // not fail) if it disagrees with the current compile-time constants:
+    // the blueprint is still loadable, but its infosets were hashed
+    // under a different abstraction, so any evaluation would be
+    // meaningless. Same footgun class that bit the v45 arena watcher and
+    // the tournament table-dir default.
+    if fh.version >= FORMAT_VERSION_V4 {
+        let fp_off = fh_size + anchors_size;
+        let stored: pkr_core::abstraction::AbstractionFingerprint =
+            *bytemuck::from_bytes(&bytes[fp_off..fp_off + 40]);
+        let current =
+            pkr_core::abstraction::AbstractionFingerprint::from_constants(fh.infoset_count.min(u32::MAX as u64) as u32);
+        if stored != current {
+            eprintln!(
+                "WARNING: blueprint fingerprint differs from current build: {}",
+                stored.describe_mismatch(&current)
+            );
+        }
+    }
+
     let key_count = u32::from_le_bytes(
         bytes[after_header..after_header + 4].try_into().unwrap(),
     ) as usize;
