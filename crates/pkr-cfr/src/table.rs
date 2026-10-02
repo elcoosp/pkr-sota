@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 const K: usize = 6;
+/// Public alias for the action-bucket count, so other crates (e.g. the
+/// blueprint reader) can validate `max_actions_k` against the same
+/// constant the table strides by.
+pub const ACTION_K: usize = K;
 /// Regret + momentum interleaved: [r0 m0 r1 m1 r2 m2 r3 m3 r4 m4 r5 m5]
 /// Written only by the coordinator (flush_cpu_batch), so no false sharing.
 const RM_FIELDS: usize = 2;

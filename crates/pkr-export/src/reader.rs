@@ -27,6 +27,7 @@ pub enum ReadError {
     UnsupportedVersion(u32),
     BadHashAlgo(u8),
     BadCounts { keys: u32, cdf: u32 },
+    BadK(u8),
 }
 
 impl std::fmt::Display for ReadError {
@@ -40,6 +41,7 @@ impl std::fmt::Display for ReadError {
             ReadError::BadCounts { keys, cdf } => {
                 write!(f, "key/cdf count mismatch: {keys} keys, {cdf} cdf bytes")
             }
+            ReadError::BadK(k) => write!(f, "max_actions_k {k} != K"),
         }
     }
 }
@@ -82,8 +84,11 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
         let fp_off = fh_size + anchors_size;
         let stored: pkr_core::abstraction::AbstractionFingerprint =
             *bytemuck::from_bytes(&bytes[fp_off..fp_off + 40]);
+        // Reader can't know current preflop_k; seed with stored so all
+        // OTHER fingerprint axes are still validated. Passing
+        // infoset_count made the warning fire on every valid load.
         let current =
-            pkr_core::abstraction::AbstractionFingerprint::from_constants(fh.infoset_count.min(u32::MAX as u64) as u32);
+            pkr_core::abstraction::AbstractionFingerprint::from_constants(stored.preflop_k);
         if stored != current {
             eprintln!(
                 "WARNING: blueprint fingerprint differs from current build: {}",
@@ -99,6 +104,12 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
         bytes[after_header + 4..after_header + 8].try_into().unwrap(),
     ) as usize;
     let k = fh.max_actions_k as usize;
+    // The writer always emits K (=6). A file claiming more would
+    // walk `off_sum` past the row into the next infoset's slots --
+    // corruption from an untrusted blueprint. Reject it.
+    if k != pkr_cfr::table::ACTION_K {
+        return Err(ReadError::BadK(k as u8));
+    }
     if cdf_size != key_count * k {
         return Err(ReadError::BadCounts {
             keys: key_count as u32,
