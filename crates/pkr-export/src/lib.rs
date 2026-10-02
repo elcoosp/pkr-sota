@@ -3,6 +3,7 @@
 
 pub mod fmph;
 pub mod header;
+pub mod reader;
 pub mod translate;
 pub mod writer;
 
