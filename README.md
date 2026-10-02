@@ -9,15 +9,11 @@
   [![bench](https://github.com/elcoosp/pkr-sota/actions/workflows/bench.yml/badge.svg)](https://github.com/elcoosp/pkr-sota/actions/workflows/bench.yml)
   [![proftest](https://github.com/elcoosp/pkr-sota/actions/workflows/proftest-ci.yml/badge.svg)](https://github.com/elcoosp/pkr-sota/actions/workflows/proftest-ci.yml)
   [![weekly](https://github.com/elcoosp/pkr-sota/actions/workflows/weekly.yml/badge.svg)](https://github.com/elcoosp/pkr-sota/actions/workflows/weekly.yml)
-  [![Bencher](https://api.bencher.dev/perf/pkr-sota?branches=main&testbeds=ci-ubuntu-22.04&kinds=latency)](https://bencher.dev/perf/pkr-sota)
 
   *A Rust workspace that takes a poker game from raw `Card` enums to a queried strategy in production.*
 
   [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-000000?style=flat-square&logo=rust)](https://www.rust-lang.org)
   [![Crates](https://img.shields.io/badge/Crates-11-6F4E37?style=flat-square)](#workspace)
-  [![Parallelism](https://img.shields.io/badge-Parallelism-rayon-007ACC?style=flat-square)](#architecture)
-  [![Memory-Mapped](https://img.shields.io/badge-I/O-memmap2-228B22?style=flat-square)](#abstraction-subsystem)
-  [![Profile](https://img.shields.io/badge-Release-LTO%20fat%20%2B%20panic%3Dabort-9B59B6?style=flat-square)](#release-profile)
   [![License](https://img.shields.io/badge/License-TBD-blue?style=flat-square)](#)
 
   ⭐ If you like this project, star it on GitHub — it helps a lot!
