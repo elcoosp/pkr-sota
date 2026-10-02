@@ -192,6 +192,11 @@ pub struct NlheEvaluator;
 
 impl Evaluator for NlheEvaluator {
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
+        debug_assert!(
+            hole.len() + board.len() <= 7,
+            "evaluate_hand: {} cards exceeds the 7-card buffer",
+            hole.len() + board.len()
+        );
         let mut cards = [255u8; 7];
         let mut idx = 0;
 

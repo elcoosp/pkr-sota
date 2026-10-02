@@ -9,6 +9,13 @@
 //! With `feature = "gpu"` off (the default), `GpuState` is a zero-cost stub
 //! that allocates nothing and returns empty results. `flush_gpu_batch` in
 //! `table.rs` still compiles and remains callable, but does no work.
+#![cfg_attr(feature = "gpu", allow(unused))]
+#[cfg(feature = "gpu")]
+compile_error!(
+    "the gpu feature is broken against the current i64 interleaved table \
+     (RM_STRIDE=12, i64 cells); the WGSL shader indexes a stride-6 i32 \
+     layout. Port gpu.rs to the i64 layout before enabling."
+);
 
 use bytemuck::{Pod, Zeroable};
 
