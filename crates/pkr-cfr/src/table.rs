@@ -83,9 +83,10 @@ pub(crate) const SCALE: f32 = 1000.0;
 /// the next batch's delta and prevents the saturation pathology that
 /// silently uniformizes regret-matching on high-traffic infosets.
 ///
-/// 500_000 / SCALE=1000 = 500 chips = 2.5× starting stack.
-/// Any strategy preference stronger than that is indistinguishable in
-/// practice, so clipping there costs nothing.
+/// `i64::MAX / 4` leaves two bits of headroom for the next batch's
+/// delta before saturating. (An earlier revision clipped at 500_000 =
+/// 500 chips at SCALE=1000, but that served the removed i32 tables; the
+/// comment outlived the value.)
 pub(crate) const R_MAX: i64 = i64::MAX / 4;
 
 #[derive(Clone, Copy, Debug)]

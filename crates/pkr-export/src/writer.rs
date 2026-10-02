@@ -29,8 +29,13 @@ pub(crate) fn purify(strat: &mut [f32; K], thresh: f32) {
     if thresh <= 0.0 {
         return;
     }
-    let live = strat.iter().filter(|&&p| p > 0.0).count();
-    if live <= 2 {
+    // Guard on how many actions will SURVIVE thresholding, not how many
+    // currently have mass. The old `p > 0.0` count let a 3-live infoset
+    // like [0.01, 0.01, 0.98] collapse to pure (both 0.01s zeroed),
+    // which is the exact "don't flip a split into a pure strategy"
+    // pathology this guard exists to prevent.
+    let survivors = strat.iter().filter(|&&p| p >= thresh).count();
+    if survivors < 2 {
         return;
     }
     let mut tot = 0.0f32;
@@ -366,6 +371,19 @@ mod f8_purify_tests {
         purify(&mut s, 0.1);
         assert_eq!(s[0], 0.02);
         assert_eq!(s[1], 0.98);
+    }
+
+    /// Regression: the guard counted p > 0.0, so a 3-live infoset with
+    /// two sub-threshold tail actions (live=3 > 2) was NOT protected and
+    /// both tails got zeroed -> pure strategy. The guard now counts
+    /// survivors (p >= thresh).
+    #[test]
+    fn three_live_with_subthreshold_tails_not_collapsed() {
+        let mut s = [0.01f32, 0.01, 0.98, 0.0, 0.0, 0.0];
+        purify(&mut s, 0.1);
+        assert_eq!(s[0], 0.01, "tail action must not be zeroed");
+        assert_eq!(s[1], 0.01);
+        assert_eq!(s[2], 0.98);
     }
 
     /// All-action infoset: threshold removes the smallest two.
