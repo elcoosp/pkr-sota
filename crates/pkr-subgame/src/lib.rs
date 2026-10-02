@@ -521,14 +521,19 @@ struct Solver<'a> {
     deals: Vec<Deal>,
     n_nodes: usize,
     n_deals: usize,
-    /// Per-(node, deal) regret & strategy-sum arrays. Index = node_id * n_deals + deal_id.
-    reg0: Vec<[f64; ABSTRACT_BUCKETS]>,
-    reg1: Vec<[f64; ABSTRACT_BUCKETS]>,
-    sum0: Vec<[f64; ABSTRACT_BUCKETS]>,
-    sum1: Vec<[f64; ABSTRACT_BUCKETS]>,
+    /// Per-(node, deal, bucket) regret & strategy-sum cells, as f64 bits
+    /// in AtomicU64. Flat index = (node*n_deals + deal)*B + bucket. Atomics
+    /// (not plain f64) so `walk` can take `&self`: `solve` hands each deal
+    /// to exactly one thread, so every cell has a single writer and
+    /// Relaxed load/store is sound — this replaces the previous
+    /// raw-pointer `&mut Solver` aliasing (UB).
+    reg0: Vec<AtomicU64>,
+    reg1: Vec<AtomicU64>,
+    sum0: Vec<AtomicU64>,
+    sum1: Vec<AtomicU64>,
     /// Precomputed terminal values indexed the same way.
     term_val: Vec<f64>,
-    iter_weight: f64,
+    iter_weight: AtomicU64, // f64 bits; Relaxed
     /// Per-deal node counters. Different deals hit different cache
     /// lines, avoiding the contention that a single shared atomic had.
     nodes_visited: Vec<AtomicU64>,
@@ -562,8 +567,6 @@ struct Solver<'a> {
 // Two parallel threads operating on different deal_idx values write to
 // disjoint slots. Reads are to immutable fields (tree, deals, term_val,
 // cfg). The only shared mutable state is `nodes_visited`, which is atomic.
-unsafe impl<'a> Send for Solver<'a> {}
-unsafe impl<'a> Sync for Solver<'a> {}
 
 impl<'a> Solver<'a> {
     fn new(cfg: &'a POCConfig<'a>) -> Self {
@@ -645,12 +648,12 @@ impl<'a> Solver<'a> {
             deals,
             n_nodes,
             n_deals,
-            reg0: vec![[0.0; ABSTRACT_BUCKETS]; n_nodes * n_deals],
-            reg1: vec![[0.0; ABSTRACT_BUCKETS]; n_nodes * n_deals],
-            sum0: vec![[0.0; ABSTRACT_BUCKETS]; n_nodes * n_deals],
-            sum1: vec![[0.0; ABSTRACT_BUCKETS]; n_nodes * n_deals],
+            reg0: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
+            reg1: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
+            sum0: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
+            sum1: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
             term_val,
-            iter_weight: 1.0,
+            iter_weight: AtomicU64::new(1.0f64.to_bits()),
             nodes_visited: (0..n_deals).map(|_| AtomicU64::new(0)).collect(),
             seed: cfg.root.board[..cfg.root.board_len as usize].iter()
                 .fold(0x5EED_2026u64, |h, &c| h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c as u64),
@@ -711,7 +714,7 @@ impl<'a> Solver<'a> {
         v
     }
 
-    fn walk(&mut self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64, depth: u32) -> f64 {
+    fn walk(&self, node_id: u32, deal_idx: u32, reach0: f64, reach1: f64, depth: u32) -> f64 {
         self.nodes_visited[deal_idx as usize].fetch_add(1, Ordering::Relaxed);
         // PublicNode is no longer Copy (holds Vec for chance nodes), so
         // match by reference and dispatch.
@@ -766,11 +769,15 @@ impl<'a> Solver<'a> {
                     PublicNode::Decision { actor, bucket_child } => (*actor, *bucket_child),
                     _ => unreachable!(),
                 };
-                let i = self.idx(node_id, deal_idx);
+                let i = self.idx(node_id, deal_idx) * ABSTRACT_BUCKETS;
                 let prior = self.deals[deal_idx as usize].prior;
 
-                let regrets = if actor == 0 { &self.reg0[i] } else { &self.reg1[i] };
-                let strat = regret_matching(regrets, &bucket_child);
+                let rcell = if actor == 0 { &self.reg0 } else { &self.reg1 };
+                let mut regrets = [0.0f64; ABSTRACT_BUCKETS];
+                for b in 0..ABSTRACT_BUCKETS {
+                    regrets[b] = f64::from_bits(rcell[i + b].load(Ordering::Relaxed));
+                }
+                let strat = regret_matching(&regrets, &bucket_child);
 
                 let mut cfv = [0.0f64; ABSTRACT_BUCKETS];
                 let mut avg_p0 = 0.0f64;
@@ -788,20 +795,22 @@ impl<'a> Solver<'a> {
                     avg_actor += strat[b] * cfv[b];
                 }
 
-                let regs = if actor == 0 { &mut self.reg0[i] } else { &mut self.reg1[i] };
+                let rcell = if actor == 0 { &self.reg0 } else { &self.reg1 };
                 let reach_opp = if actor == 0 { reach1 } else { reach0 };
                 for b in 0..ABSTRACT_BUCKETS {
                     if bucket_child[b] < 0 { continue; }
-                    let r = regs[b] + reach_opp * prior * (cfv[b] - avg_actor);
-                    regs[b] = if r > 0.0 { r } else { 0.0 };
+                    let old = f64::from_bits(rcell[i + b].load(Ordering::Relaxed));
+                    let r = old + reach_opp * prior * (cfv[b] - avg_actor);
+                    rcell[i + b].store((if r > 0.0 { r } else { 0.0 }).to_bits(), Ordering::Relaxed);
                 }
 
-                let sums = if actor == 0 { &mut self.sum0[i] } else { &mut self.sum1[i] };
+                let scell = if actor == 0 { &self.sum0 } else { &self.sum1 };
                 let reach_self = if actor == 0 { reach0 } else { reach1 };
-                let w = self.iter_weight;
+                let w = f64::from_bits(self.iter_weight.load(Ordering::Relaxed));
                 for b in 0..ABSTRACT_BUCKETS {
                     if bucket_child[b] < 0 { continue; }
-                    sums[b] += w * reach_self * strat[b];
+                    let old = f64::from_bits(scell[i + b].load(Ordering::Relaxed));
+                    scell[i + b].store((old + w * reach_self * strat[b]).to_bits(), Ordering::Relaxed);
                 }
 
                 avg_p0
@@ -815,23 +824,13 @@ impl<'a> Solver<'a> {
         let n_deals = self.n_deals;
         let iters = self.cfg.iterations;
         for iter in 0..iters {
-            self.iter_weight = (iter + 1) as f64;
+            self.iter_weight.store(((iter + 1) as f64).to_bits(), Ordering::Relaxed);
 
-            // SAFETY: each deal is walked by exactly one thread; all
-            // mutable state is indexed by (node * n_deals + deal) and
-            // is disjoint per deal. Reads (tree, deals, term_val) are
-            // immutable for the duration of the parallel section.
-            //
-            // The pointer is passed as `usize` (which is trivially
-            // Send + Sync) to satisfy rayon's closure bounds without
-            // fighting the type system. The safety invariant is
-            // documented above and enforced by the (node, deal) index
-            // scheme: two different `deal_idx` values never touch the
-            // same slot.
-            let this_addr = self as *mut Solver as usize;
-            (0..n_deals).into_par_iter().for_each(move |deal_idx| {
-                let this: &mut Solver = unsafe { &mut *(this_addr as *mut Solver) };
-                this.walk(root, deal_idx as u32, 1.0, 1.0, 0);
+            // Each deal is walked by exactly one thread. All mutable
+            // state is atomic and indexed by (node, deal, bucket), so
+            // the borrow is shared: no `&mut` aliasing, no unsafe.
+            (0..n_deals).into_par_iter().for_each(|deal_idx| {
+                self.walk(root, deal_idx as u32, 1.0, 1.0, 0);
             });
         }
     }
@@ -845,12 +844,16 @@ impl<'a> Solver<'a> {
             if let PublicNode::Decision { actor: 0, bucket_child } = &self.tree.nodes[node_id] {
                 for deal_idx in 0..self.n_deals {
                     let i = node_id * self.n_deals + deal_idx;
-                    let sum: f64 = self.sum0[i].iter().sum();
+                    let base = i * ABSTRACT_BUCKETS;
+                    let mut sum = 0.0f64;
+                    for b in 0..ABSTRACT_BUCKETS {
+                        sum += f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed));
+                    }
                     if sum > 1e-12 {
                         let mut s = [0.0; ABSTRACT_BUCKETS];
                         for b in 0..ABSTRACT_BUCKETS {
                             if (*bucket_child)[b] >= 0 {
-                                s[b] = self.sum0[i][b] / sum;
+                                s[b] = f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed)) / sum;
                             }
                         }
                         out[i] = Some(s);
@@ -921,13 +924,16 @@ impl<'a> Solver<'a> {
         };
         (0..self.n_deals)
             .map(|d| {
-                let raw = self.sum0[i_root + d];
-                let sum: f64 = raw.iter().sum();
+                let base = (i_root + d) * ABSTRACT_BUCKETS;
+                let mut sum = 0.0f64;
+                for b in 0..ABSTRACT_BUCKETS {
+                    sum += f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed));
+                }
                 let mut out = [0.0; ABSTRACT_BUCKETS];
                 if sum > 1e-12 {
                     for b in 0..ABSTRACT_BUCKETS {
                         if bucket_child[b] >= 0 {
-                            out[b] = raw[b] / sum;
+                            out[b] = f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed)) / sum;
                         }
                     }
                 }
@@ -951,10 +957,11 @@ impl<'a> Solver<'a> {
         // Sum positive regrets across deals.
         let mut agg = [0.0f64; ABSTRACT_BUCKETS];
         for d in 0..self.n_deals {
-            let raw = self.reg0[i_root + d];
+            let base = (i_root + d) * ABSTRACT_BUCKETS;
             for b in 0..ABSTRACT_BUCKETS {
-                if raw[b] > 0.0 {
-                    agg[b] += raw[b];
+                let v = f64::from_bits(self.reg0[base + b].load(Ordering::Relaxed));
+                if v > 0.0 {
+                    agg[b] += v;
                 }
             }
         }
