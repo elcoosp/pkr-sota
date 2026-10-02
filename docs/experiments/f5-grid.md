@@ -289,3 +289,27 @@ luck. Full curves still running; decide on the full-run bests.
 p=1 lower at both points on seed 43 too. Combined with seed 42, the
 ~100-125 mbb p=1 edge is repeatable across two seeds — not seed-42
 luck. Full curves still running; decide on the full-run bests.
+
+### seed-43 confirmation, 9M point
+
+| iter | v47 (p=2) | v48 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3357.5 | 3230.0 | -127.5 |
+| 6M | 3332.6 | 3217.5 | -115.1 |
+| 9M | 3493.8 | 3398.5 | -95.3 |
+
+3/3 points favor p=1 on seed 43 (seed 42: 6/6). Both curves turn up
+at the same place; p=1 sits ~100-125 mbb lower without fixing the
+turn-up. Best so far: p=2 3332.6 @ 6M, p=1 3217.5 @ 6M (-115.1).
+
+### seed-43 confirmation, 9M point
+
+| iter | v47 (p=2) | v48 (p=1) | delta |
+|---|---|---|---|
+| 3M | 3357.5 | 3230.0 | -127.5 |
+| 6M | 3332.6 | 3217.5 | -115.1 |
+| 9M | 3493.8 | 3398.5 | -95.3 |
+
+3/3 points favor p=1 on seed 43 (seed 42: 6/6). Both curves turn up
+at the same place; p=1 sits ~100-125 mbb lower without fixing the
+turn-up. Best so far: p=2 3332.6 @ 6M, p=1 3217.5 @ 6M (-115.1).
