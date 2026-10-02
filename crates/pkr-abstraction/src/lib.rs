@@ -751,18 +751,16 @@ impl AbstractionBuilder for KMeansAbstraction {
                 }
             }
             5 => {
-                // River: bucket hand strength into ~256 ordered tiers.
+                // River: bucket hand strength into ordered tiers.
                 //
                 // evaluate_hand returns the inverted-bit encoding !raw =
-                // ~(category << 20 | rank_bits) — NOT a 7462-scale rank. Its value
-                // range is ~[2^32 - 9*2^20, 2^32] (audit F6). `>> 13` is a monotone
-                // quantization of that range into ~1152 tiers where lower tier =
-                // stronger hand. (Original `>> 6` gave ~147k tiers, `>> 13` gave ~287;
-                // T2.2 uses >> 13 for 4x finer river hand resolution.)
+                // ~(category << 20 | rank_bits) — NOT a 7462-scale rank. Its
+                // range is ~[2^32 - 9*2^20, 2^32] (audit F6). Shifting by
+                // RIVER_TIER_SHIFT (=15) is a monotone quantization into
+                // ~288 tiers, lower = stronger. Set the shift ONCE via
+                // RIVER_TIER_SHIFT; history (>>6 -> 147k tiers, >>13 -> 1152)
+                // lives in the constant's doc, not here.
                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
-                // T2.2: >> 13 -> ~1152 tiers (4x finer than >> 13).
-                // Combined with RIVER_BUCKETS=128, net river keyspace
-                // grows ~2.5x current.
                 let hand_bucket = hand_rank >> pkr_core::abstraction::RIVER_TIER_SHIFT;
                 let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
                     Some(table) => {
