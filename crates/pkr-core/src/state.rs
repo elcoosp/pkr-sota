@@ -241,11 +241,12 @@ impl GameState {
                     let bet = base + pot * frac; // C1.5
                     let chips_needed = bet - base;
                     if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
-                        out[n] = Action {
-                            player: self.actor,
-                            kind: ActionKind::Bet(bet),
-                        };
-                        n += 1;
+                        // S7: two sizings can clamp to the same amount; skip dups.
+                        let dup = (0..n).any(|i| matches!(out[i].kind, ActionKind::Bet(b) if (b - bet).abs() < 1e-9));
+                        if !dup {
+                            out[n] = Action { player: self.actor, kind: ActionKind::Bet(bet) };
+                            n += 1;
+                        }
                     }
                 }
             }
@@ -305,11 +306,12 @@ impl GameState {
                     let raise = (opp_bet + pot * frac).max(min_raise_to); // C1.5
                     let chips_needed = raise - self.street_bets[self.actor];
                     if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
-                        out[n] = Action {
-                            player: self.actor,
-                            kind: ActionKind::Bet(raise),
-                        };
-                        n += 1;
+                        // S7: sizings can clamp to min_raise_to; skip dups.
+                        let dup = (0..n).any(|i| matches!(out[i].kind, ActionKind::Bet(b) if (b - raise).abs() < 1e-9));
+                        if !dup {
+                            out[n] = Action { player: self.actor, kind: ActionKind::Bet(raise) };
+                            n += 1;
+                        }
                     }
                 }
             }
