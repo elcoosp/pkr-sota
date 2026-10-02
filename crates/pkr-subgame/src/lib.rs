@@ -115,16 +115,22 @@ fn blend_p0_strategy(
         match (a[i], b[i]) {
             (None, None) => out.push(None),
             (Some(sa), None) => {
+                let n = sa.iter().filter(|&&p| p > 0.0).count().max(1) as f64;
+                let u = 1.0 / n;
                 let mut s = [0.0; ABSTRACT_BUCKETS];
                 for k in 0..ABSTRACT_BUCKETS {
-                    s[k] = alpha * sa[k] + (1.0 - alpha) * sa[k];
+                    let fb = if sa[k] > 0.0 { u } else { 0.0 };
+                    s[k] = alpha * sa[k] + (1.0 - alpha) * fb;
                 }
                 out.push(Some(s));
             }
             (None, Some(sb)) => {
+                let n = sb.iter().filter(|&&p| p > 0.0).count().max(1) as f64;
+                let u = 1.0 / n;
                 let mut s = [0.0; ABSTRACT_BUCKETS];
                 for k in 0..ABSTRACT_BUCKETS {
-                    s[k] = (1.0 - alpha) * sb[k];
+                    let fb = if sb[k] > 0.0 { u } else { 0.0 };
+                    s[k] = alpha * fb + (1.0 - alpha) * sb[k];
                 }
                 out.push(Some(s));
             }
@@ -647,7 +653,8 @@ impl<'a> Solver<'a> {
             term_val,
             iter_weight: 1.0,
             nodes_visited: (0..n_deals).map(|_| AtomicU64::new(0)).collect(),
-            seed: (cfg.root.board[0] as u64) ^ 0x5EED_2026_0000_0000,
+            seed: cfg.root.board[..cfg.root.board_len as usize].iter()
+                .fold(0x5EED_2026u64, |h, &c| h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c as u64),
             full_chance: std::env::var("PKR_SUBGAME_FULL_CHANCE")
                 .map(|v| v != "0")
                 .unwrap_or(true),

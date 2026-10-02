@@ -757,6 +757,17 @@ impl CompactRegretTable {
 
     /// Normalized average strategy for the given infoset hash.
     ///
+    /// Raw, unnormalized reach-weighted strategy mass for one infoset.
+    /// This is what `--min-visits` thresholds on.
+    pub fn strategy_sum_mass_of(&self, infoset_hash: u64) -> Option<f64> {
+        let guard = self.hash_to_idx.pin();
+        guard.get(&infoset_hash).map(|&idx| {
+            let mut s = 0.0f64;
+            for a in 0..K { s += self.load_sum(idx, a); }
+            s
+        })
+    }
+
     /// B10: previously returned raw strategy-sum accumulators (unnormalized
     /// f64 -> f32), which are not probability distributions. Now delegates
     /// to `compute_export_strategy`, the same routine used by the exporter

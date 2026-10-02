@@ -628,7 +628,7 @@ impl AbstractionBuilder for KMeansAbstraction {
         street: u8,
     ) -> pkr_contracts::SoftHash {
         let primary = self.get_infoset_hash(hole, board, history, street);
-        if !soft_kmeans_enabled() || street != 5 {
+        if !soft_kmeans_enabled() || street != pkr_core::state::Street::River as u8 {
             return pkr_contracts::SoftHash::hard(primary);
         }
         // River only. Recompute hand_bucket/board_bucket to find boundary distance.

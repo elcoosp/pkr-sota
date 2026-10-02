@@ -509,10 +509,7 @@ impl GameState {
 
         self.actions_this_street += 1;
         let next = 1 - actor;
-        if self.folded[next] {
-            // other player folded – terminal handled by is_terminal
-        }
-        self.actor = next;
+        self.actor = next; // fold terminality handled by is_terminal
     }
 
     /// Undo the last applied action.

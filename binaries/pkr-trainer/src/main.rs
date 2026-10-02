@@ -28,6 +28,10 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 /// Fixed seed for the exploitability evaluator. Using a constant rather
 /// than `done` makes successive EVAL points directly comparable
 /// (common-random-numbers comparison). The training RNG is separate.
+/// Historical: `--eval-now` used to seed with `EVAL_SEED ^ iter`. Retired
+/// by commit 18b6880 in favour of `eval_seed_for(iter)` (raw iteration).
+/// Kept only for the regression test that pins the retirement.
+#[allow(dead_code)]
 const EVAL_SEED: u64 = 0xE7A1_0000_0000_0001;
 
 /// Emit a JSON progress line to stderr. Called when `--log-json` is set.
@@ -256,8 +260,8 @@ fn export_blueprint(
     if min_visits > 0.0 {
         keys.retain(|k| {
             table
-                .get_average_strategy_slice(*k)
-                .is_some_and(|s| s.iter().sum::<f32>() >= min_visits)
+                .strategy_sum_mass_of(*k)
+                .is_some_and(|mass| mass >= min_visits as f64)
         });
     }
     let path_str = output.to_str().ok_or_else(|| {
@@ -850,15 +854,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("blueprint")
                             ));
-                            match export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint) {
-                                Ok(n) => eprintln!(
-                                    "SAVE-BEST iter={} expl_mbb={:.2} (raw minimum; gate rejected promotion) -> {} ({} infosets)",
-                                    done, br.exploitability_mbb, cli.output.display(), n
-                                ),
-                                Err(e) => eprintln!(
-                                    "WARNING: save-best export failed at iter {done}: {e}"
-                                ),
-                            }
+                            // Only <stem>.best.bin; leave cli.output to the
+                            // promotion path (per the flag's own doc).
                             if let Err(e) = export_blueprint(
                                 &trainer, &best_path, cli.min_visits, &fingerprint,
                             ) {
@@ -1128,7 +1125,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "stopped_early": stopped_early,
                 "plateau_stopped": plateau_stopped,
                 "seed": cli.seed,
-                "eval_seed": EVAL_SEED,
+                "eval_seed_scheme": "raw-iteration",
                 "eval_deals": cli.eval_deals,
                 "promote_gate": cli.promote_gate,
                 "stop_on_plateau": cli.stop_on_plateau,

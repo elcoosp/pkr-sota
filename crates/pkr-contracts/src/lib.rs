@@ -69,7 +69,7 @@ impl SoftHash {
 }
 
 /// FNV-1a 64-bit — fully specified, endianness-explicit, stable across
-/// compilers/versions/platforms. Used for all infoset hashing so that bluepints
+/// compilers/versions/platforms. Used for all infoset hashing so that blueprints
 /// trained on one machine load correctly on another. DO NOT replace with
 /// DefaultHasher/RandomState.
 pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
