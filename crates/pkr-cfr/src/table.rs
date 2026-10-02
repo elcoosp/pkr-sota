@@ -789,10 +789,24 @@ impl CompactRegretTable {
                 sum_abs += av as f64;
             }
         }
+        // 6.1: sum in HASH order, not slot order. next_idx assignment is
+        // timing-dependent under the get_or_create_idx race, so summing
+        // slots 0..allocated() permutes the addends run-to-run; f64 is not
+        // associative — the observed ~1e-11 strategy_sum_mass drift. Hash
+        // order is stable. Orphan slots are zero, so the total is unchanged.
         let mut strat_mass = 0.0f64;
-        let entries_sum = n * SUM_STRIDE;
-        for i in 0..entries_sum {
-            strat_mass += f64::from_bits(self.strategy_sum[i].load(Ordering::Relaxed));
+        {
+            let guard = self.hash_to_idx.pin();
+            let mut keys: Vec<u64> = guard.iter().map(|(k, _)| *k).collect();
+            keys.sort_unstable();
+            for k in &keys {
+                if let Some(&idx) = guard.get(k) {
+                    let base = idx * SUM_STRIDE;
+                    for a in 0..SUM_STRIDE {
+                        strat_mass += f64::from_bits(self.strategy_sum[base + a].load(Ordering::Relaxed));
+                    }
+                }
+            }
         }
         // B4: report actual map entries (deterministic). allocated()
         // includes slots orphaned by the get_or_create_idx race, whose
