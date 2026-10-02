@@ -78,8 +78,10 @@ is and was deterministic.
   a failed precompute flows into training silently.
 - **S5** hoist `dcfr_step`: the review's suggested fix is wrong
   (sequential mode has per-item iterations) — documented, not coded.
-- **alloc_idx full fix**: coordinator-side canonical idx assignment;
-  larger change, deferred.
+- **alloc_idx full fix**: the leak is ~2 slots per 932k (2e-6); the
+  *reported* metric is already deterministic (len()). A race-free fix
+  needs per-key locking or coordinator-side canonical assignment — a
+  hot-path redesign for a negligible leak. Deferred, not a hazard.
 - **§6.1 checkpoint byte-reproducibility**: partially addressed.
 
 ## Section 6 — If you do one thing
