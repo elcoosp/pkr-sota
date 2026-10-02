@@ -1,6 +1,6 @@
 # HANDOFF — bug-hunt follow-up + cleanup session (2026-10-01, late)
 
-**Continues:** `docs/HANDOFF_2026-10-01_bughunt.md`
+**Continues:** `docs/handoffs/HANDOFF_2026-10-01_bughunt.md`
 **HEAD at handoff:** `3c967bf`
 **Tree:** clean
 
@@ -173,7 +173,7 @@ user. Only `scripts/launchers/v42.sh` remains tracked.
 | `crates/pkr-runtime/examples/bot_loop.rs` | unused binding silenced |
 | `docs/experiments/v42-vs-v43-ab.md` | F5 closed (both dimensions) |
 | `docs/experiments/f4-abstraction-rebuild-plan.md` | F4 plan + v45 progress |
-| `docs/HANDOFF_2026-10-01_bughunt.md` | prior handoff |
+| `docs/handoffs/HANDOFF_2026-10-01_bughunt.md` | prior handoff |
 | `docs/HANDOFF_2026-10-01_bughunt-followup.md` | this file |
 
 ### Disk (2.6 GB total)
