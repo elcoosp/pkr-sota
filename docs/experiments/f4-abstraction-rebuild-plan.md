@@ -1,3 +1,11 @@
+> **CAVEAT (2026-10-02):** exploitability numbers in this doc were
+> measured at 5000 eval deals with an in-sample best response. That
+> estimator overfits a growing infoset table; the same v42 18M model
+> reads 3796 mbb @ 5k deals but 1707 @ 20k. Absolute numbers here are
+> inflated (by an amount that varies with infoset count). Relative
+> comparisons at the SAME deal count remain valid. See
+> `turn-up-investigation.md`.
+
 # F4 — Abstraction rebuild: measured cost and plan
 
 **Date:** 2026-09-30

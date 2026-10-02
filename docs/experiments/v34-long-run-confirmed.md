@@ -1,3 +1,11 @@
+> **CAVEAT (2026-10-02):** exploitability numbers in this doc were
+> measured at 5000 eval deals with an in-sample best response. That
+> estimator overfits a growing infoset table; the same v42 18M model
+> reads 3796 mbb @ 5k deals but 1707 @ 20k. Absolute numbers here are
+> inflated (by an amount that varies with infoset count). Relative
+> comparisons at the SAME deal count remain valid. See
+> `turn-up-investigation.md`.
+
 > **Correction 2026-09-27.** A 4-seed pool (seeds 42, 100, 101, 102)
 > gives a mean of **2587.6 ± 63.3 mbb** at 100M iterations, not the
 > single-seed 2526.2 originally quoted. Seed 42 was 61.5 mbb below the
