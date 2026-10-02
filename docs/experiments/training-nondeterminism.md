@@ -453,3 +453,31 @@ concurrent map"; no papaya API removes it without a per-key lock. The
 That changes the `TableSnapshot` struct and its consumers (trainer CSV,
 stats.json), so it is a follow-up with its own tests — not a hot-path
 edit under load.
+
+### OBSERVED: race fires in the seed-43 A/B (2026-10-02)
+
+v47 (avg_power=2) and v48 (avg_power=1), seed 43, same tables, at the
+same iteration 3004416 report different infoset counts:
+
+    v47: 932897
+    v48: 932899
+
+avg_power only reweights the strategy sum; it cannot change traversal
+or which infosets get created. So the 2-slot gap is the alloc_idx
+orphan race above, firing under thread-timing differences between the
+two concurrently-running jobs. First empirical sighting of the fourth
+source.
+
+### OBSERVED: race fires in the seed-43 A/B (2026-10-02)
+
+v47 (avg_power=2) and v48 (avg_power=1), seed 43, same tables, at the
+same iteration 3004416 report different infoset counts:
+
+    v47: 932897
+    v48: 932899
+
+avg_power only reweights the strategy sum; it cannot change traversal
+or which infosets get created. So the 2-slot gap is the alloc_idx
+orphan race above, firing under thread-timing differences between the
+two concurrently-running jobs. First empirical sighting of the fourth
+source.
