@@ -247,3 +247,23 @@ in-sample BR overfitting a growing infoset table — untested).
 
 Kuhn said p=2 wins; NLHE says p=1 is mildly better. Toy-game verdicts
 do not transfer.
+
+## avg_power seed-43 confirmation (in progress, 2026-10-02)
+
+| 3M eval | p=2 | p=1 | delta |
+|---|---|---|---|
+| seed 42 | 3313.4 | 3231.8 | -81.5 |
+| seed 43 | 3357.5 | 3230.0 | -127.5 |
+
+p=1 lower on both seeds at the 3M point. Full curves (v47/v48) still
+running; decide on the full-run bests, not the 3M point.
+
+## avg_power seed-43 confirmation (in progress, 2026-10-02)
+
+| 3M eval | p=2 | p=1 | delta |
+|---|---|---|---|
+| seed 42 | 3313.4 | 3231.8 | -81.5 |
+| seed 43 | 3357.5 | 3230.0 | -127.5 |
+
+p=1 lower on both seeds at the 3M point. Full curves (v47/v48) still
+running; decide on the full-run bests, not the 3M point.
