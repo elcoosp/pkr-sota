@@ -22,10 +22,9 @@ use rayon::prelude::*;
 
 pub const MAX_ACTIONS: usize = 8;
 pub const ABSTRACT_BUCKETS: usize = 6;
-/// Number of hand-strength classes shared across deals. Deals in the same
-/// class share CFR regrets, so strategies generalize to hands never seen
-/// during the solve. 64 gives fine strength resolution without losing
-/// the cross-deal generalization benefit.
+/// Number of hand-strength classes. NOTE: currently unused — regrets are
+/// strictly per-deal in this solver; the class-sharing this once described
+/// was never wired. Kept as a named constant for a future implementation.
 pub const N_CLASSES: usize = 64;
 
 /// Minimum valid `!raw` value from `evaluate_hand`. The inverted-bit

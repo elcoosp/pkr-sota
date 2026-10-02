@@ -171,10 +171,18 @@ impl SubgameHandle {
         }
 
         // Sample hands from the opponent's range and build the P1 range.
+        // S10: seed from pot + street + board + our hole, not pot alone
+        // (identical pots on different boards sampled the same 8 hands).
+        let seed = work_state.pot.to_bits() as u64
+            ^ ((work_state.street as u64) << 8)
+            ^ work_state.board[..work_state.board_len as usize]
+                .iter()
+                .fold(0u64, |h, &c| h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c as u64)
+            ^ our_hole.iter().fold(0u64, |h, &c| h.wrapping_mul(0x100_0000_01b3) ^ c as u64);
         let opp_samples = pkr_subgame::range_tracker::sample_hands_weighted(
             opp_range,
             self.cfg.hands_per_range,
-            work_state.pot.to_bits() as u64,
+            seed,
         );
         if opp_samples.len() < 2 {
             return None;

@@ -6,6 +6,7 @@ use std::fs::File;
 use std::path::Path;
 
 pub fn combinadic_unrank_2(mut index: u32) -> [u8; 2] {
+    debug_assert!((index as u64) < choose(52, 2) as u64, "combinadic_unrank_2: index out of range");
     let mut result = [0u8; 2];
     let mut remaining = 52u32;
     for i in (1..=2).rev() {
@@ -23,6 +24,7 @@ pub fn combinadic_unrank_2(mut index: u32) -> [u8; 2] {
 }
 
 pub fn combinadic_unrank_3(mut index: u32) -> [u8; 3] {
+    debug_assert!((index as u64) < choose(52, 3) as u64, "combinadic_unrank_3: index out of range");
     let mut result = [0u8; 3];
     let mut remaining = 52u32;
     for i in (1..=3).rev() {
@@ -40,6 +42,7 @@ pub fn combinadic_unrank_3(mut index: u32) -> [u8; 3] {
 }
 
 pub fn combinadic_unrank_5(mut index: u32) -> [u8; 5] {
+    debug_assert!((index as u64) < choose(52, 5) as u64, "combinadic_unrank_5: index out of range");
     let mut result = [0u8; 5];
     let mut remaining = 52u32;
     for i in (1..=5).rev() {
@@ -57,6 +60,7 @@ pub fn combinadic_unrank_5(mut index: u32) -> [u8; 5] {
 }
 
 pub fn combinadic_unrank_6(mut index: u32) -> [u8; 6] {
+    debug_assert!((index as u64) < choose(52, 6) as u64, "combinadic_unrank_6: index out of range");
     let mut result = [0u8; 6];
     let mut remaining = 52u32;
     for i in (1..=6).rev() {
@@ -74,6 +78,7 @@ pub fn combinadic_unrank_6(mut index: u32) -> [u8; 6] {
 }
 
 pub fn combinadic_unrank_7(mut index: u32) -> [u8; 7] {
+    debug_assert!((index as u64) < choose(52, 7) as u64, "combinadic_unrank_7: index out of range");
     let mut result = [0u8; 7];
     let mut remaining = 52u32;
     for i in (1..=7).rev() {
@@ -91,6 +96,7 @@ pub fn combinadic_unrank_7(mut index: u32) -> [u8; 7] {
 }
 
 pub fn combinadic_unrank(mut index: u32, k: u32, n: u32) -> Vec<u8> {
+    debug_assert!((index as u64) < choose(n, k) as u64, "combinadic_unrank: index out of range");
     let mut result = Vec::with_capacity(k as usize);
     let mut remaining = n;
     for i in (1..=k).rev() {

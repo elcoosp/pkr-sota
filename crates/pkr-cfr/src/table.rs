@@ -216,17 +216,10 @@ fn cache_insert(hash: u64, idx: usize) {
 /// non-finite intermediates (currently it cannot produce them because
 /// all arithmetic stays in i64/i128).
 #[allow(dead_code)]
-fn warn_nonfinite_regret_once(iteration: u32) {
-    use std::sync::OnceLock;
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        eprintln!(
-            "WARNING: regret became non-finite at iteration {}. \
-             Training is corrupt from this point.",
-            iteration
-        );
-    });
-}
+// L6: `new_r == i64::MAX` is unreachable — `update_regret_with_step`
+// saturates via `saturating_add` and every flush clamps to +/-R_MAX
+// (i64::MAX/4). Removed as dead assurance; if saturation detection is
+// wanted, `update_regret_with_step` must return a flag.
 
 /// F7: allocate `n` lazily-zeroed `AtomicI64`s backed by
 /// `alloc_zeroed`. See the SAFETY note in `with_capacity`.
@@ -656,9 +649,6 @@ impl CompactRegretTable {
                             delta_i64,
                             mode.momentum,
                         );
-                        if new_r == i64::MAX {
-                            warn_nonfinite_regret_once(batch_ref[k].iteration);
-                        }
                         cur_i64 = new_r;
                         mom_i64 = new_m;
                     }
@@ -683,9 +673,6 @@ impl CompactRegretTable {
                         delta_i64,
                         mode.momentum,
                     );
-                    if new_r == i64::MAX {
-                        warn_nonfinite_regret_once(max_iter);
-                    }
                     cur_i64 = new_r;
                     mom_i64 = new_m;
                 }
