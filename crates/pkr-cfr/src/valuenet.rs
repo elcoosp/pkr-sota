@@ -1,3 +1,8 @@
+//! **WIP — NOT WIRED.** Zero callers outside this module and its tests;
+//! `pub mod valuenet` in lib.rs is the only reference. The roadmap's
+//! deep-CFR / turn-leaf-value path (Roadmap §5.2) is not implemented.
+//! Keep or delete deliberately; do not assume it runs.
+//!
 //! Value network for turn re-solve leaf evaluation. (Roadmap §5.2)
 //!
 //! A small MLP trained on (EHS², OCHS) features → value maps to [0, 1].
