@@ -409,7 +409,9 @@ mod fingerprint_tests {
         assert_eq!(f.sizing_large, BET_SIZINGS[2]);
         assert_eq!(f.threshold_small, BUCKET_THRESHOLD_SMALL);
         assert_eq!(f.threshold_large, BUCKET_THRESHOLD_LARGE);
-        let expected_sig = if crate::state::SIG_V2_STREET_MONEY {
+        let expected_sig = if crate::state::SIG_V3_SIZE_AWARE {
+            3
+        } else if crate::state::SIG_V2_STREET_MONEY {
             2
         } else {
             1
