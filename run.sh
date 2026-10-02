@@ -12,7 +12,7 @@
 #
 # This script is safe to `nohup ... &`; it traps SIGINT/SIGTERM and
 # writes a final checkpoint before exiting.
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")"
 
 # shellcheck source=scripts/run-config.sh
@@ -50,7 +50,9 @@ PRE="cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precom
 pre() {
     local target=""
     for arg in "$@"; do
-        [[ "$arg" == *.bin ]] && target="$arg"
+        if [[ "$arg" == *.bin ]]; then
+            target="$arg"
+        fi
     done
     if [ "${REBUILD:-0}" != "1" ] && [ -n "$target" ] && [ -s "$target" ]; then
         echo "  [cached] $(basename "$target")"
