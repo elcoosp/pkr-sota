@@ -455,19 +455,17 @@ impl GameState {
                 // old behaviour, because all legal `total` satisfy
                 // `total == current + chips`.
                 let current = self.street_bets[actor];
-                // NOTE (C1.5 follow-up): `legal_actions_into` currently
-                // produces `Bet(total)` values that can be BELOW the
-                // actor's current street bet, because its raise formula
-                // is `to_call + pot * frac` instead of
-                // `street_bets[opp] + pot * frac`. This is invisible
-                // postflop (actor has street_bets == 0) but breaks
-                // preflop lines. The correct fix is in `legal_actions*`
-                // (tracked separately); here we only ensure that any
-                // such under-bet is a strict no-op rather than the
-                // pre-C1 behaviour of silently reducing street_bets.
+                // History: before C1.5, `legal_actions_into` produced
+                // raise totals via `to_call + pot * frac`, which could be
+                // BELOW the actor's current street bet on preflop lines.
+                // C1.5 fixed the formula to `opp_bet + pot * frac` with a
+                // min-raise-to floor (see the `// C1.5` sites in
+                // `legal_actions_into`), so no under-bet is produced now.
+                // The clamp below stays as defence in depth for
+                // hand-built / fuzzed `Action`s.
                 //
-                // Diagnostic: set PKR_STRICT_BETS=1 to make this an
-                // assertion during development.
+                // Diagnostic: set PKR_STRICT_BETS=1 to make an under-bet
+                // an assertion during development.
                 #[cfg(debug_assertions)]
                 if total < current && std::env::var("PKR_STRICT_BETS").as_deref() == Ok("1") {
                     panic!(
