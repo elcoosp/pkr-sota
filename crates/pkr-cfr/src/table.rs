@@ -665,6 +665,10 @@ impl CompactRegretTable {
                             max_iter = batch_ref[k].iteration;
                         }
                     }
+                    // S5 note: dcfr_step() is recomputed per group, but in
+                    // sequential mode each item has its OWN iteration, so it
+                    // cannot be hoisted; in batched mode it is already one
+                    // call per group. No hoisting win exists.
                     let delta_i64 = to_fixed(delta_sum);
                     let (new_r, new_m) = crate::dcfr::update_regret_i64_mode(
                         cur_i64,
