@@ -1715,7 +1715,7 @@ mod gadget_safety_tests {
         // River root: play check-check to the river so only the river
         // betting tree is enumerated (a preflop root blows the 48-slot
         // undo stack building the whole game tree).
-        let b: [u8; 5] = [44, 45, 46, 47, 48];
+        let b: [u8; 5] = [20, 21, 38, 39, 40]; // disjoint from holes/ranges, no flush
         let mut root = GameState::new(200.0, 1.0, 2.0);
         root.set_hole_cards([0, 1], [2, 3]);
         root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
@@ -1727,6 +1727,10 @@ mod gadget_safety_tests {
         root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
         root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
         root.advance_street_in_place(&b[4..5]);
+        // Postflop first actor is P1 (1 - dealer); have P1 check so the
+        // root is P0's decision (matching production, where decide() is
+        // called on our turn).
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
 
         // Two 8-hand ranges.
         // Ranges disjoint from the board (44..48) and from each other.
@@ -1768,5 +1772,64 @@ mod gadget_safety_tests {
             gadget_br <= bp_br + 1e-6,
             "GADGET UNSAFE: gadget_br={gadget_br:.4} > bp_br={bp_br:.4}"
         );
+    }
+
+    /// Diagnostic: is the gadget degenerate (P1 always terminates)?
+    /// Print the average terminate probability and the resolved root.
+    #[test]
+    #[ignore]
+    fn gadget_diagnostic() {
+        let Some((abs, tbl)) = fixture() else {
+            eprintln!("SKIP: fixture missing"); return;
+        };
+        let ev = pkr_eval::NlheEvaluator;
+        let b: [u8; 5] = [20, 21, 38, 39, 40]; // disjoint from holes/ranges, no flush
+        let mut root = GameState::new(200.0, 1.0, 2.0);
+        root.set_hole_cards([0, 1], [2, 3]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&b[0..3]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&b[3..4]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&b[4..5]);
+        // Postflop first actor is P1 (1 - dealer); have P1 check so the
+        // root is P0's decision (matching production, where decide() is
+        // called on our turn).
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+
+        let p0h: Vec<[u8;2]> = (0..8).map(|i| [4 + i as u8 * 2, 5 + i as u8 * 2]).collect();
+        let p1h: Vec<[u8;2]> = (0..8).map(|i| [22 + i as u8 * 2, 23 + i as u8 * 2]).collect();
+        let cfg = POCConfig {
+            root,
+            p0_range: Range::uniform(p0h),
+            p1_range: Range::uniform(p1h),
+            iterations: 200,
+            evaluator: &ev,
+            blueprint: Some((&abs, &tbl)),
+        };
+        let mut s = Solver::new(&cfg);
+        let bp = s.build_blueprint_strategy(&abs, &tbl);
+        let mut gv = vec![0.0f64; s.n_deals];
+        for d in 0..s.n_deals { gv[d] = -s.blueprint_value_p0(s.tree.root, d as u32, &bp); }
+        s.gadget_v1 = gv.clone();
+        s.gadget_reg = (0..s.n_deals * 2).map(|_| AtomicU64::new(0)).collect();
+        s.use_gadget = true;
+        s.solve();
+        // terminate prob per deal at the END
+        let mut st_sum = 0.0; let mut n = 0;
+        for d in 0..s.n_deals {
+            let r0 = f64::from_bits(s.gadget_reg[d*2].load(Ordering::Relaxed));
+            let r1 = f64::from_bits(s.gadget_reg[d*2+1].load(Ordering::Relaxed));
+            let p0 = r0.max(0.0); let p1 = r1.max(0.0); let t = p0+p1;
+            let st = if t > 1e-12 { p0/t } else { 0.5 };
+            st_sum += st; n += 1;
+        }
+        eprintln!("avg terminate prob = {:.3} (1.0 = degenerate)", st_sum / n as f64);
+        eprintln!("gadget_v1 range: [{:.3}, {:.3}]", gv.iter().cloned().fold(f64::INFINITY, f64::min), gv.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+        let agg = s.root_p0_strategy_aggregated().unwrap();
+        eprintln!("resolved root P0 = {:?}", agg.iter().map(|x| (x*1000.0).round()/1000.0).collect::<Vec<_>>());
     }
 }
