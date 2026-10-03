@@ -88,3 +88,25 @@ k=200, 1M iters:
 Matches the k=8 smoke (2.79×). Viable — a 100M-iteration V3 A/B is
 running (`outputs/overnight-v3min`). The first "non-viable" verdict
 applies to the *over-encoded* versions, not this one.
+
+### Minimal V3 A/B — first eval (10M)
+
+| iter | V1 expl | V3-min expl | V3/V1 |
+|---|---|---|---|
+| 10M | 2183 | 5459 | 2.5× |
+
+V3 reads 2.5× worse on the *in-sample* metric — but it has 2.5× the
+infosets, so the in-sample BR overfits it 2.5× harder (report R1). This
+is NOT evidence V3 is worse in real play; LBR at 100M is the verdict.
+Throughput: V3 8.4k it/s vs V1 ~30k (693 vs ~460 nodes/iter), ETA ~2.8h.
+
+### Minimal V3 A/B — first eval (10M)
+
+| iter | V1 expl | V3-min expl | V3/V1 |
+|---|---|---|---|
+| 10M | 2183 | 5459 | 2.5× |
+
+V3 reads 2.5× worse on the *in-sample* metric — but it has 2.5× the
+infosets, so the in-sample BR overfits it 2.5× harder (report R1). This
+is NOT evidence V3 is worse in real play; LBR at 100M is the verdict.
+Throughput: V3 8.4k it/s vs V1 ~30k (693 vs ~460 nodes/iter), ETA ~2.8h.
