@@ -5,7 +5,9 @@
 //!
 //! For each player independently:
 //!
-//!     P(hand | h) ∝ P(hand) · Π_{a in h} σ_blueprint(a | infoset(hand, prefix))
+//! ```text
+//!     P(hand | h) prop P(hand) * Prod_{a in h} blueprint(a | infoset(hand, prefix))
+//! ```
 //!
 //! where `σ` is the blueprint's average strategy at the abstract bucket
 //! containing the concrete action. Hands containing a board card are
