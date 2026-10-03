@@ -1,0 +1,12 @@
+[package]
+name = "pkr-leduc-check"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pkr-cfr = { workspace = true }
+rand = { workspace = true }
+
+[[bin]]
+name = "pkr-leduc-check"
+path = "src/main.rs"
