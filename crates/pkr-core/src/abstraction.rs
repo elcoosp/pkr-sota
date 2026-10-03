@@ -147,11 +147,11 @@ mod preflop_class_tests {
         let aa = preflop_class(&[12, 25]); // Ac, Ad (rank 12)
         assert_eq!(aa, 12, "AA -> 12");
         // AKs: same suit, ranks 12 and 11.
-        let aks = preflop_class(&[12, 24]); // Ac, Kc
+        let aks = preflop_class(&[12, 11]); // Ac, Kc (both suit 0)
         // tri = 12*11/2 + 11 = 77; suited -> 13+77 = 90
         assert_eq!(aks, 90, "AKs -> 90");
         // AKo: different suits.
-        let ako = preflop_class(&[12, 37]); // Ac, Kd
+        let ako = preflop_class(&[12, 24]); // Ac, Kd (suits 0,1)
         assert_eq!(ako, 91 + 77, "AKo -> 168");
     }
 }
