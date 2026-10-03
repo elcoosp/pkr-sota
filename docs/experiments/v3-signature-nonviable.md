@@ -48,3 +48,43 @@ That is ~5-6 bits, not 21. It should grow the table by ~2-4×, not 31×.
 V1 finished 100M: best **2183 mbb @ 10M**, rising to 2647 @ 100M (the
 in-sample artifact — still not converged at 10k deals). First/last
 checkpoints saved for LBR ranking.
+
+---
+
+## UPDATE (2026-10-03): minimal redesign IS viable
+
+The first two attempts over-encoded (31× and 41×). The third keeps
+**only** V1's fields + `faced_bet_bucket` (3 bits) — no pot_class
+(was 32×), no prev_aggr, no action sequence.
+
+k=200, 1M iters:
+
+| arm | infosets |
+|---|---|
+| V1 | 721,175 |
+| V3-minimal | 1,790,531 |
+| ratio | **2.48×** |
+
+Matches the k=8 smoke (2.79×). Viable — a 100M-iteration V3 A/B is
+running (`outputs/overnight-v3min`). The first "non-viable" verdict
+applies to the *over-encoded* versions, not this one.
+
+---
+
+## UPDATE (2026-10-03): minimal redesign IS viable
+
+The first two attempts over-encoded (31× and 41×). The third keeps
+**only** V1's fields + `faced_bet_bucket` (3 bits) — no pot_class
+(was 32×), no prev_aggr, no action sequence.
+
+k=200, 1M iters:
+
+| arm | infosets |
+|---|---|
+| V1 | 721,175 |
+| V3-minimal | 1,790,531 |
+| ratio | **2.48×** |
+
+Matches the k=8 smoke (2.79×). Viable — a 100M-iteration V3 A/B is
+running (`outputs/overnight-v3min`). The first "non-viable" verdict
+applies to the *over-encoded* versions, not this one.
