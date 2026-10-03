@@ -36,14 +36,16 @@ pub const SIG_V2_VERSION: u64 = 2;
 /// Turning this on invalidates every existing checkpoint: the abstract
 /// game changes because the infoset key can now distinguish bet sizes
 /// and pot classes. Retrain or `--fresh`.
-/// Runtime gate for the size-aware V3 infoset signature (env `PKR_SIG_V3=1`).
-/// Default OFF. When ON, `history_signature_v3` is used and the fingerprint
-/// records `sig_version=3`; V1/V2 checkpoints then refuse to load, as they
-/// must (the infoset keys differ). Env read once.
+/// Runtime gate for the size-aware V3 infoset signature (env `PKR_SIG_V3`).
+/// Default ON (S6: the V3 abstract game is now production). Opt out with
+/// `PKR_SIG_V3=0`, which restores the 4-byte v1 signature and records
+/// `sig_version=1`. When ON, `history_signature_v3` is used and the
+/// fingerprint records `sig_version=3`; V1/V2 checkpoints then refuse to
+/// load, as they must (the infoset keys differ). Env read once.
 pub fn sig_v3_size_aware() -> bool {
     use std::sync::OnceLock;
     static B: OnceLock<bool> = OnceLock::new();
-    *B.get_or_init(|| std::env::var("PKR_SIG_V3").as_deref() == Ok("1"))
+    *B.get_or_init(|| std::env::var("PKR_SIG_V3").as_deref() != Ok("0"))
 }
 
 /// Version tag written into the top 4 bits of the v3 signature.
@@ -106,6 +108,15 @@ pub struct UndoRecord {
     /// which pot class the current betting round is playing for.
     /// Restored by `undo_action`.
     street_start_pot: f32,
+    /// S6: last bettor of the PREVIOUS street (0/1; 2 = none yet).
+    /// Set from `street_aggressor` at each street advance, restored by
+    /// `undo_action`. Packed into `history_signature_v3` bit 34.
+    prev_street_aggressor: u8,
+    /// S6: last bettor of the CURRENT street (0/1; 2 = none yet).
+    /// Set on every `Bet` apply, snapshotted into
+    /// `prev_street_aggressor` at street advance, reset to 2 there,
+    /// restored by `undo_action`.
+    street_aggressor: u8,
 }
 
 /// Stack-allocated game state. No heap allocations during traversal.
@@ -139,8 +150,17 @@ pub struct GameState {
     /// `advance_street_in_place` (from the pre-advance pot) and at
     /// hand start (to the blinds' forced total). Never reset within a
     /// street. Off-by-default consumer; the size-aware signature is
-    /// gated on `sig_v3_size_aware()` (`PKR_SIG_V3=1`).
+    /// gated on `sig_v3_size_aware()` (opt out with `PKR_SIG_V3=0`).
     pub street_start_pot: f32,
+    /// S6: last bettor of the PREVIOUS street (0/1; 2 = none yet).
+    /// Snapshotted from `street_aggressor` at each street advance,
+    /// restored by `undo_action`. Packed into `history_signature_v3`.
+    pub prev_street_aggressor: u8,
+    /// S6: last bettor of the CURRENT street (0/1; 2 = none yet).
+    /// Set on every `Bet` apply, snapshotted into
+    /// `prev_street_aggressor` at street advance, reset to 2 there,
+    /// restored by `undo_action`.
+    pub street_aggressor: u8,
     /// Big blind, in chips. Set once in `new`; immutable after. Stored so
     /// signatures and bucketing that reason in bb are correct for any
     /// blind, not just the 1/2 default (L1).
@@ -175,6 +195,8 @@ impl GameState {
             abstract_history_len: 0,
             // F3: the pot at preflop start is the two forced bets.
             street_start_pot: sb + bb,
+            prev_street_aggressor: 2,
+            street_aggressor: 2,
             bb,
             undo_stack: [UndoRecord {
                 actor: 0,
@@ -191,6 +213,8 @@ impl GameState {
                 board_len: 0,
                 folded: [false; 2],
                 street_start_pot: 0.0,
+                prev_street_aggressor: 2,
+                street_aggressor: 2,
             }; 48],
             undo_len: 0,
         }
@@ -404,6 +428,8 @@ impl GameState {
             board_len: self.board_len,
             folded: self.folded,
             street_start_pot: self.street_start_pot,
+            prev_street_aggressor: self.prev_street_aggressor,
+            street_aggressor: self.street_aggressor,
         };
         self.undo_stack[self.undo_len as usize] = record;
         self.undo_len += 1;
@@ -495,6 +521,11 @@ impl GameState {
                 self.street_bets[actor] = current + chips;
                 self.raises_this_street = self.raises_this_street.saturating_add(1);
                 self.total_raises = self.total_raises.saturating_add(1);
+                // S6: record the last bettor of this street. Snapshotted
+                // into `prev_street_aggressor` at street advance; a benign
+                // no-op under-bet (chips == 0) still counts as aggression
+                // for signature purposes, matching `total_raises`.
+                self.street_aggressor = actor as u8;
             }
         }
 
@@ -548,6 +579,8 @@ impl GameState {
         self.folded = rec.folded;
         self.abstract_history_len = rec.abstract_history_len;
         self.street_start_pot = rec.street_start_pot;
+        self.prev_street_aggressor = rec.prev_street_aggressor;
+        self.street_aggressor = rec.street_aggressor;
     }
 
     pub fn is_street_complete(&self) -> bool {
@@ -611,6 +644,11 @@ impl GameState {
         // street. `push_undo` already captured the previous value, so
         // an `undo_action` restores it.
         self.street_start_pot = self.pot;
+        // S6: the street just ended donates its last bettor as the new
+        // "previous street aggressor". `push_undo` already captured both
+        // fields, so an `undo_action` restores them.
+        self.prev_street_aggressor = self.street_aggressor;
+        self.street_aggressor = 2;
     }
 }
 
@@ -700,19 +738,29 @@ impl GameState {
     ///
     /// Layout (low -> high bits):
     ///
-    ///   bits  0.. 3  street (0..3)
-    ///   bits  3..10  current-street action-bucket sequence (up to 7
+    ///   bits  0.. 2  street (0..3)
+    ///   bits  2..23  current-street action-bucket sequence (up to 7
     ///                actions, 3 bits each — see `BET_SIZINGS` doc)
-    ///   bits 10..14  current-street action count (0..7)
-    ///   bits 14..19  street-start pot class (log2 BB, 0..8)
-    ///   bits 19..22  total_raises this street (0..7)
+    ///   bits 23..26  current-street action count (0..7)
+    ///   bits 26..31  street-start pot class, half-octave (S6): 5 bits
+    ///                holding `floor(log2(pot_bb) * 2)` clamped to 0..31,
+    ///                where `pot_bb` is the street-start pot in big
+    ///                blinds (floored at 1.0). Each doubling of the pot
+    ///                spans two classes, so e.g. 4 bb -> 4 and 6 bb -> 5:
+    ///                finer than the old whole-octave `floor(log2)` but
+    ///                still coarse on purpose.
+    ///   bits 31..34  total_raises this street (0..7)
+    ///   bit  34      previous-street-aggressor bit (S6): 1 iff
+    ///                `prev_street_aggressor == 1`. `NONE` (2) maps to 0
+    ///                and therefore collides with P0 — the bit answers
+    ///                "was P1 the previous street's aggressor", the
+    ///                distinction that matters most heads-up (BB 3-bettor
+    ///                vs SB raiser lines play differently on later
+    ///                streets).
     ///   bits 60..64  version tag = SIG_V3_VERSION
     ///
-    /// The pot class is `floor(log2(pot_bb)).min(8)` where `pot_bb` is
-    /// the street-start pot expressed in big blinds. So pot sizes 1, 2,
-    /// 4, 8, ..., 256+ bb map to classes 0..8. That is a coarse but
-    /// real distinction: a 2 bb pot plays differently from a 100 bb
-    /// pot.
+    /// Field ranges are disjoint by construction (34 < 60); the version
+    /// tag can never collide with a payload bit.
     ///
     /// The action buckets here come from `abstract_history` (the same
     /// per-action bucket the traversal computes), so the current-street
@@ -728,18 +776,21 @@ impl GameState {
         }
         let street = (self.street as u64) & 0x3;
         let pot_bb = (self.street_start_pot / self.bb.max(1e-6)).max(1.0);
-        let pot_class = (pot_bb.log2().floor() as u64).min(8) & 0xF;
+        // S6 half-octave class: floor(log2(pot_bb) * 2), 5 bits.
+        let pot_class = (pot_bb.log2() * 2.0).floor().max(0.0).min(31.0) as u64;
         let raises = (self.total_raises as u64).min(7) & 0x7;
+        // S6 aggressor bit: 1 iff P1 was the previous street's aggressor.
+        let prev_agg = (self.prev_street_aggressor == 1) as u64;
 
         // Non-overlapping layout: street 0..2 | seq 2..23 | n_actions
-        // 23..26 | pot_class 26..30 | raises 30..33 | version 60..64.
-        // The old layout ORed n_actions/pot_class/raises into seq's
-        // bits (3..24), colliding. V3 never ran, so nothing depends on it.
+        // 23..26 | pot_class 26..31 | raises 31..34 | prev_agg 34 |
+        // version 60..64.
         (street & 0x3)
             | ((seq & 0x1F_FFFF) << 2)
             | ((n_actions as u64 & 0x7) << 23)
-            | ((pot_class & 0xF) << 26)
-            | ((raises & 0x7) << 30)
+            | ((pot_class & 0x1F) << 26)
+            | ((raises & 0x7) << 31)
+            | ((prev_agg & 0x1) << 34)
             | (SIG_V3_VERSION << 60)
     }
 
@@ -1312,24 +1363,34 @@ mod c4b_tests {
 mod c4c_tests {
     use super::*;
 
-    /// With the flag off, `infoset_signature_into` must produce exactly
-    /// the same 4 bytes as `history_signature().to_le_bytes()`. This
-    /// pins the flag-off no-op contract.
+    /// `infoset_signature_into` follows the V3 gate: 8 bytes equal to
+    /// `history_signature_v3` when the gate is on (S6 default; opt out
+    /// with `PKR_SIG_V3=0`), else exactly the 4 legacy v1 bytes. This
+    /// pins both sides of the gate contract.
     #[test]
-    fn flag_off_bytes_match_v1() {
+    fn signature_bytes_follow_v3_gate() {
         if SIG_V2_STREET_MONEY {
-            eprintln!("SKIP: SIG_V2_STREET_MONEY is on; not a flag-off test");
+            eprintln!("SKIP: SIG_V2_STREET_MONEY is on; gate test is V3-specific");
             return;
         }
         let s = GameState::new(200.0, 1.0, 2.0);
         let mut buf = [0u8; 8];
         let n = s.infoset_signature_into(&mut buf);
-        assert_eq!(n, 4, "flag off must return 4 bytes");
-        assert_eq!(
-            &buf[..4],
-            &s.history_signature().to_le_bytes()[..],
-            "flag-off bytes must match v1 exactly"
-        );
+        if sig_v3_size_aware() {
+            assert_eq!(n, 8, "gate on must return 8 bytes");
+            assert_eq!(
+                &buf[..],
+                &s.history_signature_v3().to_le_bytes()[..],
+                "gate-on bytes must match v3 exactly"
+            );
+        } else {
+            assert_eq!(n, 4, "gate off must return 4 bytes");
+            assert_eq!(
+                &buf[..4],
+                &s.history_signature().to_le_bytes()[..],
+                "gate-off bytes must match v1 exactly"
+            );
+        }
     }
 
     /// With the flag on, returns 8 bytes and the low 24 match v1.
@@ -1551,33 +1612,39 @@ mod invariants_tests {
 
     /// Snapshot the logical game state (excludes undo stack, history
     /// content, cache fields that legitimately differ across undo).
-    #[allow(clippy::type_complexity)]
-    fn logical_snapshot(
-        s: &GameState,
-    ) -> (
-        f32,
-        [f32; 2],
-        [f32; 2],
-        [f32; 2],
-        usize,
-        u8,
-        u8,
-        Street,
-        [bool; 2],
-        u8,
-    ) {
-        (
-            s.pot,
-            s.stacks,
-            s.total_invested,
-            s.street_bets,
-            s.actor,
-            s.actions_this_street,
-            s.raises_this_street,
-            s.street,
-            s.folded,
-            s.board_len,
-        )
+    #[derive(Debug, PartialEq)]
+    struct LogicalSnapshot {
+        pot: f32,
+        stacks: [f32; 2],
+        total_invested: [f32; 2],
+        street_bets: [f32; 2],
+        actor: usize,
+        actions_this_street: u8,
+        raises_this_street: u8,
+        street: Street,
+        folded: [bool; 2],
+        board_len: u8,
+        prev_street_aggressor: u8,
+        street_aggressor: u8,
+        street_start_pot: f32,
+    }
+
+    fn logical_snapshot(s: &GameState) -> LogicalSnapshot {
+        LogicalSnapshot {
+            pot: s.pot,
+            stacks: s.stacks,
+            total_invested: s.total_invested,
+            street_bets: s.street_bets,
+            actor: s.actor,
+            actions_this_street: s.actions_this_street,
+            raises_this_street: s.raises_this_street,
+            street: s.street,
+            folded: s.folded,
+            board_len: s.board_len,
+            prev_street_aggressor: s.prev_street_aggressor,
+            street_aggressor: s.street_aggressor,
+            street_start_pot: s.street_start_pot,
+        }
     }
 
     fn deal_runout(rng: &mut SmallRng) -> [u8; 5] {
@@ -1986,14 +2053,32 @@ mod f3_size_aware_tests {
         );
     }
 
-    /// Same pot class collapses to the same bits — coarse on purpose.
+    /// Same half-octave class collapses to the same bits — coarse on purpose.
     #[test]
     fn v3_collapses_pots_within_one_class() {
         let mut a = GameState::new(200.0, 1.0, 2.0);
-        a.street_start_pot = 8.0;  // pot_bb = 4.0 -> log2 = 2
+        a.street_start_pot = 8.0; // pot_bb = 4.0 -> log2*2 = 4.0 -> 4
         let mut b = GameState::new(200.0, 1.0, 2.0);
-        b.street_start_pot = 12.0; // pot_bb = 6.0 -> log2 floor = 2
+        b.street_start_pot = 9.0; // pot_bb = 4.5 -> log2*2 ≈ 4.34 -> 4
         assert_eq!(a.history_signature_v3(), b.history_signature_v3());
+    }
+
+    /// S6: the half-octave grid splits pots the old whole-octave grid
+    /// collapsed (8 bb vs 12 bb street-start: old classes both 2, new
+    /// classes 4 vs 5).
+    #[test]
+    fn v3_half_octave_splits_adjacent_pots() {
+        let mut a = GameState::new(200.0, 1.0, 2.0);
+        a.street_start_pot = 8.0; // pot_bb = 4.0 -> 4
+        let mut b = GameState::new(200.0, 1.0, 2.0);
+        b.street_start_pot = 12.0; // pot_bb = 6.0 -> log2*2 ≈ 5.17 -> 5
+        assert_ne!(
+            a.history_signature_v3(),
+            b.history_signature_v3(),
+            "half-octave classes must differ: 4 vs 5",
+        );
+        assert_eq!((a.history_signature_v3() >> 26) & 0x1F, 4);
+        assert_eq!((b.history_signature_v3() >> 26) & 0x1F, 5);
     }
 
     /// `advance_street_in_place` records the current pot as the new
@@ -2015,6 +2100,114 @@ mod f3_size_aware_tests {
 
         s.undo_action();
         assert_eq!(s.street_start_pot, 3.0, "undo restores preflop start");
+    }
+
+    /// S6: different facing sizes on the same street produce different
+    /// v3 signatures (via the action-bucket sequence). Postflop pot 4:
+    /// Bet(2.0) buckets as half-pot (2), Bet(8.0) as overbet (4).
+    #[test]
+    fn v3_distinguishes_facing_sizes() {
+        let setup = |bet: f32| -> GameState {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Call,
+            });
+            s.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
+            s.advance_street_in_place(&[0, 1, 2]);
+            s.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Bet(bet),
+            });
+            s
+        };
+        let half = setup(2.0);
+        let over = setup(8.0);
+        // Buckets really differ (else the test is vacuous).
+        assert_ne!(
+            half.abstract_history[half.abstract_history_len as usize - 1],
+            over.abstract_history[over.abstract_history_len as usize - 1],
+        );
+        assert_ne!(
+            half.history_signature_v3(),
+            over.history_signature_v3(),
+            "different facing sizes must hash differently",
+        );
+    }
+
+    /// S6: the previous-street-aggressor bit flips the v3 signature.
+    /// Both lines reach the flop with pot 12, no flop action, one
+    /// preflop bet each — the ONLY v3 input that differs is who made
+    /// that bet.
+    #[test]
+    fn v3_aggressor_bit_flips_signature() {
+        // Line A: SB opens to 6, BB calls. Aggressor = P0.
+        let mut a = GameState::new(200.0, 1.0, 2.0);
+        a.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(6.0) });
+        a.apply_action_in_place(&Action { player: 1, kind: ActionKind::Call });
+        assert!(a.is_street_complete());
+        a.advance_street_in_place(&[0, 1, 2]);
+        assert_eq!(a.prev_street_aggressor, 0);
+        assert_eq!(a.street_aggressor, 2);
+
+        // Line B: SB limps, BB raises to 6, SB calls. Aggressor = P1.
+        let mut b = GameState::new(200.0, 1.0, 2.0);
+        b.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        b.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+        b.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        assert!(b.is_street_complete());
+        b.advance_street_in_place(&[0, 1, 2]);
+        assert_eq!(b.prev_street_aggressor, 1);
+
+        // Same pot class (both pots are 12), same street, no flop
+        // actions, same raise count — isolate the aggressor bit.
+        assert_eq!(a.street_start_pot, b.street_start_pot);
+        assert_eq!(a.total_raises, b.total_raises);
+        let sa = a.history_signature_v3();
+        let sb = b.history_signature_v3();
+        assert_ne!(sa, sb, "aggressor bit must flip the signature");
+        // And the difference is EXACTLY bit 34.
+        assert_eq!(sa ^ sb, 1u64 << 34);
+        assert_eq!((sa >> 34) & 1, 0);
+        assert_eq!((sb >> 34) & 1, 1);
+    }
+
+    /// S6: undo of a street advance restores both aggressor fields
+    /// (and undo of a Bet restores the current-street aggressor).
+    #[test]
+    fn aggressor_fields_survive_advance_and_undo() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        assert_eq!(s.prev_street_aggressor, 2);
+        assert_eq!(s.street_aggressor, 2);
+
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(6.0) });
+        assert_eq!(s.street_aggressor, 0, "Bet records its actor");
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Call });
+        assert_eq!(s.street_aggressor, 0, "Call does not move aggression");
+
+        s.advance_street_in_place(&[0, 1, 2]);
+        assert_eq!(s.prev_street_aggressor, 0);
+        assert_eq!(s.street_aggressor, 2, "new street starts with no aggressor");
+
+        // Undo the advance: back to preflop-end values.
+        s.undo_action();
+        assert_eq!(s.prev_street_aggressor, 2);
+        assert_eq!(s.street_aggressor, 0);
+
+        // Undo the call: still P0's street.
+        s.undo_action();
+        assert_eq!(s.street_aggressor, 0);
+        // Undo the bet: no aggressor again.
+        s.undo_action();
+        assert_eq!(s.street_aggressor, 2);
+        assert_eq!(s.prev_street_aggressor, 2);
     }
 }
 
