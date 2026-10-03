@@ -265,6 +265,77 @@ pub fn safe_solve(cfg: &POCConfig) -> SafeSolveResult {
     }
 }
 
+/// Safe-solve variant that returns the ROOT STRATEGY to play (not just
+/// metrics). Blends the CFR root with the blueprint root at the largest
+/// alpha whose opponent-BR is no worse than the blueprint's — so at the
+/// root it is (by this in-sample measure) no more exploitable than the
+/// blueprint. Falls back to pure blueprint if even alpha=0 is worse.
+///
+/// NOTE: the safety check is IN-SAMPLE (same deals the solve used), so it
+/// is a heuristic, not the theorem-backed CFR-D / max-margin gadget. It is
+/// still strictly better than playing the raw unsafe solve, which is what
+/// the runtime used before this.
+pub fn safe_solve_root_p0_strategy(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
+    let (abs, tbl) = cfg.blueprint?;
+    let mut solver = Solver::new(cfg);
+    solver.solve();
+
+    let cfr_root = solver.root_p0_strategy_aggregated()?;
+    let cfr_strat = solver.p0_strategy();
+    let bp_strat = solver.build_blueprint_strategy(abs, tbl);
+
+    // Aggregate the blueprint at the root, prior-weighted.
+    let root = solver.tree.root as usize;
+    let mut bp_root = [0.0f64; ABSTRACT_BUCKETS];
+    let mut wsum = 0.0f64;
+    for d in 0..solver.n_deals {
+        if let Some(s) = bp_strat[root * solver.n_deals + d] {
+            let w = solver.deals[d].prior;
+            for b in 0..ABSTRACT_BUCKETS {
+                bp_root[b] += w * s[b];
+            }
+            wsum += w;
+        }
+    }
+    if wsum > 0.0 {
+        for b in 0..ABSTRACT_BUCKETS {
+            bp_root[b] /= wsum;
+        }
+    }
+
+    let priors: Vec<f64> = solver.deals.iter().map(|d| d.prior).collect();
+    let cfr_br = solver.br_v1_with_prior(&cfr_strat, &priors);
+    let bp_br = solver.br_v1_with_prior(&bp_strat, &priors);
+
+    if cfr_br <= bp_br {
+        return Some(cfr_root);
+    }
+
+    // Binary search the largest alpha with blended BR <= blueprint BR.
+    let mut lo = 0.0f64;
+    let mut hi = 1.0f64;
+    let mut best = 0.0f64;
+    for _ in 0..20 {
+        let mid = 0.5 * (lo + hi);
+        let mixed = blend_p0_strategy(&cfr_strat, &bp_strat, mid);
+        let br = solver.br_v1_with_prior(&mixed, &priors);
+        if br <= bp_br {
+            best = mid;
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if (hi - lo) < 1e-4 {
+            break;
+        }
+    }
+    let mut out = [0.0f64; ABSTRACT_BUCKETS];
+    for b in 0..ABSTRACT_BUCKETS {
+        out[b] = best * cfr_root[b] + (1.0 - best) * bp_root[b];
+    }
+    Some(out)
+}
+
 /// Solve the subgame and return P0's aggregated root strategy
 /// (regret-match on the regret-sum across deals). Correct reduction
 /// when P0's hole is a point mass across deals.
@@ -1246,14 +1317,22 @@ impl<'a> Solver<'a> {
             _ => return,
         };
         {
-            if actor == 0 {
+            // Fill the blueprint strategy for BOTH actors. P1's is unused
+            // by br_walk (P0-only), but the CFR-D root gadget needs P1's
+            // counterfactual value vs the blueprint for its terminate
+            // payoff.
+            {
                 let mut sig_buf = [0u8; 8];
                 let sig_len = state.infoset_signature_into(&mut sig_buf);
                 let board = &state.board[..state.board_len as usize];
                 for deal_idx in 0..self.n_deals {
-                    let h0 = self.deals[deal_idx].h0;
+                    let hole = if actor == 0 {
+                        self.deals[deal_idx].h0
+                    } else {
+                        self.deals[deal_idx].h1
+                    };
                     let hash = abs.get_infoset_hash(
-                        &h0,
+                        &hole,
                         board,
                         &sig_buf[..sig_len],
                         state.street as u8,
