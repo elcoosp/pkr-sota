@@ -45,6 +45,13 @@ static FALLBACK_COUNTS: [AtomicU64; 4] = [
 /// get a soft assignment (primary tier + adjacent tier, weighted blend).
 /// Default off — training path is bit-identical when this is unset.
 #[inline]
+/// §C: exact 169-class preflop (env `PKR_PREFLOP_EXACT=1`). Default OFF.
+fn preflop_exact_enabled() -> bool {
+    use std::sync::OnceLock;
+    static E: OnceLock<bool> = OnceLock::new();
+    *E.get_or_init(|| std::env::var("PKR_PREFLOP_EXACT").as_deref() == Ok("1"))
+}
+
 fn soft_kmeans_enabled() -> bool {
     use std::sync::OnceLock;
     static E: OnceLock<bool> = OnceLock::new();
@@ -715,7 +722,10 @@ impl AbstractionBuilder for KMeansAbstraction {
         };
         let cluster_id = match board.len() {
             0 => {
-                if let Some(table) = self.tables.get(&0u8).and_then(|l| l.get()) {
+                if preflop_exact_enabled() {
+                    // §C: lossless 169-class preflop, no centroid table.
+                    pkr_core::abstraction::preflop_class(&[hole[0], hole[1]]) as u64
+                } else if let Some(table) = self.tables.get(&0u8).and_then(|l| l.get()) {
                     let idx = Self::flat_index_preflop(hole);
                     if idx < table.len() {
                         table[idx] as u64
