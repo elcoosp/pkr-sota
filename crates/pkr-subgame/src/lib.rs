@@ -102,7 +102,14 @@ pub struct AdversarialResult {
 }
 
 /// Blend two P0 strategies component-wise. `alpha = 1.0` is pure A,
-/// `alpha = 0.0` is pure B. Missing entries in either default to uniform.
+/// `alpha = 0.0` is pure B.
+///
+/// A `None` entry means "no learned strategy at this (node, deal)" and
+/// falls back to the *other* side's entry (normalized), NOT to a
+/// blend with uniform: blending a real strategy toward uniform at
+/// missing entries would silently flatten the shipped strategy wherever
+/// one side had no visits. `(None, None)` stays `None` (the caller
+/// substitutes uniform-over-legal at read time).
 fn blend_p0_strategy(
     a: &[Option<[f64; ABSTRACT_BUCKETS]>],
     b: &[Option<[f64; ABSTRACT_BUCKETS]>],
@@ -113,37 +120,75 @@ fn blend_p0_strategy(
     for i in 0..n {
         match (a[i], b[i]) {
             (None, None) => out.push(None),
-            (Some(sa), None) => {
-                let n = sa.iter().filter(|&&p| p > 0.0).count().max(1) as f64;
-                let u = 1.0 / n;
-                let mut s = [0.0; ABSTRACT_BUCKETS];
-                for k in 0..ABSTRACT_BUCKETS {
-                    let fb = if sa[k] > 0.0 { u } else { 0.0 };
-                    s[k] = alpha * sa[k] + (1.0 - alpha) * fb;
-                }
-                out.push(Some(s));
-            }
-            (None, Some(sb)) => {
-                let n = sb.iter().filter(|&&p| p > 0.0).count().max(1) as f64;
-                let u = 1.0 / n;
-                let mut s = [0.0; ABSTRACT_BUCKETS];
-                for k in 0..ABSTRACT_BUCKETS {
-                    let fb = if sb[k] > 0.0 { u } else { 0.0 };
-                    s[k] = alpha * fb + (1.0 - alpha) * sb[k];
-                }
-                out.push(Some(s));
-            }
+            (Some(sa), None) => out.push(Some(normalize_or_uniform(sa))),
+            (None, Some(sb)) => out.push(Some(normalize_or_uniform(sb))),
             (Some(sa), Some(sb)) => {
                 let mut s = [0.0; ABSTRACT_BUCKETS];
                 for k in 0..ABSTRACT_BUCKETS {
                     s[k] = alpha * sa[k] + (1.0 - alpha) * sb[k];
                 }
-                out.push(Some(s));
+                // Renormalize: a convex combination of normalized
+                // strategies already sums to 1 (no-op), but this keeps
+                // the Σout == 1 invariant when an input side is
+                // unnormalized (e.g. raw visit counts).
+                out.push(Some(normalize_or_uniform(s)));
             }
         }
     }
     out
 }
+
+/// Normalize a strategy vector to sum 1. Falls back to uniform if the
+/// mass is degenerate (all-zero / non-finite sum).
+fn normalize_or_uniform(s: [f64; ABSTRACT_BUCKETS]) -> [f64; ABSTRACT_BUCKETS] {
+    let sum: f64 = s.iter().sum();
+    if sum.is_finite() && sum > 1e-12 {
+        let mut out = s;
+        for v in out.iter_mut() {
+            *v /= sum;
+        }
+        return out;
+    }
+    let u = 1.0 / ABSTRACT_BUCKETS as f64;
+    [u; ABSTRACT_BUCKETS]
+}
+
+// ---------------------------------------------------------------------------
+// Depth-limited leaf priors (§S8)
+// ---------------------------------------------------------------------------
+
+/// Depth-limited solving stops the tree at a depth cap and scores the
+/// leaf with a heuristic instead of playing it out. `bias_strategy`
+/// builds that leaf prior from a blueprint strategy `p` by reweighting
+/// with `mult` and renormalizing: `out[k] ∝ p[k] * mult[k]`.
+///
+/// Use the constants below as `mult` for "the opponent mostly folds /
+/// calls / raises past the depth limit" leaves. Passing all-ones is the
+/// identity (returns `p` renormalized).
+pub fn bias_strategy(p: &[f32; 6], mult: &[f32; 6]) -> [f32; 6] {
+    let mut out = [0.0f32; 6];
+    let mut sum = 0.0f32;
+    for k in 0..6 {
+        let v = (p[k] as f32 * mult[k]).max(0.0);
+        out[k] = v;
+        sum += v;
+    }
+    if sum.is_finite() && sum > 1e-12 {
+        for v in out.iter_mut() {
+            *v /= sum;
+        }
+        out
+    } else {
+        [1.0 / 6.0; 6]
+    }
+}
+
+/// Leaf multiplier: the opponent mostly folds past the depth limit.
+pub const FOLD_BIASED: [f32; 6] = [4.0, 1.0, 0.5, 0.5, 0.5, 0.5];
+/// Leaf multiplier: the opponent mostly checks/calls past the depth limit.
+pub const CALL_BIASED: [f32; 6] = [0.25, 4.0, 1.0, 1.0, 1.0, 1.0];
+/// Leaf multiplier: the opponent mostly bets/raises past the depth limit.
+pub const RAISE_BIASED: [f32; 6] = [0.25, 0.5, 1.5, 1.5, 2.0, 2.0];
 
 pub struct SafeSolveResult {
     pub cfr_br: f64,
@@ -1332,4 +1377,111 @@ pub fn blueprint_p0_strategy(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod blend_and_bias_tests {
+    use super::*;
+
+    fn strat(vals: [f64; ABSTRACT_BUCKETS]) -> Option<[f64; ABSTRACT_BUCKETS]> {
+        Some(vals)
+    }
+
+    #[test]
+    fn blend_output_sums_to_one_for_all_alphas() {
+        // Property: every Some entry of the blend sums to 1 for
+        // alpha in {0, 0.3, 1}, across all Some/None combinations —
+        // including unnormalized inputs.
+        let a_cases: Vec<Option<[f64; ABSTRACT_BUCKETS]>> = vec![
+            None,
+            strat([0.5, 0.5, 0.0, 0.0, 0.0, 0.0]),
+            strat([0.2, 0.2, 0.2, 0.2, 0.1, 0.1]),
+            strat([3.0, 1.0, 0.0, 0.0, 0.0, 0.0]), // unnormalized
+            strat([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]), // degenerate
+        ];
+        let b_cases: Vec<Option<[f64; ABSTRACT_BUCKETS]>> = vec![
+            None,
+            strat([0.1, 0.1, 0.1, 0.1, 0.3, 0.3]),
+            strat([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            strat([0.0, 2.0, 2.0, 0.0, 0.0, 0.0]), // unnormalized
+        ];
+        for alpha in [0.0f64, 0.3, 1.0] {
+            for a in &a_cases {
+                for b in &b_cases {
+                    let out = blend_p0_strategy(&[*a], &[*b], alpha);
+                    assert_eq!(out.len(), 1);
+                    match (a, b, &out[0]) {
+                        (None, None, None) => {}
+                        (None, None, Some(_)) => panic!("None/None must stay None"),
+                        (_, _, None) => panic!("Some input must give Some output"),
+                        (_, _, Some(s)) => {
+                            let sum: f64 = s.iter().sum();
+                            assert!(
+                                (sum - 1.0).abs() < 1e-9,
+                                "alpha={alpha} a={a:?} b={b:?} sum={sum}"
+                            );
+                            assert!(s.iter().all(|v| *v >= 0.0), "negative prob");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blend_missing_side_falls_back_to_other_side() {
+        // (Some, None) → Some(normalized sa), independent of alpha.
+        let sa = [0.5, 0.25, 0.25, 0.0, 0.0, 0.0];
+        for alpha in [0.0f64, 0.3, 1.0] {
+            let out = blend_p0_strategy(&[Some(sa)], &[None], alpha);
+            assert_eq!(out[0].unwrap(), sa, "alpha={alpha}");
+            let out = blend_p0_strategy(&[None], &[Some(sa)], alpha);
+            assert_eq!(out[0].unwrap(), sa, "alpha={alpha}");
+        }
+    }
+
+    #[test]
+    fn blend_both_present_is_alpha_convex_combination() {
+        let sa = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let sb = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let out = blend_p0_strategy(&[Some(sa)], &[Some(sb)], 0.3);
+        let s = out[0].unwrap();
+        assert!((s[0] - 0.3).abs() < 1e-12);
+        assert!((s[5] - 0.7).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bias_strategy_sums_to_one_and_points_the_right_way() {
+        let uniform = [1.0f32 / 6.0; 6];
+        for (mult, leader) in [
+            (FOLD_BIASED, 0usize),
+            (CALL_BIASED, 1usize),
+            (RAISE_BIASED, 4usize),
+        ] {
+            let out = bias_strategy(&uniform, &mult);
+            let sum: f32 = out.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-6, "sum={sum}");
+            assert!(
+                out[leader] > 1.0 / 6.0,
+                "biased bucket {leader} must gain mass: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bias_strategy_identity_on_ones() {
+        let p = [0.1f32, 0.2, 0.3, 0.15, 0.15, 0.1];
+        let out = bias_strategy(&p, &[1.0; 6]);
+        for k in 0..6 {
+            assert!((out[k] - p[k]).abs() < 1e-6, "k={k}");
+        }
+    }
+
+    #[test]
+    fn bias_strategy_degenerate_input_gives_uniform() {
+        let out = bias_strategy(&[0.0; 6], &FOLD_BIASED);
+        for v in out {
+            assert!((v - 1.0 / 6.0).abs() < 1e-6);
+        }
+    }
 }
