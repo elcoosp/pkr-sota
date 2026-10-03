@@ -98,7 +98,64 @@ pub fn action_bucket(
     }
 }
 
+/// 169 strategically-distinct preflop hand classes (lossless).
+///
+/// Cards are `suit*13 + rank`. Pairs map to 0..12, suited to 13..90,
+/// offsuit to 91..168. Exact: no Monte-Carlo equity fit, no bucket
+/// collisions — unlike the (EHS, EHS^2) 2D fit this can replace.
+///
+/// Gated by `PKR_PREFLOP_EXACT=1`; off by default so existing hashes
+/// (and checkpoints) are unchanged.
+#[inline]
+pub fn preflop_class(hole: &[u8; 2]) -> u8 {
+    let (r0, s0) = (hole[0] % 13, hole[0] / 13);
+    let (r1, s1) = (hole[1] % 13, hole[1] / 13);
+    let (hi, lo) = if r0 >= r1 { (r0, r1) } else { (r1, r0) };
+    if hi == lo {
+        return hi;
+    }
+    let tri = hi * (hi - 1) / 2 + lo;
+    if s0 == s1 { 13 + tri } else { 91 + tri }
+}
+
 #[cfg(test)]
+mod preflop_class_tests {
+    use super::*;
+
+    /// All 1326 combos map to one of 169 classes; each class is hit, and
+    /// the mapping is symmetric under suit permutation (rank-based).
+    #[test]
+    fn preflop_class_is_169_and_complete() {
+        let mut seen = [false; 169];
+        let mut n = 0;
+        for a in 0..52u8 {
+            for b in (a + 1)..52u8 {
+                let c = preflop_class(&[a, b]) as usize;
+                assert!(c < 169, "class {c} out of range");
+                seen[c] = true;
+                n += 1;
+            }
+        }
+        assert_eq!(n, 1326);
+        let hit = seen.iter().filter(|&&s| s).count();
+        assert_eq!(hit, 169, "expected all 169 classes reachable, got {hit}");
+    }
+
+    #[test]
+    fn preflop_class_known_values() {
+        // Cards are suit*13+rank, rank 0=Two .. 12=Ace.
+        let aa = preflop_class(&[12, 25]); // Ac, Ad (rank 12)
+        assert_eq!(aa, 12, "AA -> 12");
+        // AKs: same suit, ranks 12 and 11.
+        let aks = preflop_class(&[12, 24]); // Ac, Kc
+        // tri = 12*11/2 + 11 = 77; suited -> 13+77 = 90
+        assert_eq!(aks, 90, "AKs -> 90");
+        // AKo: different suits.
+        let ako = preflop_class(&[12, 37]); // Ac, Kd
+        assert_eq!(ako, 91 + 77, "AKo -> 168");
+    }
+}
+
 mod c3_tests {
     use super::*;
 
@@ -304,10 +361,17 @@ impl AbstractionFingerprint {
         // tournament all pick the same value without any plumbing. The
         // launcher for an F4 run exports it once. Defaults to 0 so
         // every existing path is unchanged.
-        let centroid_feature_v: u8 = std::env::var("PKR_CENTROID_FEATURE_V")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+        // 2 = exact 169-class preflop (PKR_PREFLOP_EXACT=1), which
+        // bypasses the centroid table and changes every preflop hash.
+        let preflop_exact = std::env::var("PKR_PREFLOP_EXACT").as_deref() == Ok("1");
+        let centroid_feature_v: u8 = if preflop_exact {
+            2
+        } else {
+            std::env::var("PKR_CENTROID_FEATURE_V")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        };
 
         Self {
             preflop_k,
