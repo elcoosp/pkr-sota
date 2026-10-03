@@ -102,6 +102,17 @@ pub struct TrainConfig {
     /// Gated because it changes the convergence path; test on Kuhn or
     /// Leduc before enabling for NLHE. See docs/experiments/f5-grid.md.
     pub avg_at_traverser: bool,
+    /// S4a: Linear CFR. When true, DCFR discounting is disabled
+    /// (w_pos = w_neg = 1) and sampled regret deltas are weighted by
+    /// `t / 1e6`. Off by default (vanilla/DCFR path).
+    pub linear_cfr: bool,
+    /// S4b: total iteration horizon for the exploration anneal
+    /// schedule. Default 200M.
+    pub total_iters: f32,
+    /// S4b gate: anneal opponent-node exploration epsilon over the
+    /// run (`PKR_ANNEAL_EPS=1`). Off by default to preserve the
+    /// current fixed-epsilon behavior.
+    pub anneal_eps: bool,
 }
 
 impl Default for TrainConfig {
@@ -120,6 +131,9 @@ impl Default for TrainConfig {
             strict_bets: false,
             skip_forced: false,
             avg_at_traverser: true,
+            linear_cfr: false,
+            total_iters: 200_000_000.0,
+            anneal_eps: false,
         }
     }
 }
@@ -155,6 +169,9 @@ impl TrainConfig {
             strict_bets: env_bool("PKR_STRICT_BETS", d.strict_bets),
             skip_forced: env_bool("PKR_SKIP_FORCED", d.skip_forced),
             avg_at_traverser: env_bool("PKR_AVG_AT_TRAVERSER", d.avg_at_traverser),
+            linear_cfr: env_bool("PKR_LINEAR_CFR", d.linear_cfr),
+            total_iters: env_parse("PKR_TOTAL_ITERS", d.total_iters, |v| *v > 0.0),
+            anneal_eps: env_bool("PKR_ANNEAL_EPS", d.anneal_eps),
         }
     }
 }
@@ -162,6 +179,15 @@ impl TrainConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Serializes the env-mutating tests in this module. They share the
+    /// process-wide `PKR_EXPLORE_EPSILON` var, so parallel execution races
+    /// (one test's `set_var` leaks into another's `from_env` read).
+    fn env_lock() -> &'static Mutex<()> {
+        static M: OnceLock<Mutex<()>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn defaults_match_experiment_config() {
@@ -174,6 +200,7 @@ mod tests {
 
     #[test]
     fn env_overrides_change_the_value() {
+        let _g = env_lock().lock().unwrap();
         // SAFETY: tests in this module run on the same thread by default
         // (nextest uses a fresh process per test). `std::env::set_var` is
         // unsafe in Rust 2024 edition; for 2021 it's still allowed.
@@ -212,6 +239,7 @@ mod tests {
 
     #[test]
     fn out_of_range_values_are_ignored() {
+        let _g = env_lock().lock().unwrap();
         std::env::set_var("PKR_EXPLORE_EPSILON", "5.0");
         let c = TrainConfig::from_env();
         // 5.0 fails the [0, 1) predicate, so default is used.
