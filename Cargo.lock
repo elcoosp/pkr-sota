@@ -1294,6 +1294,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkr-leduc-check"
+version = "0.1.0"
+dependencies = [
+ "pkr-cfr",
+ "rand",
+]
+
+[[package]]
 name = "pkr-runtime"
 version = "0.1.0"
 dependencies = [

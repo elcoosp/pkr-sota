@@ -11,6 +11,7 @@ members = [
     "crates/pkr-fuzz",
     "crates/pkr-exploit",
     "crates/pkr-testgames",
+    "crates/pkr-leduc-check",
     "binaries/pkr-trainer",
     "benches/pkr_contracts_bench",
     "benches/pkr_core_bench",
