@@ -74,6 +74,15 @@ impl Trainer {
     /// dispatch, amortizing serial work by `n`.
     #[allow(clippy::type_complexity)]
     pub fn run_iterations_parallel(&mut self, n: usize) {
+        // §E: the iteration counter is u32. Wrapping it silently corrupts
+        // the DCFR weights and the RNG seed. At ~10k it/s the wrap is ~4.9
+        // days away, but fail loud rather than corrupt if it is ever hit.
+        let prev = self.iteration.load(Ordering::Relaxed);
+        assert!(
+            prev.checked_add(n as u32).is_some(),
+            "u32 iteration counter would overflow at {prev}+{n}; \
+             widen to u64 before running >4.29B iterations"
+        );
         let start_iter = self.iteration.fetch_add(n as u32, Ordering::Relaxed) + 1;
         if alt_updates_enabled() {
             // Alternating player updates (CFR+ semantics, research-cited
