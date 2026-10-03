@@ -66,6 +66,32 @@ fn exploration_epsilon() -> f32 {
     crate::config::TrainConfig::global().explore_epsilon
 }
 
+/// S4b: annealed exploration schedule. `t` is the global iteration,
+/// `total` the training horizon, `base` the base epsilon.
+/// eps(t) = 5*base*(1-frac) + (base/5)*frac with frac=(t/total).clamp(0,1).
+/// Starts at 5x base (broad early sampling), ends at base/5 (near-on-policy).
+pub fn exploration_epsilon_at(t: u32, total: f32, base: f32) -> f32 {
+    let frac = if total > 0.0 {
+        (t as f32 / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    5.0 * base * (1.0 - frac) + (base / 5.0) * frac
+}
+
+/// Effective opponent-node epsilon: fixed `explore_epsilon` by default;
+/// annealed schedule when `PKR_ANNEAL_EPS=1` (S4b, off by default to
+/// preserve current behavior).
+fn effective_exploration_epsilon(global_iteration: u32) -> f32 {
+    let cfg = crate::config::TrainConfig::global();
+    if cfg.anneal_eps {
+        let base = cfg.explore_epsilon.max(0.002);
+        exploration_epsilon_at(global_iteration, cfg.total_iters, base)
+    } else {
+        exploration_epsilon()
+    }
+}
+
 /// Sample one action bucket from the ε-mixed distribution over LEGAL
 /// buckets only. `strategy` is the regret-matched distribution,
 /// already renormalized over legal buckets (`action_counts[a] > 0`).
@@ -139,6 +165,10 @@ fn sample_bucket_epsilon(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// External-sampling MCCFR traversal.
+/// `reach_prob` is the TRAVERSER's own reach probability (multiplied by
+/// strategy[a] at traverser nodes, passed through unchanged at opponent
+/// and chance nodes).
 pub fn traverse(
     current: &mut GameState,
     table: &CompactRegretTable,
@@ -438,7 +468,14 @@ pub fn traverse(
             if action_counts[a] == 0 || v[a].is_nan() {
                 continue;
             }
-            let delta = v[a] - v_sigma;
+            let mut delta = v[a] - v_sigma;
+            // S4a: Linear CFR weights sampled regret by t / 1e6.
+            // Overflow-safe: f64 intermediate, clamped to f32 range.
+            if crate::config::TrainConfig::global().linear_cfr {
+                let scaled =
+                    delta as f64 * (global_iteration as f64 / 1e6);
+                delta = scaled.clamp(-f32::MAX as f64, f32::MAX as f64) as f32;
+            }
             batch.push(BatchItem {
                 index: idx as u32,
                 action: a as u32,
@@ -457,7 +494,8 @@ pub fn traverse(
         // Opponent node: sample one action from the ε-mixed distribution
         // over legal buckets. See `sample_bucket_epsilon` for the design
         // rationale and r3 V2 for the edge-case requirements.
-        let eps = exploration_epsilon();
+        // S4b: annealed when PKR_ANNEAL_EPS=1, else fixed explore_epsilon.
+        let eps = effective_exploration_epsilon(global_iteration);
         let r = rng.random::<f32>();
         let sampled_abstract = match sample_bucket_epsilon(&strategy, &action_counts, eps, r) {
             Some(a) => a,
