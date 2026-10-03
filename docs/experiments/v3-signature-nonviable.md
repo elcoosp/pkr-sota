@@ -110,3 +110,31 @@ V3 reads 2.5× worse on the *in-sample* metric — but it has 2.5× the
 infosets, so the in-sample BR overfits it 2.5× harder (report R1). This
 is NOT evidence V3 is worse in real play; LBR at 100M is the verdict.
 Throughput: V3 8.4k it/s vs V1 ~30k (693 vs ~460 nodes/iter), ETA ~2.8h.
+
+### Curve SHAPE diverges (40M)
+
+| iter | V1 | V3-min |
+|---|---|---|
+| 10M | 2183 | 5459 |
+| 20M | 2314 | 5222 |
+| 30M | 2394 | 5044 |
+| 40M | 2457 | 4947 |
+
+V1 rises monotonically (saturation); V3 falls. V3's absolute is higher
+(2.5x infoset penalty on the in-sample metric) but its SHAPE is
+descending — consistent with imperfect recall being V1's ceiling. Early
+(40M/100M); LBR at 100M is the verdict.
+
+### Curve SHAPE diverges (40M)
+
+| iter | V1 | V3-min |
+|---|---|---|
+| 10M | 2183 | 5459 |
+| 20M | 2314 | 5222 |
+| 30M | 2394 | 5044 |
+| 40M | 2457 | 4947 |
+
+V1 rises monotonically (saturation); V3 falls. V3's absolute is higher
+(2.5x infoset penalty on the in-sample metric) but its SHAPE is
+descending — consistent with imperfect recall being V1's ceiling. Early
+(40M/100M); LBR at 100M is the verdict.
