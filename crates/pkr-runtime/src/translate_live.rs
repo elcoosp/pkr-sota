@@ -92,6 +92,29 @@ pub fn translate_bet(x: f32, jam_frac: f32, rng: &mut impl rand::Rng) -> u8 {
     }
 }
 
+/// Map an observed bet (total street commitment) to the in-tree abstract
+/// bucket the blueprint has a strategy for, using §S7 translation.
+///
+/// `x` is the raise-above-call size over the pre-call pot (same units as
+/// [`pkr_core::abstraction::action_bucket`]); `jam_frac` is the actor's
+/// effective jam fraction. Returns `None` for non-bet actions.
+pub fn observed_bet_bucket(
+    state: &pkr_core::state::GameState,
+    action: &pkr_core::state::Action,
+    rng: &mut impl rand::Rng,
+) -> Option<u8> {
+    let total = match action.kind {
+        pkr_core::state::ActionKind::Bet(t) => t,
+        _ => return None,
+    };
+    let a = state.actor;
+    let committed = state.street_bets[a].max(state.street_bets[1 - a]);
+    let pot = state.pot.max(1.2);
+    let x = (total - committed).max(0.0) / pot;
+    let jam_frac = (state.stacks[a] + state.street_bets[a] - committed) / pot;
+    Some(translate_bet(x, jam_frac, rng))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
