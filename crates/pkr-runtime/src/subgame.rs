@@ -219,7 +219,10 @@ impl SubgameHandle {
         // opponent-BR is no worse than the blueprint's — heuristically
         // no more exploitable at the root. Falls back to the raw solve if
         // the blueprint strategy isn't available.
-        pkr_subgame::safe_solve_root_p0_strategy(&cfg)
+        // Preferred: CFR-D gadget (theorem-backed safety). Falls back to
+        // the heuristic blend, then the raw solve, if a step fails.
+        pkr_subgame::safe_resolve_gadget(&cfg)
+            .or_else(|| pkr_subgame::safe_solve_root_p0_strategy(&cfg))
             .or_else(|| pkr_subgame::solve_root_p0_strategy(&cfg))
     }
 
