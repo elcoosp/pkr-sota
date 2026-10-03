@@ -119,6 +119,7 @@ Throughput: V3 8.4k it/s vs V1 ~30k (693 vs ~460 nodes/iter), ETA ~2.8h.
 | 20M | 2314 | 5222 |
 | 30M | 2394 | 5044 |
 | 40M | 2457 | 4947 |
+| 70M | 2557 | 4911 |
 
 V1 rises monotonically (saturation); V3 falls. V3's absolute is higher
 (2.5x infoset penalty on the in-sample metric) but its SHAPE is
