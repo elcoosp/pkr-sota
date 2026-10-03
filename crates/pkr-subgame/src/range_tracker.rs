@@ -170,6 +170,30 @@ impl<'a> RangeTracker<'a> {
     /// Apply an action. Updates the acting player's range, then advances
     /// the state. Does NOT auto-advance streets — call `advance_street`
     /// explicitly when `state().is_street_complete()`.
+    /// Like `apply_action`, but the range posterior update uses an
+    /// explicit abstract bucket instead of deriving one from the action.
+    /// Used by live translation (§B): the real state advances with the
+    /// observed (off-tree) action for correct chips, while the posterior
+    /// is updated with the *translated* in-tree bucket that the blueprint
+    /// actually has a strategy for. Without this, an off-tree bet is
+    /// hard-thresholded and misclassified.
+    pub fn apply_action_with_bucket(
+        &mut self,
+        action: Action,
+        bucket: usize,
+    ) -> Result<(), RangeError> {
+        if self.state.is_terminal() {
+            return Err(RangeError::HandOver);
+        }
+        self.undo_stack.push((self.p0.clone(), self.p1.clone()));
+        let actor = self.state.actor;
+        if !matches!(action.kind, ActionKind::Fold) {
+            self.update_range_for_bucket(actor, bucket);
+        }
+        self.state.apply_action_in_place(&action);
+        Ok(())
+    }
+
     pub fn apply_action(&mut self, action: Action) -> Result<(), RangeError> {
         if self.state.is_terminal() {
             return Err(RangeError::HandOver);
@@ -201,6 +225,13 @@ impl<'a> RangeTracker<'a> {
             self.state.street_bets[1 - actor],
             self.state.pot,
         ) as usize;
+        self.update_range_for_bucket(actor, bucket);
+    }
+
+    /// Range posterior update for a fixed abstract `bucket` (no action
+    /// needed beyond the actor). Shared by `update_range_for_action` and
+    /// `apply_action_with_bucket`.
+    fn update_range_for_bucket(&mut self, actor: usize, bucket: usize) {
 
         let mut sig_buf = [0u8; 8];
         let sig_len = self.state.infoset_signature_into(&mut sig_buf);
