@@ -212,7 +212,15 @@ impl SubgameHandle {
         // Solve the subgame and read the root P0 strategy. Since P0's
         // hole is a point mass, the correct reduction is: sum regrets
         // across opponent hands, then regret-match once.
-        pkr_subgame::solve_root_p0_strategy(&cfg)
+        //
+        // SAFE-SOLVE: the raw CFR root can be MORE exploitable than the
+        // blueprint (no gadget). safe_solve_root_p0_strategy blends the
+        // CFR root toward the blueprint at the largest alpha whose
+        // opponent-BR is no worse than the blueprint's — heuristically
+        // no more exploitable at the root. Falls back to the raw solve if
+        // the blueprint strategy isn't available.
+        pkr_subgame::safe_solve_root_p0_strategy(&cfg)
+            .or_else(|| pkr_subgame::solve_root_p0_strategy(&cfg))
     }
 
     /// Convenience: same as `decide` but returns the index of the highest-
