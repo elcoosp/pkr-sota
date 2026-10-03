@@ -787,6 +787,18 @@ impl GameState {
     ///
     /// ~18 bits of structured state instead of 21 bits of near-unique
     /// history: expected ~2-4x table growth, not 31x.
+    /// V3 size-aware signature — MINIMAL (2026-10-03).
+    ///
+    /// Second attempt. The first packed the full action sequence (31x).
+    /// The second kept pot_class (5 bits = 32x) and prev_agg, still 41x.
+    /// This keeps ONLY V1's fields plus the one missing signal:
+    ///
+    ///   actions_this_street (3) | total_raises (3) | last_was_bet (1)
+    ///   | faced_bet_bucket (3)
+    ///
+    /// `faced_bet_bucket` = `last_bet_fraction_bucket()` (0 when not
+    /// facing). That is the imperfect-recall fix: distinguish a 0.5-pot
+    /// bet from a 2-pot bet. Nothing else. ~10 bits.
     pub fn history_signature_v3(&self) -> u64 {
         let n_actions = (self.actions_this_street as u64).min(7);
         let raises = (self.total_raises as u64).min(7);
@@ -798,22 +810,11 @@ impl GameState {
         } else {
             0
         };
-        let street = (self.street as u64) & 0x3;
-        let pot_bb = (self.street_start_pot / self.bb.max(1e-6)).max(1.0);
-        // S6 half-octave class: floor(log2(pot_bb) * 2), 5 bits.
-        let pot_class = (pot_bb.log2() * 2.0).floor().max(0.0).min(31.0) as u64;
-        // The missing signal: how big is the bet we are facing (0 = not
-        // facing). Reuses the existing fraction bucket.
         let faced = (self.last_bet_fraction_bucket() as u64) & 0x7;
-        let prev_agg = (self.prev_street_aggressor == 1) as u64;
-
-        (street & 0x3)
-            | ((n_actions & 0x7) << 2)
-            | ((raises & 0x7) << 5)
-            | ((last_was_bet & 0x1) << 8)
-            | ((faced & 0x7) << 9)
-            | ((pot_class & 0x1F) << 12)
-            | ((prev_agg & 0x1) << 17)
+        (n_actions & 0x7)
+            | ((raises & 0x7) << 3)
+            | ((last_was_bet & 0x1) << 6)
+            | ((faced & 0x7) << 7)
             | (SIG_V3_VERSION << 60)
     }
 
