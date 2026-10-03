@@ -1306,6 +1306,7 @@ dependencies = [
  "pkr-eval",
  "pkr-export",
  "pkr-subgame",
+ "rand",
  "tempfile",
  "thiserror",
 ]
