@@ -765,32 +765,55 @@ impl GameState {
     /// The action buckets here come from `abstract_history` (the same
     /// per-action bucket the traversal computes), so the current-street
     /// sequence reuses state the engine already maintains.
+    /// V3 size-aware signature — COARSE redesign (2026-10-03).
+    ///
+    /// The first V3 packed the full within-street action-bucket sequence
+    /// (3 bits x 7 = 21 bits), which made every distinct action sequence
+    /// its own infoset: 31x the table size at the same iteration
+    /// (35.9M vs 1.16M infosets at 10M iters), each visited ~3x instead
+    /// of ~86x. See `docs/experiments/v3-signature-nonviable.md`.
+    ///
+    /// This version adds ONLY the information V1 lacked — the size of the
+    /// bet faced — and drops the sequence. Layout (low -> high bits):
+    ///
+    ///   bits  0..2  street (0..3)
+    ///   bits  2..5  actions_this_street (0..7)
+    ///   bits  5..8  total_raises (0..7)
+    ///   bit   8     last_was_bet
+    ///   bits  9..12 faced bet-size bucket (last_bet_fraction_bucket)
+    ///   bits 12..17 street-start pot class, half-octave (S6)
+    ///   bit  17     previous-street aggressor
+    ///   bits 60..64 version tag
+    ///
+    /// ~18 bits of structured state instead of 21 bits of near-unique
+    /// history: expected ~2-4x table growth, not 31x.
     pub fn history_signature_v3(&self) -> u64 {
-        let n_actions = (self.actions_this_street as usize).min(7);
-        let end = self.abstract_history_len as usize;
-        let start = end.saturating_sub(n_actions);
-        let mut seq: u64 = 0;
-        for (i, &b) in self.abstract_history[start..end].iter().enumerate() {
-            let b3 = (b as u64) & 0x7;
-            seq |= b3 << (i * 3);
-        }
+        let n_actions = (self.actions_this_street as u64).min(7);
+        let raises = (self.total_raises as u64).min(7);
+        let last_was_bet = if self.history_len > 0 {
+            matches!(
+                self.history[self.history_len as usize - 1].kind,
+                ActionKind::Bet(_)
+            ) as u64
+        } else {
+            0
+        };
         let street = (self.street as u64) & 0x3;
         let pot_bb = (self.street_start_pot / self.bb.max(1e-6)).max(1.0);
         // S6 half-octave class: floor(log2(pot_bb) * 2), 5 bits.
         let pot_class = (pot_bb.log2() * 2.0).floor().max(0.0).min(31.0) as u64;
-        let raises = (self.total_raises as u64).min(7) & 0x7;
-        // S6 aggressor bit: 1 iff P1 was the previous street's aggressor.
+        // The missing signal: how big is the bet we are facing (0 = not
+        // facing). Reuses the existing fraction bucket.
+        let faced = (self.last_bet_fraction_bucket() as u64) & 0x7;
         let prev_agg = (self.prev_street_aggressor == 1) as u64;
 
-        // Non-overlapping layout: street 0..2 | seq 2..23 | n_actions
-        // 23..26 | pot_class 26..31 | raises 31..34 | prev_agg 34 |
-        // version 60..64.
         (street & 0x3)
-            | ((seq & 0x1F_FFFF) << 2)
-            | ((n_actions as u64 & 0x7) << 23)
-            | ((pot_class & 0x1F) << 26)
-            | ((raises & 0x7) << 31)
-            | ((prev_agg & 0x1) << 34)
+            | ((n_actions & 0x7) << 2)
+            | ((raises & 0x7) << 5)
+            | ((last_was_bet & 0x1) << 8)
+            | ((faced & 0x7) << 9)
+            | ((pot_class & 0x1F) << 12)
+            | ((prev_agg & 0x1) << 17)
             | (SIG_V3_VERSION << 60)
     }
 
