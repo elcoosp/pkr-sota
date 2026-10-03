@@ -264,6 +264,12 @@ fn configured_alpha() -> f64 {
 
 #[inline]
 pub fn dcfr_step(iteration: u32) -> DcfrStep {
+    // S4a: Linear CFR option. Identity-ish step: no discounting, no
+    // momentum. `identity` only at t == 0 (first-ever update returns
+    // delta unmodified, matching `update_regret_i64` history).
+    if crate::config::TrainConfig::global().linear_cfr {
+        return DcfrStep { w_pos: 1.0, w_neg: 1.0, gamma: 0.0, identity: iteration == 0 };
+    }
     // Only t == 0 is the identity case (matches the original
     // `update_regret_i64` behaviour: first-ever update returns delta
     // unmodified). During warmup (0 < t < TAU) the discount is 1.0 and
@@ -314,9 +320,9 @@ pub fn update_regret_with_step(
         delta_i64
     };
     let discounted = if current_i64 >= 0 {
-        (current_i64 as f64 * step.w_pos) as i64
+        (current_i64 as f64 * step.w_pos).round() as i64
     } else {
-        (current_i64 as f64 * step.w_neg) as i64
+        (current_i64 as f64 * step.w_neg).round() as i64
     };
     let summed = discounted.saturating_add(predicted_i64);
     // F5 (audit): flooring every regret at zero biases sampled regrets
