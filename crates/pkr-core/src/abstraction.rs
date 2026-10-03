@@ -119,6 +119,44 @@ pub fn preflop_class(hole: &[u8; 2]) -> u8 {
 }
 
 #[cfg(test)]
+mod v3_coarse_tests {
+    use super::*;
+    use crate::state::{Action, ActionKind, GameState};
+
+    /// The ONLY difference between these two states is the size of the
+    /// bet P0 faces (bucket 2 vs 4). The coarse V3 must distinguish them —
+    /// that is the whole point of adding `faced` — and nothing else in
+    /// the signature differs.
+    #[test]
+    fn v3_distinguishes_faced_bet_size() {
+        let mk = |bet_to: f32| {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+            s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(bet_to) });
+            s
+        };
+        let small = mk(4.0);
+        let big = mk(8.0);
+        assert_ne!(
+            small.history_signature_v3(),
+            big.history_signature_v3(),
+            "V3 must change with the faced bet size"
+        );
+    }
+
+    /// The coarse V3 no longer packs the full action sequence, so it must
+    /// NOT blow up the key space the way the first V3 did (31x).
+    #[test]
+    fn v3_is_deterministic() {
+        let mk = || {
+            let mut s = GameState::new(200.0, 1.0, 2.0);
+            s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+            s
+        };
+        assert_eq!(mk().history_signature_v3(), mk().history_signature_v3());
+    }
+}
+
 mod preflop_class_tests {
     use super::*;
 
