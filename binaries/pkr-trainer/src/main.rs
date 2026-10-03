@@ -207,6 +207,22 @@ struct Cli {
     #[arg(long, default_value_t = 10000)]
     eval_deals: u32,
 
+    /// Eval mode: `insample` (legacy fit==score) or `heldout` (fit on
+    /// fit-deals, score on disjoint score-deals; lower bound + insample).
+    /// Also settable via PKR_EVAL_MODE.
+    #[arg(long, default_value = "insample")]
+    eval_mode: String,
+
+    /// Fit deals for heldout eval. 0 = fall back to PKR_FIT_DEALS env
+    /// or --eval-deals. Also settable via PKR_FIT_DEALS.
+    #[arg(long, default_value_t = 0)]
+    fit_deals: u32,
+
+    /// Score deals for heldout eval. 0 = fall back to PKR_SCORE_DEALS
+    /// env or --eval-deals. Also settable via PKR_SCORE_DEALS.
+    #[arg(long, default_value_t = 0)]
+    score_deals: u32,
+
     /// Fixed RNG seed for every in-loop exploitability check. Unset (the
     /// default) uses the raw iteration number, so each eval point samples
     /// a DIFFERENT deal set — the readings are then not directly
@@ -317,6 +333,37 @@ fn eval_seed_for(iter: u32) -> u64 {
 /// which every eval point uses a different deal set).
 fn resolve_eval_seed(override_seed: Option<u64>, iter: u32) -> u64 {
     override_seed.unwrap_or_else(|| eval_seed_for(iter))
+}
+
+/// Eval mode for exploitability checks: `heldout` selects the
+/// fit/score-disjoint lower-bound metric; anything else is legacy
+/// insample. CLI `--eval-mode` wins unless left at its default, in
+/// which case PKR_EVAL_MODE applies.
+fn resolve_eval_mode(cli_mode: &str) -> String {
+    if cli_mode != "insample" {
+        return cli_mode.to_string();
+    }
+    std::env::var("PKR_EVAL_MODE").unwrap_or_else(|_| cli_mode.to_string())
+}
+
+fn env_u32(name: &str) -> Option<u32> {
+    std::env::var(name).ok()?.parse::<u32>().ok()
+}
+
+/// Resolve fit/score deal counts for heldout eval: explicit CLI value
+/// wins, else PKR_FIT_DEALS / PKR_SCORE_DEALS env, else --eval-deals.
+fn resolve_fit_score_deals(cli_fit: u32, cli_score: u32, eval_deals: u32) -> (u32, u32) {
+    let fit = if cli_fit > 0 {
+        cli_fit
+    } else {
+        env_u32("PKR_FIT_DEALS").unwrap_or(eval_deals)
+    };
+    let score = if cli_score > 0 {
+        cli_score
+    } else {
+        env_u32("PKR_SCORE_DEALS").unwrap_or(eval_deals)
+    };
+    (fit, score)
 }
 
 /// True when `reading` is a new all-time-low raw exploitability.
@@ -533,12 +580,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "EVAL-NOW: firing initial exploitability check at iter {}",
             start_iter
         );
+        let eval_seed = resolve_eval_seed(cli.eval_seed, start_iter);
+        if resolve_eval_mode(&cli.eval_mode) == "heldout" {
+            let (fit, score) =
+                resolve_fit_score_deals(cli.fit_deals, cli.score_deals, cli.eval_deals);
+            let ho = pkr_exploit::best_response::heldout_exploitability(
+                trainer.get_table(),
+                abstraction_for_eval.as_ref(),
+                evaluator_for_eval.as_ref(),
+                fit,
+                score,
+                eval_seed,
+            );
+            if cli.log_json {
+                json_progress(&[
+                    ("event", serde_json::json!("eval")),
+                    ("iter", serde_json::json!(start_iter)),
+                    ("expl_mbb", serde_json::json!(ho.lower_mbb)),
+                    ("expl_std_err_mbb", serde_json::json!(ho.lower_se_mbb)),
+                    ("expl_insample_mbb", serde_json::json!(ho.insample_mbb)),
+                    ("fit_deals", serde_json::json!(ho.fit_deals)),
+                    ("score_deals", serde_json::json!(ho.score_deals)),
+                ]);
+            } else {
+                eprintln!(
+                    "EVAL iter={} heldout_lower_mbb={:.2}+/-{:.2} insample={:.2} fit={} score={}",
+                    start_iter,
+                    ho.lower_mbb,
+                    ho.lower_se_mbb,
+                    ho.insample_mbb,
+                    ho.fit_deals,
+                    ho.score_deals,
+                );
+            }
+        } else {
         let br = pkr_exploit::best_response::sampled_exploitability(
             trainer.get_table(),
             abstraction_for_eval.as_ref(),
             evaluator_for_eval.as_ref(),
             cli.eval_deals,
-            resolve_eval_seed(cli.eval_seed, start_iter),
+            eval_seed,
         );
         if cli.log_json {
             json_progress(&[
@@ -562,6 +643,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 br.br1,
                 br.deals_sampled
             );
+        }
         }
     }
 
@@ -768,7 +850,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!(
                     "iter {}/{} | infosets: {} ({:.1}%) | {:.1} it/s | ETA {:.2}h | \
                      max|r|={:.2e} nonfinite={} | cache_hit={:.3} dedup={:.3} | \
-                     nodes/it={:.0} depth_avg={:.1}",
+                     nodes/it={:.0} depth_avg={:.1} | mem: {}",
                     done,
                     max_iters,
                     snap.infosets,
@@ -781,6 +863,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     regret_dedup,
                     nodes_per_iter,
                     delta.avg_depth(),
+                    trainer.get_table().memory_report(),
                 );
             }
 
@@ -788,13 +871,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Fire when done has advanced by at least eval_every since the
             // last eval (done increments by ITERS_PER_SYNC, not by 1).
             if should_eval(done, last_eval_iter, cli.eval_every, max_iters) {
-                let br = pkr_exploit::best_response::sampled_exploitability(
-                    trainer.get_table(),
-                    abstraction_for_eval.as_ref(),
-                    evaluator_for_eval.as_ref(),
-                    cli.eval_deals,
-                    resolve_eval_seed(cli.eval_seed, done),
-                );
+                let eval_seed = resolve_eval_seed(cli.eval_seed, done);
+                // Heldout mode logs the lower bound alongside the legacy
+                // insample reading, but the promotion gate / CSV track the
+                // lower bound (the monotone-friendly training-curve metric).
+                let br = if resolve_eval_mode(&cli.eval_mode) == "heldout" {
+                    let (fit, score) =
+                        resolve_fit_score_deals(cli.fit_deals, cli.score_deals, cli.eval_deals);
+                    let ho = pkr_exploit::best_response::heldout_exploitability(
+                        trainer.get_table(),
+                        abstraction_for_eval.as_ref(),
+                        evaluator_for_eval.as_ref(),
+                        fit,
+                        score,
+                        eval_seed,
+                    );
+                    eprintln!(
+                        "EVAL-HELDOUT iter={} lower_mbb={:.2}+/-{:.2} insample={:.2} fit={} score={}",
+                        done,
+                        ho.lower_mbb,
+                        ho.lower_se_mbb,
+                        ho.insample_mbb,
+                        ho.fit_deals,
+                        ho.score_deals,
+                    );
+                    pkr_exploit::best_response::BrResult {
+                        exploitability_mbb: ho.lower_mbb,
+                        expl_std_err_mbb: ho.lower_se_mbb,
+                        expl_insample_mbb: ho.insample_mbb,
+                        br0: 0.0,
+                        br1: 0.0,
+                        deals_sampled: ho.score_deals,
+                    }
+                } else {
+                    pkr_exploit::best_response::sampled_exploitability(
+                        trainer.get_table(),
+                        abstraction_for_eval.as_ref(),
+                        evaluator_for_eval.as_ref(),
+                        cli.eval_deals,
+                        eval_seed,
+                    )
+                };
                 // Per-eval checkpoint so early vs late models can be
                 // compared later at a fixed deal count.
                 if cli.ckpt_per_eval {
