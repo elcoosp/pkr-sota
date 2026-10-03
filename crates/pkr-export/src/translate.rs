@@ -12,6 +12,12 @@
 /// probabilities under the opponent's current strategy, and an actual
 /// (continuous) action that falls between them, compute the (lower, upper)
 /// probabilities quantised to `u8` (0–255 scale where the two values sum to 255).
+#[deprecated(
+    since = "0.0.0",
+    note = "Unwired offline helper, kept for compat. For live action translation use \
+            pkr_runtime::translate_live::{pseudo_harmonic_prob_lower, translate_bet} \
+            (Ganzfried-Sandholm pseudo-harmonic mapping, §S7)."
+)]
 pub fn compute_translation(
     lower: f32,
     upper: f32,
@@ -35,6 +41,7 @@ pub fn compute_translation(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
