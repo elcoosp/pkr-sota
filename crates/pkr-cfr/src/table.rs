@@ -22,12 +22,11 @@ const K: usize = 6;
 /// blueprint reader) can validate `max_actions_k` against the same
 /// constant the table strides by.
 pub const ACTION_K: usize = K;
-/// Regret + momentum interleaved: [r0 m0 r1 m1 r2 m2 r3 m3 r4 m4 r5 m5]
+/// Regret only (S5: momentum plane removed): [r0 r1 r2 r3 r4 r5]
 /// Written only by the coordinator (flush_cpu_batch), so no false sharing.
-const RM_FIELDS: usize = 2;
+const RM_FIELDS: usize = 1;
 const RM_STRIDE: usize = K * RM_FIELDS;
 const RM_REGRET: usize = 0;
-const RM_MOMENTUM: usize = 1;
 
 /// How `flush_cpu_batch` folds deltas. Read once from the environment.
 ///   PKR_F5_SEQUENTIAL=0  → batched-sum fold (v9..v16 behaviour)
@@ -78,8 +77,8 @@ const SUM_STRIDE: usize = K;
 
 pub(crate) const SCALE: f32 = 1000.0;
 
-/// Maximum |regret| / |momentum| stored in the i32 fixed-point tables,
-/// expressed at `SCALE`. Clipping below `i32::MAX` leaves headroom for
+/// Maximum |regret| stored in the i64 fixed-point table, expressed at
+/// `SCALE`. Clipping below `i64::MAX` leaves headroom for the next
 /// the next batch's delta and prevents the saturation pathology that
 /// silently uniformizes regret-matching on high-traffic infosets.
 ///
@@ -247,7 +246,7 @@ fn zeroed_atomic_u64(n: usize) -> Vec<AtomicU64> {
 
 pub struct CompactRegretTable {
     hash_to_idx: PapayaMap<u64, usize, FoldHasher>,
-    /// Interleaved regret+momentum, i32 fixed-point at scale 1000.
+    /// Regret plane, i64 fixed-point at scale 1000 (S5: momentum removed).
     data: Vec<AtomicI64>,
     /// f64 strategy sums stored as u64 bits. Independent array to avoid
     /// false sharing with the interleaved regret/momentum data.
@@ -294,8 +293,9 @@ impl CompactRegretTable {
     pub fn with_capacity(capacity: usize) -> Self {
         // F7: allocate lazily-zeroed pages instead of eagerly writing
         // zeros with resize_with. At `capacity = 60_000_000` the data
-        // array is 60M * 12 * 8 = 5.76 GB and the strategy_sum array is
-        // 60M * 6 * 8 = 2.88 GB. resize_with(_, AtomicI64::new(0))
+        // array is 60M * 6 * 8 = 2.88 GB and the strategy_sum array is
+        // 60M * 6 * 8 = 2.88 GB (S5: momentum plane removed, was 12
+        // wide). resize_with(_, AtomicI64::new(0))
         // touches every page up front; `vec![0i64; n]` goes through
         // `alloc_zeroed`, which on macOS/Linux gives anonymous
         // demand-zero pages that only materialize when first written.
@@ -339,11 +339,20 @@ impl CompactRegretTable {
 
     #[inline(always)]
     fn load_rm(&self, idx: usize, action: usize, field: usize) -> i64 {
+        // S5: momentum plane removed. Non-regret fields read as 0 so any
+        // stale RM_MOMENTUM call sites observe a zero prediction EMA.
+        if field != RM_REGRET {
+            return 0;
+        }
         self.data[Self::off_rm(idx, action, field)].load(Ordering::Relaxed)
     }
 
     #[inline(always)]
     fn store_rm(&self, idx: usize, action: usize, field: usize, v: i64) {
+        // S5: momentum writes are dropped (no backing cells exist).
+        if field != RM_REGRET {
+            return;
+        }
         self.data[Self::off_rm(idx, action, field)].store(v, Ordering::Relaxed);
     }
 
@@ -637,9 +646,12 @@ impl CompactRegretTable {
                 let idx = idx_u32 as usize;
                 let a = act_u32 as usize;
                 let mut cur_i64 = self.load_rm(idx, a, RM_REGRET);
-                let mut mom_i64 = self.load_rm(idx, a, RM_MOMENTUM);
+                // S5: momentum plane removed; the PCFR+ prediction EMA no
+                // longer has backing storage. Chain within this group from
+                // 0 (was: loaded from the table) and discard afterwards.
 
                 if mode.sequential {
+                    let mut mom_i64 = 0i64;
                     for k in start..end {
                         let delta_i64 = to_fixed(batch_ref[k].delta as f64);
                         let (new_r, new_m) = crate::dcfr::update_regret_i64_mode(
@@ -670,22 +682,19 @@ impl CompactRegretTable {
                     // cannot be hoisted; in batched mode it is already one
                     // call per group. No hoisting win exists.
                     let delta_i64 = to_fixed(delta_sum);
-                    let (new_r, new_m) = crate::dcfr::update_regret_i64_mode(
+                    let (new_r, _) = crate::dcfr::update_regret_i64_mode(
                         cur_i64,
-                        mom_i64,
+                        0,
                         max_iter,
                         delta_i64,
                         mode.momentum,
                     );
                     cur_i64 = new_r;
-                    mom_i64 = new_m;
                 }
 
                 // Clip to R_MAX for arithmetic headroom; not a CFR clip.
                 let r64 = cur_i64.clamp(-R_MAX, R_MAX);
-                let m64 = mom_i64.clamp(-R_MAX, R_MAX);
                 self.store_rm(idx, a, RM_REGRET, r64);
-                self.store_rm(idx, a, RM_MOMENTUM, m64);
             }
         });
         (input_len, unique_len)
@@ -720,7 +729,7 @@ impl CompactRegretTable {
                 let idx = item.index as usize;
                 let a = item.action as usize;
                 self.store_rm(idx, a, RM_REGRET, result.regret as i64);
-                self.store_rm(idx, a, RM_MOMENTUM, result.momentum as i64);
+                // S5: momentum plane removed; result.momentum is dropped.
             }
         }
     }
@@ -772,9 +781,9 @@ impl CompactRegretTable {
     }
 
     pub fn snapshot(&self) -> TableSnapshot {
-        // A5/B8: regret-only snapshot. Previously this loop also walked
-        // the momentum cells, conflating "regret magnitude" with the
-        // PCFR+ prediction EMA.
+        // A5/B8 + S5: regret-only snapshot over the single regret plane.
+        // (Pre-S5 this loop also walked the momentum cells, conflating
+        // "regret magnitude" with the PCFR+ prediction EMA.)
         let n = self.allocated();
         let mut max_abs = 0.0f32;
         let mut sum_abs = 0.0f64;
@@ -970,6 +979,30 @@ impl CompactRegretTable {
         self.capacity
     }
 
+    /// Bytes of table backing storage per infoset, excluding the
+    /// hash-map entry overhead (unmeasured): regret plane
+    /// (`RM_STRIDE` i64 cells) + strategy sums (`SUM_STRIDE` f64
+    /// cells). S5: 6*8 + 6*8 = 96 B (was 144 B with momentum).
+    pub fn bytes_per_infoset() -> usize {
+        (RM_STRIDE + SUM_STRIDE) * 8
+    }
+
+    /// One-line memory report: live infoset count and backing-store
+    /// bytes (`len() * bytes_per_infoset()`). Map-entry overhead is
+    /// NOT included; compare against max RSS (e.g. `/usr/bin/time -l`)
+    /// for the full picture.
+    pub fn memory_report(&self) -> String {
+        let n = self.len();
+        let bytes = n * Self::bytes_per_infoset();
+        format!(
+            "infosets={} bytes_per_infoset={} table_bytes={} ({:.2} MiB)",
+            n,
+            Self::bytes_per_infoset(),
+            bytes,
+            bytes as f64 / (1024.0 * 1024.0),
+        )
+    }
+
     pub fn save_checkpoint(
         &self,
         path: &str,
@@ -980,8 +1013,8 @@ impl CompactRegretTable {
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         let n = self.allocated();
-        w.write_all(b"PKRCKPT7")?;
-        w.write_all(&7u32.to_le_bytes())?;
+        w.write_all(b"PKRCKPT8")?;
+        w.write_all(&8u32.to_le_bytes())?;
         w.write_all(bytemuck::bytes_of(fingerprint))?;
         w.write_all(&(K as u32).to_le_bytes())?;
         w.write_all(&iteration.to_le_bytes())?;
@@ -1058,14 +1091,25 @@ impl CompactRegretTable {
                  Start a fresh run or pass --fresh to discard.",
             ));
         }
-        if magic != b"PKRCKPT7" {
+        // S5: the momentum plane was removed, so the regret stride went
+        // 12 -> 6 cells. v7 payloads mis-stride under the new layout and
+        // are rejected loudly instead of being silently misread.
+        if magic == b"PKRCKPT7" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "bad checkpoint magic (expected v5 format)",
+                "checkpoint is v7 (regret+momentum stride-12 layout). \
+                 The momentum plane was removed in S5; v7 files cannot be \
+                 loaded. Start a fresh run or pass --fresh to discard.",
+            ));
+        }
+        if magic != b"PKRCKPT8" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bad checkpoint magic (expected v8 format)",
             ));
         }
         let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        if version != 7 {
+        if version != 8 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "unsupported checkpoint version",
@@ -1372,7 +1416,7 @@ mod f5_tests {
 }
 
 #[cfg(test)]
-mod ckpt_v7_tests {
+mod ckpt_v8_tests {
     use super::*;
     use pkr_core::abstraction::AbstractionFingerprint;
 
@@ -1381,13 +1425,13 @@ mod ckpt_v7_tests {
     }
 
     #[test]
-    fn ckpt_v7_roundtrip_beyond_i32() {
+    fn ckpt_v8_roundtrip_beyond_i32() {
         let fp = AbstractionFingerprint::from_constants(4);
         let a = CompactRegretTable::with_capacity(64);
         let idx = a.get_or_create_idx(0xABCD);
         a.store_rm(idx, 2, RM_REGRET, 5_000_000_000_000i64);
         a.add_strategy_sum_at(idx, 1, 0.25);
-        let p = tmp("v7rt");
+        let p = tmp("v8rt");
         a.save_checkpoint(p.to_str().unwrap(), 42, &fp).unwrap();
 
         let b = CompactRegretTable::with_capacity(64);
@@ -1395,6 +1439,18 @@ mod ckpt_v7_tests {
         let j = b.get_or_create_idx(0xABCD);
         assert_eq!(b.regret_scaled(j, 2), 5_000_000_000_000i64);
         assert!((b.load_sum(j, 1) - 0.25).abs() < 1e-12);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn ckpt_v8_magic_and_version() {
+        let fp = AbstractionFingerprint::from_constants(4);
+        let p = tmp("v8magic");
+        let t = CompactRegretTable::with_capacity(8);
+        t.save_checkpoint(p.to_str().unwrap(), 7, &fp).unwrap();
+        let raw = std::fs::read(&p).unwrap();
+        assert_eq!(&raw[..8], b"PKRCKPT8");
+        assert_eq!(u32::from_le_bytes(raw[8..12].try_into().unwrap()), 8);
         let _ = std::fs::remove_file(p);
     }
 
@@ -1407,6 +1463,44 @@ mod ckpt_v7_tests {
         let e = t.load_checkpoint(p.to_str().unwrap(), &fp).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn ckpt_v7_rejected_after_momentum_removal() {
+        // S5 removed the momentum plane (stride 12 -> 6); a v7 payload
+        // would mis-stride, so it must fail loudly.
+        let fp = AbstractionFingerprint::from_constants(4);
+        let p = tmp("v7rej");
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"PKRCKPT7");
+        raw.extend_from_slice(&7u32.to_le_bytes());
+        std::fs::write(&p, raw).unwrap();
+        let t = CompactRegretTable::with_capacity(8);
+        let e = t.load_checkpoint(p.to_str().unwrap(), &fp).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn memory_report_bytes_math() {
+        assert_eq!(
+            CompactRegretTable::bytes_per_infoset(),
+            (RM_STRIDE + SUM_STRIDE) * 8,
+        );
+        assert_eq!(CompactRegretTable::bytes_per_infoset(), 96);
+        let t = CompactRegretTable::with_capacity(16);
+        for k in 0..4u64 {
+            t.get_or_create_idx(0xEE_0000 + k);
+        }
+        let rep = t.memory_report();
+        assert!(
+            rep.contains("infosets=4"),
+            "report must carry live count: {rep}"
+        );
+        assert!(
+            rep.contains(&format!("table_bytes={}", 4 * 96)),
+            "report bytes must equal len * bytes_per_infoset: {rep}"
+        );
     }
 }
 
@@ -1633,20 +1727,23 @@ mod audit_regression_tests {
         );
     }
 
-    /// A5: the snapshot's `max_abs_regret` is regret-only. Writing a huge
-    /// momentum value must NOT appear in the snapshot's regret magnitude.
+    /// S5: the momentum plane no longer exists. Non-regret field writes
+    /// are dropped and reads return 0, so the snapshot (regret-only by
+    /// construction) cannot observe them.
     #[test]
-    fn snapshot_regret_only_ignores_momentum_cells() {
+    fn snapshot_ignores_non_regret_fields() {
         let t = CompactRegretTable::with_capacity(16);
         let idx = t.get_or_create_idx(0xA5_0000);
-        // Set regret to a small positive value, momentum to something huge.
+        // Set regret to a small positive value, then write a huge value
+        // to a non-regret field (dropped) and confirm the read is 0.
         t.store_rm(idx, 0, RM_REGRET, 1000); // 1 chip
-        t.store_rm(idx, 0, RM_MOMENTUM, 100_000_000); // 100k chips
+        t.store_rm(idx, 0, 1, 100_000_000); // no backing cells: dropped
+        assert_eq!(t.load_rm(idx, 0, 1), 0);
         let snap = t.snapshot();
         // max_abs_regret is reported in CHIPS (units / SCALE), so 1.0.
         assert!(
             snap.max_abs_regret <= 1.5,
-            "max_abs_regret = {} (momentum leaked in?)",
+            "max_abs_regret = {} (non-regret field leaked in?)",
             snap.max_abs_regret
         );
     }
@@ -1703,8 +1800,8 @@ mod f7_allocation_tests {
     /// A freshly constructed table with a large capacity must not be
     /// resident in full. We can't assert RSS from inside the test, but
     /// we can assert the allocation succeeds (would fail at capacity
-    /// * 12 * 8 = 8.6 GB on a 16 GB machine if it eagerly touched all
-    /// pages).
+    /// * 96 B = 5.76 GB virtual on a 16 GB machine if it eagerly
+    /// touched all pages).
     #[test]
     #[ignore]
     fn large_capacity_constructs() {
