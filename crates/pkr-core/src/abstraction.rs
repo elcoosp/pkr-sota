@@ -51,6 +51,19 @@ pub const BUCKET_THRESHOLD_LARGE: f32 = 1.2;
 /// `stacks`, `street_bets`, `opp_street_bets`, and `pot` are the actor's
 /// (and opponent's) state **before** the action is applied.
 ///
+/// ## Sizing convention (§S7/B4)
+///
+/// Bet/raise sizes are measured as **raise-above-call over the pre-call
+/// pot**: `fraction = (amount − max(street_bets[actor], opp_street_bets))
+/// / pot`. This is NOT the "solver pot-raise" convention (total pot after
+/// the call divided by the raise-to, e.g. a "3x pot" overbet in some
+/// solver UIs). Concretely: facing a half-pot bet, calling, then the
+/// pot includes the opponent's bet — `pot` here is that whole pre-call
+/// pot, and the numerator is only the chips added *above* the call
+/// obligation. The live translator
+/// (`pkr_runtime::translate_live::translate_bet`) must use these same
+/// units or off-tree bets map to the wrong window.
+///
 /// All 6 return values are legal for every input; callers that need to
 /// know which buckets have a concrete representative should enumerate
 /// `legal_actions*` and map each action through this function.
@@ -177,6 +190,24 @@ mod c3_tests {
         // Degenerate: pot 0 → clamped to 1.2; bet 0.6 → frac 0.5 → bucket 2.
         let b = action_bucket(&ActionKind::Bet(0.6), 199.0, 0.0, 0.0, 0.0);
         assert_eq!(b, 2);
+    }
+
+    #[test]
+    fn sizing_is_raise_above_call_not_total_commitment() {
+        // Pins the §S7/B4 sizing convention. Preflop: SB has 2 in,
+        // BB opened to 6 total (opp=6), pot=8. Raising to 14 total is a
+        // raise OF 8 = 1.0x the pre-call pot → bucket 3.
+        //
+        // Under the "solver pot-raise" convention (total commitment /
+        // pot = 14/8 = 1.75) this would land in bucket 4. If this
+        // assertion ever fails, the convention drifted and
+        // translate_live's units no longer match action_bucket's.
+        let b = action_bucket(&ActionKind::Bet(14.0), 198.0, 2.0, 6.0, 8.0);
+        assert_eq!(b, 3, "raise-above-call 8/8=1.0 must be bucket 3");
+        // Same spot, raise to 10 total: raise of 4 = 0.5x pot → bucket 2
+        // (total-commitment convention would say 10/8=1.25 → bucket 4).
+        let b = action_bucket(&ActionKind::Bet(10.0), 198.0, 2.0, 6.0, 8.0);
+        assert_eq!(b, 2, "raise-above-call 4/8=0.5 must be bucket 2");
     }
 }
 
@@ -590,12 +621,15 @@ mod fingerprint_sensitivity_tests {
         assert!(good.describe_mismatch(&bad).contains("preflop_k"));
     }
 
-    /// Fingerprint version-1 construction (sig_version=1) is the default
-    /// with SIG_V2_STREET_MONEY=false.
+    /// Fingerprint construction records the current signature version:
+    /// 3 when the V3 gate is on (default; opt out with PKR_SIG_V3=0),
+    /// 2 with SIG_V2_STREET_MONEY, else 1.
     #[test]
     fn fingerprint_reports_current_sig_version() {
         let fp = AbstractionFingerprint::from_constants(200);
-        let expected = if crate::state::SIG_V2_STREET_MONEY {
+        let expected = if crate::state::sig_v3_size_aware() {
+            3
+        } else if crate::state::SIG_V2_STREET_MONEY {
             2
         } else {
             1
