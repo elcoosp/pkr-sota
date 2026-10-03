@@ -41,6 +41,14 @@ pub struct RuntimeSession<'a> {
     ev: &'a dyn Evaluator,
 }
 
+/// §B: enable live action translation (env `PKR_TRANSLATE=1`). Off by
+/// default so range tracking is unchanged until it is A/B'd with LBR.
+fn translate_observed() -> bool {
+    use std::sync::OnceLock;
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| std::env::var("PKR_TRANSLATE").as_deref() == Ok("1"))
+}
+
 impl<'a> RuntimeSession<'a> {
     /// Create a session for `our_seat` (0 or 1).
     pub fn new(
@@ -72,6 +80,21 @@ impl<'a> RuntimeSession<'a> {
     /// does not abort the caller (state is the caller's ground truth).
     pub fn observe_action(&mut self, action: Action) {
         if let Some(t) = self.tracker.as_mut() {
+            // §B: when translation is enabled, the posterior update uses
+            // the TRANSLATED in-tree bucket for off-tree bet sizes, so
+            // the range tracks the strategy the blueprint actually has.
+            // The real state still advances with the observed action
+            // (correct chips). Default OFF — unchanged behaviour.
+            if translate_observed() {
+                if let Some(bucket) = crate::translate_live::observed_bet_bucket(
+                    t.state(),
+                    &action,
+                    &mut rand::rng(),
+                ) {
+                    let _ = t.apply_action_with_bucket(action, bucket as usize);
+                    return;
+                }
+            }
             let _ = t.apply_action(action);
         }
     }
