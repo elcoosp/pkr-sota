@@ -336,6 +336,30 @@ pub fn safe_solve_root_p0_strategy(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUC
     Some(out)
 }
 
+/// CFR-D safe-resolve: solve the gadgetted subgame and return P0's
+/// aggregated root strategy. The gadget gives P1 a per-deal option to
+/// terminate for their blueprint-continuation value, which bounds the
+/// resolved strategy's exploitability by the blueprint's (Burch et al.
+/// 2014). Unlike the heuristic `safe_solve_root_p0_strategy`, this does
+/// not rely on an in-sample BR comparison.
+pub fn safe_resolve_gadget(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
+    let (abs, tbl) = cfg.blueprint?;
+    let mut solver = Solver::new(cfg);
+    let bp = solver.build_blueprint_strategy(abs, tbl);
+    let mut gv = vec![0.0f64; solver.n_deals];
+    for d in 0..solver.n_deals {
+        let v0 = solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
+        gv[d] = -v0; // P1's continuation value
+    }
+    solver.gadget_v1 = gv;
+    solver.gadget_reg = (0..solver.n_deals * 2)
+        .map(|_| AtomicU64::new(0))
+        .collect();
+    solver.use_gadget = true;
+    solver.solve();
+    solver.root_p0_strategy_aggregated()
+}
+
 /// Solve the subgame and return P0's aggregated root strategy
 /// (regret-match on the regret-sum across deals). Correct reduction
 /// when P0's hole is a point mass across deals.
@@ -673,6 +697,14 @@ struct Solver<'a> {
     /// Cuts Solver::new time from ~6.5s to <500ms at 25 iters.
     /// Read from PKR_SUBGAME_LAZY_TERM (default "1").
     lazy_term: bool,
+    /// CFR-D root gadget. When `use_gadget`, `solve` runs `gadget_walk`
+    /// per deal: P1 chooses terminate (payoff `gadget_v1[deal]`, their
+    /// blueprint-continuation value) or enter (the real subgame). P0's
+    /// resulting root strategy is no more exploitable than the blueprint
+    /// (CFR-D safety). Empty when the gadget is off.
+    gadget_v1: Vec<f64>,
+    gadget_reg: Vec<AtomicU64>,
+    use_gadget: bool,
     /// Lazily-computed showdown values. u64::MAX = unset sentinel;
     /// otherwise holds f64::to_bits of the value. Atomic so Solver is
     /// Sync and the BR walk can parallelize.
@@ -783,6 +815,9 @@ impl<'a> Solver<'a> {
             lazy_term: std::env::var("PKR_SUBGAME_LAZY_TERM")
                 .map(|v| v != "0")
                 .unwrap_or(true),
+            gadget_v1: Vec::new(),
+            gadget_reg: Vec::new(),
+            use_gadget: false,
             lazy_cache: (0..n_nodes * n_deals)
                 .map(|_| AtomicU64::new(u64::MAX))
                 .collect::<Vec<_>>()
@@ -946,7 +981,11 @@ impl<'a> Solver<'a> {
             // state is atomic and indexed by (node, deal, bucket), so
             // the borrow is shared: no `&mut` aliasing, no unsafe.
             (0..n_deals).into_par_iter().for_each(|deal_idx| {
-                self.walk(root, deal_idx as u32, 1.0, 1.0, 0);
+                if self.use_gadget {
+                    self.gadget_walk(deal_idx as u32);
+                } else {
+                    self.walk(root, deal_idx as u32, 1.0, 1.0, 0);
+                }
             });
         }
     }
@@ -1183,6 +1222,78 @@ impl<'a> Solver<'a> {
         let mut state = self.cfg.root.clone();
         self.fill_blueprint_strat(self.tree.root, &mut state, &mut strat, abs, tbl);
         strat
+    }
+
+    /// Expected value to P0 of the subgame at `node_id` for `deal_idx`,
+    /// with BOTH players following the supplied blueprint strategies.
+    /// Used to compute the gadget's terminate value (P1's blueprint
+    /// continuation value). Mirrors `br_walk`'s tree handling but takes
+    /// expectations instead of best responses.
+    fn blueprint_value_p0(
+        &self,
+        node_id: u32,
+        deal_idx: u32,
+        bp: &[Option<[f64; ABSTRACT_BUCKETS]>],
+    ) -> f64 {
+        match &self.tree.nodes[node_id as usize] {
+            PublicNode::Fold { .. } | PublicNode::Showdown { .. } => {
+                self.term_value(node_id, deal_idx)
+            }
+            PublicNode::Chance { children } => {
+                let h0 = self.deals[deal_idx as usize].h0;
+                let h1 = self.deals[deal_idx as usize].h1;
+                let valid: Vec<u32> = children
+                    .iter()
+                    .filter(|(c, _)| *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1])
+                    .map(|(_, id)| *id)
+                    .collect();
+                if valid.is_empty() {
+                    return 0.0;
+                }
+                let w = 1.0 / valid.len() as f64;
+                valid.iter().map(|&ch| w * self.blueprint_value_p0(ch, deal_idx, bp)).sum()
+            }
+            PublicNode::Decision { bucket_child, .. } => {
+                let i = self.idx(node_id, deal_idx);
+                let strat = bp[i].unwrap_or_else(|| uniform_over_legal(bucket_child));
+                let mut v = 0.0f64;
+                for b in 0..ABSTRACT_BUCKETS {
+                    if bucket_child[b] < 0 {
+                        continue;
+                    }
+                    v += strat[b]
+                        * self.blueprint_value_p0(bucket_child[b] as u32, deal_idx, bp);
+                }
+                v
+            }
+        }
+    }
+
+    /// One CFR-D root-gadget iteration for `deal_idx`. P1 picks
+    /// terminate (value `gadget_v1`) vs enter (the subgame); regret-match
+    /// over 2 actions, return the value to P0.
+    fn gadget_walk(&self, deal_idx: u32) -> f64 {
+        let root = self.tree.root;
+        let term_p1 = self.gadget_v1[deal_idx as usize];
+        let enter_p0 = self.walk(root, deal_idx, 1.0, 1.0, 0);
+        let enter_p1 = -enter_p0;
+
+        let base = deal_idx as usize * 2;
+        let r0 = f64::from_bits(self.gadget_reg[base].load(Ordering::Relaxed));
+        let r1 = f64::from_bits(self.gadget_reg[base + 1].load(Ordering::Relaxed));
+        let p0pos = r0.max(0.0);
+        let p1pos = r1.max(0.0);
+        let s = p0pos + p1pos;
+        let (st, se) = if s > 1e-12 {
+            (p0pos / s, p1pos / s)
+        } else {
+            (0.5, 0.5)
+        };
+        let avg_p1 = st * term_p1 + se * enter_p1;
+        self.gadget_reg[base].store((r0 + (term_p1 - avg_p1)).max(0.0).to_bits(), Ordering::Relaxed);
+        self.gadget_reg[base + 1].store((r1 + (enter_p1 - avg_p1)).max(0.0).to_bits(), Ordering::Relaxed);
+        // value to P0
+        st * (-term_p1) + se * enter_p0
     }
 
     fn br_walk(
@@ -1562,5 +1673,100 @@ mod blend_and_bias_tests {
         for v in out {
             assert!((v - 1.0 / 6.0).abs() < 1e-6);
         }
+    }
+}
+
+#[cfg(test)]
+mod gadget_safety_tests {
+    use super::*;
+    use pkr_abstraction::{load_centroids, KMeansAbstraction};
+    use pkr_cfr::table::CompactRegretTable;
+    use pkr_core::state::GameState;
+    use std::sync::Arc;
+
+    fn fixture() -> Option<(KMeansAbstraction, CompactRegretTable)> {
+        let m = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let ws = m.parent()?.parent()?;
+        let t = ws.join("outputs/v0-smoke");
+        let ck = ws.join("outputs/v8-fixture/train.ckpt");
+        if !ck.exists() { return None; }
+        let store = load_centroids(t.join("centroids.bin").to_str()?).ok()?;
+        let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+        abs.init_table(0, t.join("preflop_abstraction.bin").to_str()?).ok()?;
+        abs.init_table(1, t.join("flop_abstraction.bin").to_str()?).ok()?;
+        abs.init_table(2, t.join("turn_abstraction.bin").to_str()?).ok()?;
+        abs.init_table(3, t.join("river_buckets.bin").to_str()?).ok()?;
+        let tbl = CompactRegretTable::with_capacity(1_000_000);
+        let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(abs.k() as u32);
+        tbl.load_checkpoint(ck.to_str()?, &fp).ok()?;
+        Some((abs, tbl))
+    }
+
+    /// The gadget's whole point: the resolved root is no more exploitable
+    /// than the blueprint. Measure P1's BR value against each, same deals.
+    #[test]
+    #[ignore]
+    fn gadget_not_more_exploitable_than_blueprint() {
+        let Some((abs, tbl)) = fixture() else {
+            eprintln!("SKIP: fixture or tables missing"); return;
+        };
+        let ev = pkr_eval::NlheEvaluator;
+
+        // River root: play check-check to the river so only the river
+        // betting tree is enumerated (a preflop root blows the 48-slot
+        // undo stack building the whole game tree).
+        let b: [u8; 5] = [44, 45, 46, 47, 48];
+        let mut root = GameState::new(200.0, 1.0, 2.0);
+        root.set_hole_cards([0, 1], [2, 3]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&b[0..3]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&b[3..4]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&b[4..5]);
+
+        // Two 8-hand ranges.
+        // Ranges disjoint from the board (44..48) and from each other.
+        let p0h: Vec<[u8;2]> = (0..8).map(|i| [4 + i as u8 * 2, 5 + i as u8 * 2]).collect();
+        let p1h: Vec<[u8;2]> = (0..8).map(|i| [22 + i as u8 * 2, 23 + i as u8 * 2]).collect();
+
+        let cfg = POCConfig {
+            root,
+            p0_range: Range::uniform(p0h),
+            p1_range: Range::uniform(p1h),
+            iterations: 200,
+            evaluator: &ev,
+            blueprint: Some((&abs, &tbl)),
+        };
+
+        let mut s = Solver::new(&cfg);
+        // Blueprint strategy + its BR value.
+        let bp = s.build_blueprint_strategy(&abs, &tbl);
+        let priors: Vec<f64> = s.deals.iter().map(|d| d.prior).collect();
+        let bp_br = s.br_v1_with_prior(&bp, &priors);
+
+        // Gadget resolve.
+        let mut gv = vec![0.0f64; s.n_deals];
+        for d in 0..s.n_deals {
+            gv[d] = -s.blueprint_value_p0(s.tree.root, d as u32, &bp);
+        }
+        s.gadget_v1 = gv;
+        s.gadget_reg = (0..s.n_deals * 2).map(|_| AtomicU64::new(0)).collect();
+        s.use_gadget = true;
+        s.solve();
+        let gadget = s.p0_strategy();
+        let gadget_br = s.br_v1_with_prior(&gadget, &priors);
+
+        eprintln!(
+            "bp_br={:.4}  gadget_br={:.4}  (gadget <= bp is SAFE)",
+            bp_br, gadget_br
+        );
+        assert!(
+            gadget_br <= bp_br + 1e-6,
+            "GADGET UNSAFE: gadget_br={gadget_br:.4} > bp_br={bp_br:.4}"
+        );
     }
 }
