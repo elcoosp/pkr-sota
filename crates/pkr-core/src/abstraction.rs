@@ -374,7 +374,12 @@ pub struct AbstractionFingerprint {
     /// could be loaded against tables from another and silently
     /// produce nonsense infosets.
     pub centroid_feature_v: u8,
-    pub _pad: [u8; 3],
+    /// Bucket-table element width: 1 = u8 (k<=255, legacy), 2 = u16
+    /// (k<=65535, PKR_BUCKET_U16=1). Tables carry no on-disk width
+    /// marker, so a width mismatch would silently misread them; this
+    /// field makes such a load abort.
+    pub bucket_width: u8,
+    pub _pad: [u8; 2],
 }
 
 impl AbstractionFingerprint {
@@ -433,7 +438,8 @@ impl AbstractionFingerprint {
             river_tier_shift: RIVER_TIER_SHIFT,
             action_legal_v: 1,
             centroid_feature_v,
-            _pad: [0; 3],
+            bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") { 2 } else { 1 },
+            _pad: [0; 2],
         }
     }
 
@@ -454,6 +460,13 @@ impl AbstractionFingerprint {
                  pot-fraction raises are clamped to the min-raise-to; retrain or \
                  use --fresh)",
                 self.action_legal_v, expected.action_legal_v,
+            );
+        }
+        if self.bucket_width != expected.bucket_width {
+            return format!(
+                "bucket_width mismatch: stored={} current={} (1=u8/k<=255, \
+                 2=u16/k<=65535; set PKR_BUCKET_U16 to match the tables)",
+                self.bucket_width, expected.bucket_width,
             );
         }
         if self.centroid_feature_v != expected.centroid_feature_v {
