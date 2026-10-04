@@ -38,6 +38,51 @@ fn rich_centroids_enabled() -> bool {
 
 /// Construct the configured evaluator backend for a given rank-table path.
 /// Returns a boxed trait object so callers do not need to be generic.
+/// True when bucket tables are written as u16 LE (`PKR_BUCKET_U16=1`).
+/// Must match the reader's `bucket_width`; the fingerprint k-fields guard
+/// a mismatch.
+fn bucket_u16() -> bool {
+    std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1")
+}
+
+/// Write a bucket table. Internally buckets are always u16; the on-disk
+/// width is chosen by [`bucket_u16`] so a k>255 table can be stored.
+/// Decode an on-disk bucket blob into u16 elements (gate-aware).
+fn read_bucket_bytes(disk: &[u8]) -> Vec<u16> {
+    if bucket_u16() {
+        disk.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect()
+    } else {
+        disk.iter().map(|&b| b as u16).collect()
+    }
+}
+
+/// Serialize u16 buckets to the on-disk width (gate-aware).
+fn buckets_to_bytes(v: &[u16]) -> Vec<u8> {
+    if bucket_u16() {
+        let mut b = Vec::with_capacity(v.len() * 2);
+        for &x in v { b.extend_from_slice(&x.to_le_bytes()); }
+        b
+    } else {
+        v.iter().map(|&x| x as u8).collect()
+    }
+}
+
+fn write_bucket_table(v: &[u16], path: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    if bucket_u16() {
+        let mut b = Vec::with_capacity(v.len() * 2);
+        for &x in v {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
+        f.write_all(&b)?;
+    } else {
+        let b: Vec<u8> = v.iter().map(|&x| x as u8).collect();
+        f.write_all(&b)?;
+    }
+    Ok(())
+}
+
 fn make_evaluator(rank_table_path: &str) -> Result<Box<dyn Evaluator>, Box<dyn std::error::Error>> {
     match evaluator_kind().as_str() {
         "fast7" => Ok(Box::new(Fast7Evaluator::new(rank_table_path)?)),
@@ -386,14 +431,14 @@ fn generate_abstraction_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_centroids(centroids_path)?;
     assert!(
-        store.centroids.len() <= 255,
+        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
         "centroid count must be <= 255 for u8 ids"
     );
     let centroids = &store.centroids;
     let evaluator = make_evaluator(rank_table_path)?;
     let total_combos = choose(52, 5) as usize;
     let entries = total_combos * 10;
-    let mut table: Vec<u8> = vec![0u8; entries];
+    let mut table: Vec<u16> = vec![0u16; entries];
 
     table
         .par_chunks_mut(10)
@@ -423,7 +468,7 @@ fn generate_abstraction_table(
                     }
                 }
                 let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator.as_ref());
-                let mut best_idx = 0;
+                let mut best_idx = 0u16;
                 let mut best_dist = f32::MAX;
                 for (idx, c) in centroids.iter().enumerate() {
                     let dx = ehs - c.0;
@@ -431,15 +476,15 @@ fn generate_abstraction_table(
                     let dist = dx * dx + dy * dy;
                     if dist < best_dist {
                         best_dist = dist;
-                        best_idx = idx;
+                        best_idx = idx as u16;
                     }
                 }
-                *slot = best_idx as u8;
+                *slot = best_idx;
             }
         });
 
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&table)
+    file.write_all(&buckets_to_bytes(&table))
         .map_err(|e| format!("write: {}", e))?;
     println!(
         "Generated abstraction table with {} entries -> {}",
@@ -456,7 +501,7 @@ fn generate_turn_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
     assert!(
-        store.centroids.len() <= 255,
+        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
         "turn table uses u8 bucket ids; keep centroid count <= 255"
     );
     let centroids = &store.centroids;
@@ -470,15 +515,16 @@ fn generate_turn_table(
     // ~20-minute job.
     let tmp_path = format!("{}.tmp", output);
     let prog_path = format!("{}.progress", output);
-    let mut table: Vec<u8> = vec![0u8; entries];
+    let mut table: Vec<u16> = vec![0u16; entries];
     let mut resume_from: usize = 0;
     if let Ok(prog_bytes) = std::fs::read(&prog_path) {
         if prog_bytes.len() == 8 {
             let p = u64::from_le_bytes(prog_bytes.try_into().unwrap()) as usize;
             if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
                 if let Ok(disk) = std::fs::read(&tmp_path) {
-                    let copy = disk.len().min(table.len());
-                    table[..copy].copy_from_slice(&disk[..copy]);
+                    let decoded = read_bucket_bytes(&disk);
+                    let copy = decoded.len().min(table.len());
+                    table[..copy].copy_from_slice(&decoded[..copy]);
                     resume_from = p;
                     eprintln!(
                         "  turn: resuming from combo {} / {} ({:.1}%)",
@@ -538,7 +584,7 @@ fn generate_turn_table(
                         }
                     }
                     let (ehs, ehs_sq) = calculate_ehs(&hole, &board, evaluator.as_ref());
-                    let mut best_idx = 0u8;
+                    let mut best_idx = 0u16;
                     let mut best_dist = f32::MAX;
                     for (ci, c) in centroids.iter().enumerate() {
                         let dx = ehs - c.0;
@@ -546,7 +592,7 @@ fn generate_turn_table(
                         let dist = dx * dx + dy * dy;
                         if dist < best_dist {
                             best_dist = dist;
-                            best_idx = ci as u8;
+                            best_idx = ci as u16;
                         }
                     }
                     *slot = best_idx;
@@ -556,7 +602,7 @@ fn generate_turn_table(
         done = end;
 
         let mut f = File::create(&tmp_path).map_err(|e| format!("create {}: {}", tmp_path, e))?;
-        f.write_all(&table)
+        f.write_all(&buckets_to_bytes(&table))
             .map_err(|e| format!("write {}: {}", tmp_path, e))?;
         f.sync_all().ok();
         let mut pf =
@@ -579,7 +625,7 @@ fn generate_turn_table(
     }
 
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&table)
+    file.write_all(&buckets_to_bytes(&table))
         .map_err(|e| format!("write {}: {}", output, e))?;
     file.sync_all().ok();
     let _ = std::fs::remove_file(&tmp_path);
@@ -600,7 +646,7 @@ fn generate_preflop_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
     assert!(
-        store.centroids.len() <= 255,
+        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
         "centroid count must be <= 255 for u8 ids"
     );
     let centroids = &store.centroids;
@@ -682,14 +728,14 @@ fn generate_flop_buckets(
         .collect();
 
     let centroids = kmeans_10d(&features, k, 50);
-    let mut buckets: Vec<u8> = vec![0; total_flops];
+    let mut buckets: Vec<u16> = vec![0; total_flops];
     buckets
         .par_iter_mut()
         .enumerate()
         .for_each(|(idx, bucket)| {
             let feat = &features[idx];
             let mut best_dist = f32::MAX;
-            let mut best_bucket = 0u8;
+            let mut best_bucket = 0u16;
             for (c_idx, c) in centroids.iter().enumerate() {
                 let mut dist = 0.0;
                 for i in 0..10 {
@@ -698,14 +744,12 @@ fn generate_flop_buckets(
                 }
                 if dist < best_dist {
                     best_dist = dist;
-                    best_bucket = c_idx as u8;
+                    best_bucket = c_idx as u16;
                 }
             }
             *bucket = best_bucket;
         });
-    let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&buckets)
-        .map_err(|e| format!("write: {}", e))?;
+    write_bucket_table(&buckets, output).map_err(|e| format!("write: {}", e))?;
     println!("Generated {} flop buckets -> {}", k, output);
     Ok(())
 }
@@ -715,7 +759,7 @@ fn generate_river_buckets(
     rank_table_path: &str,
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    assert!(k <= 255, "river bucket count must be <= 255 (u8 buckets)");
+    assert!(k <= if bucket_u16() { 65535 } else { 255 }, "river buckets exceed storage width");
     let evaluator = make_evaluator(rank_table_path)?;
     let total_boards = choose(52, 5) as usize;
     let features: Vec<[f32; 10]> = (0..total_boards)
@@ -765,14 +809,14 @@ fn generate_river_buckets(
         .collect();
 
     let centroids = kmeans_10d(&features, k, 50);
-    let mut buckets: Vec<u8> = vec![0; total_boards];
+    let mut buckets: Vec<u16> = vec![0; total_boards];
     buckets
         .par_iter_mut()
         .enumerate()
         .for_each(|(idx, bucket)| {
             let feat = &features[idx];
             let mut best_dist = f32::MAX;
-            let mut best_bucket = 0u8;
+            let mut best_bucket = 0u16;
             for (c_idx, c) in centroids.iter().enumerate() {
                 let mut dist = 0.0;
                 for i in 0..10 {
@@ -781,14 +825,12 @@ fn generate_river_buckets(
                 }
                 if dist < best_dist {
                     best_dist = dist;
-                    best_bucket = c_idx as u8;
+                    best_bucket = c_idx as u16;
                 }
             }
             *bucket = best_bucket;
         });
-    let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&buckets)
-        .map_err(|e| format!("write: {}", e))?;
+    write_bucket_table(&buckets, output).map_err(|e| format!("write: {}", e))?;
     println!(
         "Generated {} river board-buckets ({} boards) -> {}",
         k, total_boards, output
@@ -996,7 +1038,7 @@ fn generate_abstraction_table_potential(
 
     let store = load_centroids(centroids_path)?;
     assert!(
-        store.centroids.len() <= 255,
+        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
         "centroid count must be <= 255 for u8 ids"
     );
     let centroids = &store.centroids;
@@ -1068,7 +1110,7 @@ fn generate_turn_table_potential(
 
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
     assert!(
-        store.centroids.len() <= 255,
+        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
         "turn table uses u8 bucket ids; keep centroid count <= 255"
     );
     let centroids = &store.centroids;
@@ -1337,7 +1379,7 @@ fn generate_preflop_rich_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_centroids_6d(centroids_path).map_err(|e| format!("centroids_6d: {}", e))?;
     assert!(
-        store.centroids.len() <= 255,
+        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
         "rich preflop table uses u8 ids; keep centroid count <= 255"
     );
     let centroids = &store.centroids;
