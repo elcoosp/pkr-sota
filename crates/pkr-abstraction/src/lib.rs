@@ -360,6 +360,11 @@ pub struct KMeansAbstraction {
     default_centroids: Vec<(f32, f32)>,
     tables: HashMap<u8, OnceLock<Mmap>>,
     flop_buckets: OnceLock<Vec<u8>>,
+    /// Bucket-id width in bytes: 1 (u8, k<=255, legacy) or 2 (u16, k<=65535).
+    /// Set from `PKR_BUCKET_U16=1` at construction. The on-disk tables
+    /// carry no width marker, so this MUST match how they were written —
+    /// the fingerprint's k fields guard against a mismatch.
+    bucket_width: usize,
     evaluator: Arc<dyn Evaluator>,
 }
 
@@ -441,6 +446,7 @@ impl KMeansAbstraction {
             default_centroids,
             tables,
             flop_buckets: OnceLock::new(),
+            bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") { 2 } else { 1 },
             evaluator,
         }
     }
@@ -448,6 +454,23 @@ impl KMeansAbstraction {
     /// Number of centroids on the default (preflop) table. Used by the
     /// evaluator to build the right `AbstractionFingerprint` before
     /// loading a checkpoint, without re-reading the centroids file.
+    /// Read a bucket id for `street` at flat `idx`, honouring
+    /// `bucket_width`. `None` if the table is absent or `idx` is past the
+    /// end for that width.
+    #[inline]
+    fn read_bucket(&self, street: u8, idx: usize) -> Option<u64> {
+        let table = self.tables.get(&street).and_then(|l| l.get())?;
+        let w = self.bucket_width;
+        if idx.checked_mul(w)?.checked_add(w)? > table.len() {
+            return None;
+        }
+        Some(if w == 1 {
+            table[idx] as u64
+        } else {
+            u16::from_le_bytes([table[idx * 2], table[idx * 2 + 1]]) as u64
+        })
+    }
+
     pub fn k(&self) -> usize {
         self.default_centroids.len()
     }
@@ -644,13 +667,9 @@ impl AbstractionBuilder for KMeansAbstraction {
         let tier_size: u64 = 1u64 << tier_bits; // = 32768
         let low = hand_rank & (tier_size - 1);
         let hand_bucket = hand_rank >> tier_bits;
-        let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
-            Some(table) => {
-                let idx = Self::flat_index_river_board(board);
-                if idx < table.len() { table[idx] as u64 } else { 0 }
-            }
-            None => 0,
-        };
+        let board_bucket = self
+            .read_bucket(3, Self::flat_index_river_board(board))
+            .unwrap_or(0);
 
         let threshold = (tier_size as f64 * SOFT_BOUNDARY_FRAC) as u64;
         let (adj_bucket, weight_primary) = if hand_bucket > 0 && low < threshold {
@@ -725,37 +744,22 @@ impl AbstractionBuilder for KMeansAbstraction {
                 if preflop_exact_enabled() {
                     // §C: lossless 169-class preflop, no centroid table.
                     pkr_core::abstraction::preflop_class(&[hole[0], hole[1]]) as u64
-                } else if let Some(table) = self.tables.get(&0u8).and_then(|l| l.get()) {
-                    let idx = Self::flat_index_preflop(hole);
-                    if idx < table.len() {
-                        table[idx] as u64
-                    } else {
-                        ehs_fallback()
-                    }
+                } else if let Some(v) = self.read_bucket(0, Self::flat_index_preflop(hole)) {
+                    v
                 } else {
                     ehs_fallback()
                 }
             }
             3 => {
-                if let Some(table) = self.tables.get(&1u8).and_then(|l| l.get()) {
-                    let idx = Self::flat_index_flop(hole, board);
-                    if idx < table.len() {
-                        table[idx] as u64
-                    } else {
-                        ehs_fallback()
-                    }
+                if let Some(v) = self.read_bucket(1, Self::flat_index_flop(hole, board)) {
+                    v
                 } else {
                     ehs_fallback()
                 }
             }
             4 => {
-                if let Some(table) = self.tables.get(&2u8).and_then(|l| l.get()) {
-                    let idx = Self::flat_index_turn(hole, board);
-                    if idx < table.len() {
-                        table[idx] as u64
-                    } else {
-                        ehs_fallback()
-                    }
+                if let Some(v) = self.read_bucket(2, Self::flat_index_turn(hole, board)) {
+                    v
                 } else {
                     ehs_fallback()
                 }
@@ -772,16 +776,8 @@ impl AbstractionBuilder for KMeansAbstraction {
                 // lives in the constant's doc, not here.
                 let hand_rank = self.evaluator.evaluate_hand(hole, board) as u64;
                 let hand_bucket = hand_rank >> pkr_core::abstraction::RIVER_TIER_SHIFT;
-                let board_bucket = match self.tables.get(&3u8).and_then(|l| l.get()) {
-                    Some(table) => {
-                        let idx = Self::flat_index_river_board(board);
-                        if idx < table.len() {
-                            table[idx] as u64
-                        } else {
-                            FALLBACK_COUNTS[3].fetch_add(1, Ordering::Relaxed);
-                            0
-                        }
-                    }
+                let board_bucket = match self.read_bucket(3, Self::flat_index_river_board(board)) {
+                    Some(v) => v,
                     None => {
                         FALLBACK_COUNTS[3].fetch_add(1, Ordering::Relaxed);
                         0
