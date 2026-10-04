@@ -462,11 +462,16 @@ impl AbstractionFingerprint {
                 self.action_legal_v, expected.action_legal_v,
             );
         }
-        if self.bucket_width != expected.bucket_width {
+        // bucket_width was added over a previously-zero pad byte, so any
+        // checkpoint written before the field has stored==0. Normalise
+        // that to legacy u8 (1) and compare, so old checkpoints load while
+        // a genuine u8-vs-u16 disagreement still aborts.
+        let stored_w = if self.bucket_width == 0 { 1 } else { self.bucket_width };
+        if stored_w != expected.bucket_width {
             return format!(
                 "bucket_width mismatch: stored={} current={} (1=u8/k<=255, \
                  2=u16/k<=65535; set PKR_BUCKET_U16 to match the tables)",
-                self.bucket_width, expected.bucket_width,
+                stored_w, expected.bucket_width,
             );
         }
         if self.centroid_feature_v != expected.centroid_feature_v {
