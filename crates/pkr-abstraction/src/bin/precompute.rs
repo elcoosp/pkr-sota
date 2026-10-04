@@ -1385,7 +1385,7 @@ fn generate_preflop_rich_table(
     let centroids = &store.centroids;
     let evaluator = make_evaluator(rank_table_path)?;
     let total = choose(52, 2) as usize;
-    let mut table: Vec<u8> = vec![0u8; total];
+    let mut table: Vec<u16> = vec![0u16; total];
     let use_v39 = std::env::var("PKR_PREFLOP_V39").as_deref() == Ok("1");
     table.par_iter_mut().enumerate().for_each(|(idx, slot)| {
         let hole = combinadic_unrank_2(idx as u32);
@@ -1397,10 +1397,10 @@ fn generate_preflop_rich_table(
             let s = hand_structure_features(&hole);
             [ehs, ehs_sq, s[0], s[1], s[2], s[3]]
         };
-        *slot = nearest_centroid_6d(&feat, centroids) as u8;
+        *slot = nearest_centroid_6d(&feat, centroids) as u16;
     });
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&table).map_err(|e| format!("write: {}", e))?;
+    file.write_all(&buckets_to_bytes(&table)).map_err(|e| format!("write: {}", e))?;
     println!(
         "Generated rich preflop table with {} entries ({} centroids) -> {}",
         total,
