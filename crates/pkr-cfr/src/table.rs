@@ -1123,14 +1123,23 @@ impl CompactRegretTable {
         let fp_bytes = read(&mut p, 40)?;
         let stored_fp: &pkr_core::abstraction::AbstractionFingerprint =
             bytemuck::from_bytes(fp_bytes);
-        if stored_fp != current {
+        // bucket_width was added over a previously-zero pad byte. A
+        // pre-field checkpoint has stored.bucket_width == 0, which must
+        // read as legacy u8 (1) so the derived `!=` does not spuriously
+        // reject it (and describe_mismatch does not report "no
+        // differences"). Normalise a copy.
+        let mut stored_norm = *stored_fp;
+        if stored_norm.bucket_width == 0 {
+            stored_norm.bucket_width = 1;
+        }
+        if &stored_norm != current {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "checkpoint abstraction mismatch: {}. \
                      Delete the checkpoint and restart, or resume with the \
                      original binary.",
-                    stored_fp.describe_mismatch(current),
+                    stored_norm.describe_mismatch(current),
                 ),
             ));
         }
