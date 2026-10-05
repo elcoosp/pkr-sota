@@ -425,7 +425,9 @@ impl AbstractionFingerprint {
             sizing_large: BET_SIZINGS[2],
             threshold_small: BUCKET_THRESHOLD_SMALL,
             threshold_large: BUCKET_THRESHOLD_LARGE,
-            sig_version: if crate::state::sig_v4_size_aware() {
+            sig_version: if crate::state::sig_v5_size_aware() {
+                5
+            } else if crate::state::sig_v4_size_aware() {
                 4
             } else if crate::state::sig_v3_size_aware() {
                 3
