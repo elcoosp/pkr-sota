@@ -1130,7 +1130,11 @@ impl CompactRegretTable {
         // differences"). Normalise a copy.
         let mut stored_norm = *stored_fp;
         if stored_norm.bucket_width == 0 {
-            stored_norm.bucket_width = 1;
+            // Pre-field checkpoint: the byte was never written, so the
+            // width is unknown. Accept whatever the current binary uses
+            // (the caller set PKR_BUCKET_U16 to match its tables) rather
+            // than rejecting a checkpoint that may well be correct.
+            stored_norm.bucket_width = current.bucket_width;
         }
         if &stored_norm != current {
             return Err(std::io::Error::new(
