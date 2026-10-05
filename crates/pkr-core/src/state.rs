@@ -45,6 +45,16 @@ pub const SIG_V2_VERSION: u64 = 2;
 /// V4 = V3's fields + a 2-bit pot/SPR class (env `PKR_SIG_V4=1`).
 /// Adds "what are we playing for", the other standard dimension V1/V3
 /// cannot see. Default OFF so V3 checkpoints still load.
+/// V5 = V4 + previous-street aggressor class (env `PKR_SIG_V5=1`).
+/// "Was the prior street bet into, and by whom" is a coarse proxy for
+/// whether the opponent's range is polarized or capped — the next
+/// standard missing dimension after faced-bet-size and pot class.
+pub fn sig_v5_size_aware() -> bool {
+    use std::sync::OnceLock;
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| std::env::var("PKR_SIG_V5").as_deref() == Ok("1"))
+}
+
 pub fn sig_v4_size_aware() -> bool {
     use std::sync::OnceLock;
     static B: OnceLock<bool> = OnceLock::new();
@@ -61,6 +71,8 @@ pub fn sig_v3_size_aware() -> bool {
 pub const SIG_V3_VERSION: u64 = 3;
 /// V4 = V3 + coarse pot/SPR class.
 pub const SIG_V4_VERSION: u64 = 4;
+/// V5 = V4 + previous-street aggressor (range-polarity signal).
+pub const SIG_V5_VERSION: u64 = 5;
 
 /// When `SIG_V2_STREET_MONEY` is on, controls whether the
 /// `last_bet_fraction_bucket` bits (24..28) participate in the hash.
@@ -860,6 +872,32 @@ impl GameState {
             | (SIG_V4_VERSION << 60)
     }
 
+    /// V5 signature: V4's fields plus a 2-bit previous-street-aggressor
+    /// class (0/1 = seat, 2 = none/prior street not bet).
+    pub fn history_signature_v5(&self) -> u64 {
+        let n_actions = (self.actions_this_street as u64).min(7);
+        let raises = (self.total_raises as u64).min(7);
+        let last_was_bet = if self.history_len > 0 {
+            matches!(
+                self.history[self.history_len as usize - 1].kind,
+                ActionKind::Bet(_)
+            ) as u64
+        } else {
+            0
+        };
+        let faced = (self.last_bet_fraction_bucket() as u64) & 0x7;
+        let pot_bb = (self.street_start_pot / self.bb.max(1e-6)).max(1.0);
+        let pot_class = ((pot_bb.log2().floor() as u64) / 2).min(3);
+        let prev_aggr = (self.prev_street_aggressor as u64) & 0x3;
+        (n_actions & 0x7)
+            | ((raises & 0x7) << 3)
+            | ((last_was_bet & 0x1) << 6)
+            | ((faced & 0x7) << 7)
+            | ((pot_class & 0x3) << 10)
+            | ((prev_aggr & 0x3) << 12)
+            | (SIG_V5_VERSION << 60)
+    }
+
     pub fn history_signature_v2(&self) -> u64 {
         let v1 = self.history_signature() as u64;
         let lbf = if SIG_V2_INCLUDE_LBF {
@@ -882,7 +920,10 @@ impl GameState {
     #[inline]
     pub fn infoset_signature_into(&self, out: &mut [u8; 8]) -> usize {
         // F3 dispatch: v3 takes precedence when enabled.
-        if sig_v4_size_aware() {
+        if sig_v5_size_aware() {
+            out.copy_from_slice(&self.history_signature_v5().to_le_bytes());
+            8
+        } else if sig_v4_size_aware() {
             out.copy_from_slice(&self.history_signature_v4().to_le_bytes());
             8
         } else if sig_v3_size_aware() {
