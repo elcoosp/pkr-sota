@@ -880,19 +880,20 @@ impl<'a> Solver<'a> {
             0 | 1 => self.term_value(node_id, deal_idx),
             3 => {
                 // Chance node: full expectation OR sample one river.
-                let children = match &self.tree.nodes[node_id as usize] {
-                    PublicNode::Chance { children } => children.clone(),
-                    _ => unreachable!(),
-                };
+                // Borrow the child list (no clone): `walk` is &self, so
+                // an immutable borrow can outlive the recursion.
                 let h0 = self.deals[deal_idx as usize].h0;
                 let h1 = self.deals[deal_idx as usize].h1;
-                let valid: Vec<u32> = children
-                    .iter()
-                    .filter(|(c, _)| {
-                        *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1]
-                    })
-                    .map(|(_, id)| *id)
-                    .collect();
+                let valid: Vec<u32> = match &self.tree.nodes[node_id as usize] {
+                    PublicNode::Chance { children } => children
+                        .iter()
+                        .filter(|(c, _)| {
+                            *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1]
+                        })
+                        .map(|(_, id)| *id)
+                        .collect(),
+                    _ => unreachable!(),
+                };
                 if valid.is_empty() {
                     return 0.0;
                 }
