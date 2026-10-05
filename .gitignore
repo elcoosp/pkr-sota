@@ -12,6 +12,7 @@
 
 # Release build artifacts
 target
+*.proptest-regressions
 target/
 wr.sh
 dump.txt
