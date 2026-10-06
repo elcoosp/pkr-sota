@@ -2180,10 +2180,10 @@ mod f3_size_aware_tests {
         let mut a = GameState::new(200.0, 1.0, 2.0);
         a.street_start_pot = 4.0;   // pot_bb = 2.0  -> class 1
         let mut b = GameState::new(200.0, 1.0, 2.0);
-        b.street_start_pot = 256.0; // pot_bb = 128 -> class 7
+        b.street_start_pot = 256.0; // pot_bb = 128 -> class 3
         assert_ne!(
-            a.history_signature_v3(),
-            b.history_signature_v3(),
+            a.history_signature_v4(),
+            b.history_signature_v4(),
             "different pot classes must hash differently",
         );
     }
@@ -2204,16 +2204,16 @@ mod f3_size_aware_tests {
     #[test]
     fn v3_half_octave_splits_adjacent_pots() {
         let mut a = GameState::new(200.0, 1.0, 2.0);
-        a.street_start_pot = 8.0; // pot_bb = 4.0 -> 4
+        a.street_start_pot = 8.0;  // pot_bb = 4.0  -> floor(log2)/2 = 1
         let mut b = GameState::new(200.0, 1.0, 2.0);
-        b.street_start_pot = 12.0; // pot_bb = 6.0 -> log2*2 ≈ 5.17 -> 5
+        b.street_start_pot = 32.0; // pot_bb = 16.0 -> floor(log2)/2 = 2
         assert_ne!(
-            a.history_signature_v3(),
-            b.history_signature_v3(),
-            "half-octave classes must differ: 4 vs 5",
+            a.history_signature_v4(),
+            b.history_signature_v4(),
+            "pot classes must differ: 1 vs 2",
         );
-        assert_eq!((a.history_signature_v3() >> 26) & 0x1F, 4);
-        assert_eq!((b.history_signature_v3() >> 26) & 0x1F, 5);
+        assert_eq!((a.history_signature_v4() >> 10) & 0x3, 1);
+        assert_eq!((b.history_signature_v4() >> 10) & 0x3, 2);
     }
 
     /// `advance_street_in_place` records the current pot as the new
@@ -2305,13 +2305,12 @@ mod f3_size_aware_tests {
         // actions, same raise count — isolate the aggressor bit.
         assert_eq!(a.street_start_pot, b.street_start_pot);
         assert_eq!(a.total_raises, b.total_raises);
-        let sa = a.history_signature_v3();
-        let sb = b.history_signature_v3();
-        assert_ne!(sa, sb, "aggressor bit must flip the signature");
-        // And the difference is EXACTLY bit 34.
-        assert_eq!(sa ^ sb, 1u64 << 34);
-        assert_eq!((sa >> 34) & 1, 0);
-        assert_eq!((sb >> 34) & 1, 1);
+        let sa = a.history_signature_v5();
+        let sb = b.history_signature_v5();
+        assert_ne!(sa, sb, "aggressor bits must flip the signature");
+        // prev_street_aggressor lives at bits 12..14.
+        assert_eq!((sa >> 12) & 0x3, 0);
+        assert_eq!((sb >> 12) & 0x3, 1);
     }
 
     /// S6: undo of a street advance restores both aggressor fields
