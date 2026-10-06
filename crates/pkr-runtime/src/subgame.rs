@@ -258,3 +258,34 @@ impl SubgameHandle {
         self.cfg.table.as_ref()
     }
 }
+
+/// Object-safe handle for a subgame solver: given a state, our hole, and
+/// an opponent range, return the strategy at the root (6 buckets). Both
+/// the sampled solver (`SubgameHandle`) and the vector solver
+/// (`VSearchHandle`, in `vsearch.rs`) implement this, so LBR and the
+/// tournament can pick either at runtime without a hard dependency on
+/// one implementation.
+///
+/// The trait method has the same name as the inherent
+/// `SubgameHandle::decide`; Rust resolves the inherent method when the
+/// concrete type is known, and the trait method through `&dyn
+/// SearchHandle`. Do not rename one without the other.
+pub trait SearchHandle: Send + Sync {
+    fn decide(
+        &self,
+        state: &GameState,
+        our_hole: &[u8; 2],
+        opp_range: &[f64; N_HANDS],
+    ) -> Option<[f64; SUBGAME_BUCKETS]>;
+}
+
+impl SearchHandle for SubgameHandle {
+    fn decide(
+        &self,
+        state: &GameState,
+        our_hole: &[u8; 2],
+        opp_range: &[f64; N_HANDS],
+    ) -> Option<[f64; SUBGAME_BUCKETS]> {
+        SubgameHandle::decide(self, state, our_hole, opp_range)
+    }
+}
