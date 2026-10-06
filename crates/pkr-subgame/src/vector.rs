@@ -376,29 +376,46 @@ impl<'a> Solver<'a> {
         }
     }
 
-    /// P1's best-response value in chips against the tree's *current*
-    /// strategy, weighted by P1's range and its compatibility with P0's.
-    /// This is the security number: how much a best-responding opponent
-    /// wins. Mirrors the `p == 1` term of `exploitability()`.
-    pub fn p1_br_value(&self) -> f32 {
-        let cf = self.br(&self.root, 1, &self.spec.ranges[0]);
+    /// Best-response value in chips for the **opponent of the root
+    /// actor**, against the tree's *current* strategy (root average
+    /// strategy + all downstream search continuations). This is the
+    /// security number the bound uses: how much a best-responding
+    /// opponent wins given the strategy we would ship.
+    ///
+    /// Correct for EITHER root actor. (`p1_br_value` — the earlier name —
+    /// was only right when the root actor was OOP; `spec_from_state` sets
+    /// `root_actor` from the live actor, so IP-rooted solves need the
+    /// `p == 0` term instead.)
+    ///
+    /// Mirrors the appropriate term of `exploitability()`:
+    /// `br(root, opp, ranges[1-opp])`, weighted by `ranges[opp]` with its
+    /// compatibility against `ranges[1-opp]`.
+    pub fn opp_br_value(&self) -> f32 {
+        let root_actor = match &self.root {
+            Node::Act(an) => an.player,
+            _ => return 0.0,
+        };
+        let opp = 1 - root_actor;
+        let opp_range = &self.spec.ranges[1 - opp];
+        let cf = self.br(&self.root, opp, opp_range);
         let mut z = 0.0f64;
         let mut v = 0.0f64;
         let mut tot_o = 0.0f32;
         let mut card = [0.0f32; 52];
-        compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
+        compat_sums(&self.holes, opp_range, &mut tot_o, &mut card);
+        let my_range = &self.spec.ranges[opp];
         for h in 0..N {
             if !self.valid_root[h] {
                 continue;
             }
-            let w = self.spec.ranges[1][h] as f64;
+            let w = my_range[h] as f64;
             if w == 0.0 {
                 continue;
             }
             let comp = tot_o
                 - card[self.holes[h][0] as usize]
                 - card[self.holes[h][1] as usize]
-                + self.spec.ranges[0][h];
+                + opp_range[h];
             z += w * comp as f64;
             v += w * cf[h] as f64;
         }
@@ -407,6 +424,11 @@ impl<'a> Solver<'a> {
         } else {
             0.0
         }
+    }
+
+    /// Backwards-compatible alias (P1-only). Prefer `opp_br_value`.
+    pub fn p1_br_value(&self) -> f32 {
+        self.opp_br_value()
     }
 
     /// The blueprint's strategy at the root, per action per hand, mapped
@@ -588,7 +610,7 @@ mod tests {
             }
         }
 
-        assert!(s.p1_br_value().is_finite());
+        assert!(s.opp_br_value().is_finite());
 
         let blended = Solver::blend_root(&full, &full, 0.3);
         for a in 0..n_actions {

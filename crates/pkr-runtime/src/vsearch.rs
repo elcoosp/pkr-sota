@@ -119,9 +119,9 @@ pub fn solve_root_bounded(
         return Some(solver.root_strategy(our_hand));
     };
 
-    let br_search = solver.p1_br_value();
+    let br_search = solver.opp_br_value();
     solver.set_root_strategy(&bp_root);
-    let br_bp = solver.p1_br_value();
+    let br_bp = solver.opp_br_value();
 
     let final_root = if br_search <= br_bp {
         search_root.clone()
@@ -133,7 +133,7 @@ pub fn solve_root_bounded(
             let mid = 0.5 * (lo + hi);
             let mixed = Solver::blend_root(&search_root, &bp_root, mid);
             solver.set_root_strategy(&mixed);
-            let br = solver.p1_br_value();
+            let br = solver.opp_br_value();
             if br <= br_bp {
                 best = mixed;
                 lo = mid;
