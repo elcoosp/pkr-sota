@@ -49,7 +49,9 @@ static FALLBACK_COUNTS: [AtomicU64; 4] = [
 fn preflop_exact_enabled() -> bool {
     use std::sync::OnceLock;
     static E: OnceLock<bool> = OnceLock::new();
-    *E.get_or_init(|| std::env::var("PKR_PREFLOP_EXACT").as_deref() == Ok("1"))
+    // Task 2.1: default ON (lossless 169 classes). Set PKR_PREFLOP_EXACT=0
+    // to load/compare a pre-2.1 checkpoint (feature_v 0/1).
+    *E.get_or_init(|| std::env::var("PKR_PREFLOP_EXACT").as_deref() != Ok("0"))
 }
 
 fn soft_kmeans_enabled() -> bool {
@@ -877,13 +879,16 @@ mod tests {
         // history. Regenerated for T2.2 (river >> 3, no flop_bucket in hash), 2026-09-23.
         let builder =
             KMeansAbstraction::new(vec![(0.3, 0.09), (0.7, 0.49)], Arc::new(MockEvaluator));
+        // Regenerated 2026-10-06: preflop-exact (169 classes) is now the
+        // default (Task 2.1), so the preflop hash no longer routes through
+        // the centroid table. This invalidates pre-2.1 blueprints by design.
         assert_eq!(
             builder.get_infoset_hash(&[0, 1], &[], &[], 0),
-            0x69d307cc20f6ef8d
+            0xd716ec5692d02be0
         );
         assert_eq!(
             builder.get_infoset_hash(&[0, 1], &[], &[0], 0),
-            0xafe0abd88048ea4e
+            0x5b1a1e750800bae3
         );
         assert_ne!(
             builder.get_infoset_hash(&[0, 1], &[], &[], 0),
