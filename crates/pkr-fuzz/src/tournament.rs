@@ -85,6 +85,8 @@ fn play_one(
     runout: &[u8; 5],
     hero_seat: u8,
     base_seed: u64,
+    search_hero: Option<&pkr_runtime::subgame::SubgameHandle>,
+    search_villain: Option<&pkr_runtime::subgame::SubgameHandle>,
 ) -> f32 {
     assert!(hero_seat < 2, "hero_seat must be 0 or 1");
     let vill_seat = 1 - hero_seat;
@@ -105,11 +107,13 @@ fn play_one(
         provider: if hero_seat == 0 { hero } else { villain },
         abstraction,
         evaluator,
+        search: if hero_seat == 0 { search_hero } else { search_villain },
     };
     let ctx_seat1 = EvalContext {
         provider: if hero_seat == 0 { villain } else { hero },
         abstraction,
         evaluator,
+        search: if hero_seat == 0 { search_villain } else { search_hero },
     };
 
     let mut deck_idx = 0usize;
@@ -182,6 +186,50 @@ fn decide_via(
             Action { player: state.actor, kind: ActionKind::Fold },
             false,
         );
+    }
+
+    // Search first, if configured: ask the subgame handle for a strategy
+    // on the current street. Uniform opponent range (no tracker here), so
+    // this UNDERSTATES search's benefit vs the tracker-based LBR test.
+    if let Some(sh) = ctx.search {
+        // Uniform opponent range, MASKED by the board: a board card
+        // cannot be in a live hand, and passing it produces impossible
+        // deals (hole/board overlap) the solver must reject.
+        const N_HANDS: usize = 1326;
+        let mut uniform = [0.0f64; N_HANDS];
+        let board_cards = &state.board[..state.board_len as usize];
+        let mut n_legal = 0usize;
+        for idx in 0..N_HANDS {
+            let h = pkr_subgame::range_tracker::hole_at(idx);
+            if h.iter().any(|c| board_cards.contains(c)) { continue; }
+            uniform[idx] = 1.0; n_legal += 1;
+        }
+        if n_legal > 0 {
+            let u = 1.0 / n_legal as f64;
+            for x in uniform.iter_mut() { if *x > 0.0 { *x = u; } }
+        }
+        let hole = &state.hole[state.actor];
+        if let Some(strat) = sh.decide(state, hole, &uniform) {
+            // strat is bucket-indexed (6); sample a legal bucket.
+            let mut b2f: [Option<usize>; 6] = [None; 6];
+            for (i, a) in buf.iter().take(n).enumerate() {
+                let b = pkr_core::abstraction::action_bucket(
+                    &a.kind, state.stacks[state.actor], state.street_bets[state.actor],
+                    state.street_bets[1 - state.actor], state.pot) as usize;
+                if b < 6 && b2f[b].is_none() { b2f[b] = Some(i); }
+            }
+            let total: f64 = (0..6).filter(|&b| b2f[b].is_some()).map(|b| strat[b]).sum();
+            if total > 1e-9 {
+                let r = rng.random_range(0.0..total);
+                let mut acc = 0.0; let mut pick = b2f.iter().position(|x| x.is_some()).unwrap_or(0);
+                for b in 0..6 {
+                    if b2f[b].is_none() { continue; }
+                    acc += strat[b];
+                    if r <= acc { pick = b; break; }
+                }
+                if let Some(i) = b2f[pick] { return (buf[i], true); }
+            }
+        }
     }
 
     // Compute the infoset hash and look up the provider.
@@ -365,6 +413,8 @@ pub fn tournament(
     evaluator: &dyn Evaluator,
     hands: u32,
     base_seed: u64,
+    search_a: Option<&pkr_runtime::subgame::SubgameHandle>,
+    search_b: Option<&pkr_runtime::subgame::SubgameHandle>,
 ) -> TournamentResult {
     let mut diffs: Vec<f64> = Vec::with_capacity(hands as usize);
     let mut sum_a_seat0 = 0.0f64;
@@ -375,10 +425,10 @@ pub fn tournament(
         let (h0, h1, runout) = deal_hand(seed);
 
         // Pass 1: A in seat 0, B in seat 1. Measured as seat-0 profit.
-        let a_at_seat0 = play_one(a, b, abstraction, evaluator, h0, h1, &runout, 0, seed);
+        let a_at_seat0 = play_one(a, b, abstraction, evaluator, h0, h1, &runout, 0, seed, search_a, search_b);
 
         // Pass 2: B in seat 0, A in seat 1. Measured as seat-0 profit.
-        let b_at_seat0 = play_one(b, a, abstraction, evaluator, h0, h1, &runout, 0, seed);
+        let b_at_seat0 = play_one(b, a, abstraction, evaluator, h0, h1, &runout, 0, seed, search_b, search_a);
 
         // Same-seat paired diff: how much more does A win from the
         // SB than B does from the SB, on the same deal?
@@ -505,7 +555,7 @@ mod tests {
     #[ignore]
     fn self_tournament_is_zero() {
         let (abs, ev) = workspace_smoke();
-        let r = tournament(&Uniform, &Uniform, &abs, &ev, 50, 42);
+        let r = tournament(&Uniform, &Uniform, &abs, &ev, 50, 42, None, None);
         assert!(
             r.mean_diff.abs() < 1e-9,
             "A vs A must be exactly zero, got {}",
@@ -519,7 +569,7 @@ mod tests {
         let (abs, ev) = workspace_smoke();
         // No assertion on sign — this is a smoke check that the harness
         // produces a finite, non-degenerate number.
-        let r = tournament(&Uniform, &Passive, &abs, &ev, 50, 42);
+        let r = tournament(&Uniform, &Passive, &abs, &ev, 50, 42, None, None);
         assert!(r.mean_diff.is_finite());
         assert!(r.se_diff.is_finite());
     }
