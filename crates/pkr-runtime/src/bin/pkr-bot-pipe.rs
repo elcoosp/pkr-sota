@@ -37,8 +37,34 @@ fn main() {
     // tables dir + sig read but the solver path is wired in the host app;
     // this bin establishes the protocol and the shared decision entry.
     let _tables = &args[2];
-    let _sig: u8 = args.iter().position(|a| a == "--sig")
-        .and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let sig: u8 = args.iter().position(|a| a == "--sig")
+        .and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(3);
+    // Apply BEFORE any signature / fingerprint call (OnceLocks).
+    // Before this fix the flag was parsed into `_sig` and discarded: a
+    // user passing --sig 4 silently hashed with the default (V3) and
+    // saw all-zero blueprint hits. The flag is now load-bearing.
+    match sig {
+        5 => {
+            std::env::set_var("PKR_SIG_V5", "1");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V3", "1");
+        }
+        4 => {
+            std::env::set_var("PKR_SIG_V4", "1");
+            std::env::set_var("PKR_SIG_V5", "0");
+            std::env::set_var("PKR_SIG_V3", "1");
+        }
+        3 | 1 => {
+            std::env::set_var("PKR_SIG_V3", "1");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V5", "0");
+        }
+        _ => {
+            std::env::set_var("PKR_SIG_V3", "0");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V5", "0");
+        }
+    }
 
     let reader = match MmapReader::new(bp) {
         Ok(r) => r,
