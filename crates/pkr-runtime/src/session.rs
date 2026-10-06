@@ -54,6 +54,13 @@ fn translate_observed() -> bool {
 }
 
 /// Phase 1.1: enable the shadow-state path (env `PKR_SHADOW=1`).
+/// Phase 4: enable vector-form search (env `PKR_VSEARCH=1`).
+fn vsearch_enabled() -> bool {
+    use std::sync::OnceLock;
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| std::env::var("PKR_VSEARCH").as_deref() == Ok("1"))
+}
+
 fn shadow_enabled() -> bool {
     use std::sync::OnceLock;
     static B: OnceLock<bool> = OnceLock::new();
@@ -170,8 +177,60 @@ impl<'a> RuntimeSession<'a> {
             return None;
         }
         let opp = 1 - self.our_seat;
+
+        // Phase 4: vector-form search when PKR_VSEARCH=1 and the street
+        // is enabled. Falls through to the sampled/blueprint path on
+        // any failure. Ranges are ordered [OOP, IP] for the solver.
+        if vsearch_enabled() && st.street != pkr_core::state::Street::Preflop {
+            if let Some(dist) = self.advise_vsearch(st, our_hole) {
+                return Some(dist);
+            }
+        }
+
         let opp_range: &[f64; N_HANDS] = tracker.range(opp);
         self.handle.decide(st, our_hole, opp_range)
+    }
+
+    /// Vector-search decision: build [OOP,IP] f32 ranges from the tracker,
+    /// solve the current street, return the root distribution mapped to
+    /// the 6 action buckets.
+    fn advise_vsearch(
+        &self,
+        st: &GameState,
+        our_hole: &[u8; 2],
+    ) -> Option<[f64; crate::subgame::SUBGAME_BUCKETS]> {
+        let tracker = self.tracker.as_ref()?;
+        let oop = 1 - st.dealer;
+        let r_oop: Vec<f32> = tracker.range(oop as u8).iter().map(|&x| x as f32).collect();
+        let r_ip: Vec<f32> = tracker.range((1 - oop) as u8).iter().map(|&x| x as f32).collect();
+        let cfg = crate::vsearch::VSearchCfg::default();
+        let acts = crate::vsearch::solve_root(st, [r_oop, r_ip], *our_hole, &cfg)?;
+
+        // Map each (Act, prob) to an action bucket; a concrete action's
+        // bucket comes from action_bucket on a representative kind.
+        let mut out = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
+        let mut total = 0.0;
+        for (act, p) in &acts {
+            use pkr_subgame::vector::Act;
+            let kind = match act {
+                Act::Fold => pkr_core::state::ActionKind::Fold,
+                Act::Check => pkr_core::state::ActionKind::Check,
+                Act::Call => pkr_core::state::ActionKind::Call,
+                Act::Bet(t) => pkr_core::state::ActionKind::Bet(*t),
+            };
+            let b = pkr_core::abstraction::action_bucket(
+                &kind, st.stacks[st.actor], st.street_bets[st.actor],
+                st.street_bets[1 - st.actor], st.pot) as usize;
+            if b < crate::subgame::SUBGAME_BUCKETS {
+                out[b] += *p as f64;
+                total += *p as f64;
+            }
+        }
+        if total > 1e-9 {
+            for x in out.iter_mut() { *x /= total; }
+            return Some(out);
+        }
+        None
     }
 
     /// Current opponent posterior, for diagnostics / tests.
