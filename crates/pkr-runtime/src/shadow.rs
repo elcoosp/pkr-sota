@@ -61,15 +61,53 @@ impl Shadow {
 
     /// We acted with abstract bucket `b`. Apply the matching in-tree
     /// action to the shadow; return it.
+    ///
+    /// The bucket we chose may not be legal in the shadow even though it
+    /// was legal in the real state: shadow chips diverge from real chips
+    /// whenever the opponent bet off-tree (translated to a smaller in-tree
+    /// size). E.g. the real state offers a bucket-5 (jam) action because
+    /// the pot is huge; the shadow snapped the opponent's bet smaller, so
+    /// the pot is smaller and a bucket-5 bet is off the shadow's tree.
+    ///
+    /// Prior behaviour fell back to `buf[0]` (Fold when facing, Check when
+    /// not) — a silent desync of the shadow state used for every later
+    /// hash. Now the fallback is the closest legal bucket in the bucket
+    /// index space, with a deterministic tie-break toward the more
+    /// aggressive bucket (higher index), so a forced replace prefers
+    /// action to inaction rather than the reverse.
     pub fn observe_own_bucket(&mut self, bucket: u8) -> Action {
         let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
         let n = self.st.legal_actions_into(&mut buf);
         let sh = &self.st;
-        let act = buf[..n].iter()
-            .find(|a| pkr_core::abstraction::action_bucket(
-                &a.kind, sh.stacks[sh.actor], sh.street_bets[sh.actor],
-                sh.street_bets[1 - sh.actor], sh.pot) == bucket)
-            .copied()
+        let mut exact: Option<Action> = None;
+        let mut closest: Option<(i32, u8, Action)> = None; // (dist, bucket, act)
+        for a in &buf[..n] {
+            let b = pkr_core::abstraction::action_bucket(
+                &a.kind,
+                sh.stacks[sh.actor],
+                sh.street_bets[sh.actor],
+                sh.street_bets[1 - sh.actor],
+                sh.pot,
+            );
+            if b == bucket {
+                exact = Some(*a);
+                break;
+            }
+            // Deterministic distance: |b - bucket|, but prefer the
+            // higher bucket on ties (aggressive over passive).
+            let dist = (b as i32 - bucket as i32).unsigned_abs() as i32;
+            let candidate = (dist, b, *a);
+            match closest {
+                None => closest = Some(candidate),
+                Some((d, cb, _)) => {
+                    if dist < d || (dist == d && b > cb) {
+                        closest = Some(candidate);
+                    }
+                }
+            }
+        }
+        let act = exact
+            .or_else(|| closest.map(|(_, _, a)| a))
             .unwrap_or(buf[0]);
         self.st.apply_action_in_place(&act);
         act
@@ -105,6 +143,38 @@ mod tests {
         }
         assert_eq!(sh.st.street, real.street);
         assert_eq!(sh.st.actor, real.actor);
+    }
+
+    #[test]
+    fn observe_own_bucket_picks_closest_when_exact_missing() {
+        // Build a shadow on a river spot where only Check is legal
+        // (no facing bet) and confirm observe_own_bucket(5) — a jam,
+        // which is impossible here — does NOT silently apply a Fold.
+        // It must apply a *legal* action (in this case, Check, the only
+        // legal one), and the shadow state must remain non-terminal.
+        use pkr_core::state::Street;
+        let mut st = GameState::new(200.0, 1.0, 2.0);
+        st.set_hole_cards([0, 5], [10, 15]);
+        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.advance_street_in_place(&[20, 25, 30]);
+        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.advance_street_in_place(&[35]);
+        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.advance_street_in_place(&[44]);
+        assert_eq!(st.street, Street::River);
+        // Now P0 to act, no facing bet -> only Check + bets are legal.
+        let mut sh = Shadow::new(st.clone());
+        let act = sh.observe_own_bucket(5);
+        // Must not be a Fold.
+        assert!(
+            !matches!(act.kind, ActionKind::Fold),
+            "bucket-5 fallback must not fold; got {:?}", act.kind
+        );
+        // Shadow must not be terminal.
+        assert!(!sh.st.is_terminal(), "shadow must not fold itself out");
     }
 
     #[test]
