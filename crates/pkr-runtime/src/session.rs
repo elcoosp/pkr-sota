@@ -24,6 +24,7 @@ use pkr_cfr::table::CompactRegretTable;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, GameState};
 use pkr_subgame::range_tracker::{N_HANDS, RangeTracker};
+use crate::shadow::Shadow;
 use crate::subgame::SubgameHandle;
 
 /// Stateful session that tracks a posterior across a single deal.
@@ -33,6 +34,9 @@ use crate::subgame::SubgameHandle;
 pub struct RuntimeSession<'a> {
     handle: SubgameHandle,
     tracker: Option<RangeTracker<'a>>,
+    /// Phase 1.1: abstract game advanced by translated actions. Present
+    /// only when PKR_SHADOW=1. Blueprint hashing + the tracker use it.
+    shadow: Option<Shadow>,
     our_seat: u8,
     /// Borrowed once at construction, used to reset the tracker on
     /// every new deal.
@@ -49,7 +53,20 @@ fn translate_observed() -> bool {
     *B.get_or_init(|| std::env::var("PKR_TRANSLATE").as_deref() == Ok("1"))
 }
 
+/// Phase 1.1: enable the shadow-state path (env `PKR_SHADOW=1`).
+fn shadow_enabled() -> bool {
+    use std::sync::OnceLock;
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| std::env::var("PKR_SHADOW").as_deref() == Ok("1"))
+}
+
 impl<'a> RuntimeSession<'a> {
+    /// The shadow state if enabled, else None. Callers hash the
+    /// blueprint from this when present.
+    pub fn shadow_state(&self) -> Option<&GameState> {
+        self.shadow.as_ref().map(|s| &s.st)
+    }
+
     /// Create a session for `our_seat` (0 or 1).
     pub fn new(
         handle: SubgameHandle,
@@ -62,6 +79,7 @@ impl<'a> RuntimeSession<'a> {
         RuntimeSession {
             handle,
             tracker: None,
+            shadow: None,
             our_seat,
             abs,
             tbl,
@@ -71,6 +89,9 @@ impl<'a> RuntimeSession<'a> {
 
     /// Start a new deal. Resets the tracker to uniform-over-board.
     pub fn deal_start(&mut self, root: GameState) {
+        if shadow_enabled() {
+            self.shadow = Some(Shadow::new(root.clone()));
+        }
         self.tracker = Some(RangeTracker::new(root, self.abs, self.tbl, self.ev));
     }
 
@@ -79,6 +100,24 @@ impl<'a> RuntimeSession<'a> {
     /// No-op if no deal is active. Tracker sync failure is logged but
     /// does not abort the caller (state is the caller's ground truth).
     pub fn observe_action(&mut self, action: Action) {
+        // Phase 1.1: with a shadow, translate the observed action to the
+        // in-tree equivalent and feed THAT to the tracker, so the
+        // posterior tracks the strategy the blueprint actually has.
+        // Clone the real pre-action state first, then borrow the shadow
+        // (borrowck: cannot hold &tracker and &mut shadow at once).
+        if self.shadow.is_some() {
+            let real_before = self.tracker.as_ref().map(|t| t.state().clone());
+            if let Some(rb) = real_before {
+                let applied = {
+                    let sh = self.shadow.as_mut().unwrap();
+                    sh.observe_opp(&rb, &action, &mut rand::rng())
+                };
+                if let Some(t) = self.tracker.as_mut() {
+                    let _ = t.apply_action(applied);
+                }
+                return;
+            }
+        }
         if let Some(t) = self.tracker.as_mut() {
             // §B: when translation is enabled, the posterior update uses
             // the TRANSLATED in-tree bucket for off-tree bet sizes, so
@@ -101,6 +140,9 @@ impl<'a> RuntimeSession<'a> {
 
     /// Observe a street advance.
     pub fn observe_street(&mut self, cards: &[u8]) {
+        if let Some(sh) = self.shadow.as_mut() {
+            sh.advance_street(cards);
+        }
         if let Some(t) = self.tracker.as_mut() {
             let _ = t.advance_street(cards);
         }
@@ -121,12 +163,15 @@ impl<'a> RuntimeSession<'a> {
         our_hole: &[u8; 2],
     ) -> Option<[f64; crate::subgame::SUBGAME_BUCKETS]> {
         let tracker = self.tracker.as_ref()?;
-        if state.actor as u8 != self.our_seat {
+        // Phase 1.1: with a shadow, solve against the abstract game the
+        // blueprint trained on (translated actions), not the real one.
+        let st: &GameState = self.shadow_state().unwrap_or(state);
+        if st.actor as u8 != self.our_seat {
             return None;
         }
         let opp = 1 - self.our_seat;
         let opp_range: &[f64; N_HANDS] = tracker.range(opp);
-        self.handle.decide(state, our_hole, opp_range)
+        self.handle.decide(st, our_hole, opp_range)
     }
 
     /// Current opponent posterior, for diagnostics / tests.
