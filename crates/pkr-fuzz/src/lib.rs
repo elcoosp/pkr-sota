@@ -391,6 +391,11 @@ pub struct EvalContext<'a> {
     pub provider: &'a dyn pkr_contracts::BlueprintProvider,
     pub abstraction: &'a dyn pkr_contracts::AbstractionBuilder,
     pub evaluator: &'a dyn pkr_contracts::Evaluator,
+    /// Optional subgame search. When set, the actor asks it first (with a
+    /// uniform opponent range — no tracker here) and falls back to the
+    /// blueprint if it declines. Used by `pkr-tournament` to compare a
+    /// searched policy against a raw blueprint.
+    pub search: Option<&'a pkr_runtime::subgame::SubgameHandle>,
 }
 
 const K_BUCKETS: usize = 6;
@@ -1078,6 +1083,7 @@ fn play_one_hand(
     let mut deck_idx = 0usize;
     let mut decision_idx: u64 = 0;
     let ctx = EvalContext {
+        search: None,
         provider,
         abstraction,
         evaluator,
