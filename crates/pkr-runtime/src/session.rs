@@ -110,9 +110,39 @@ impl<'a> RuntimeSession<'a> {
         // Phase 1.1: with a shadow, translate the observed action to the
         // in-tree equivalent and feed THAT to the tracker, so the
         // posterior tracks the strategy the blueprint actually has.
-        // Clone the real pre-action state first, then borrow the shadow
-        // (borrowck: cannot hold &tracker and &mut shadow at once).
         if self.shadow.is_some() {
+            // If this is our own action, apply the EXACT bucket we chose
+            // (snapped to the shadow's legal set) rather than running it
+            // through the randomized off-tree translation. The prior code
+            // routed both sides through `observe_opp`, which uses
+            // `translate_bet`'s pseudo-harmonic randomization: an in-tree
+            // bet round-trips, but a host clamp or a different
+            // bucket->chips convention would randomly snap our own
+            // chosen bucket to a neighbouring one, desyncing the shadow
+            // state used for subsequent hashing. `observe_own_bucket`
+            // existed for exactly this and was dead code.
+            if action.player as u8 == self.our_seat {
+                let applied = {
+                    let sh = self.shadow.as_mut().unwrap();
+                    let s = &sh.st;
+                    let bucket = pkr_core::abstraction::action_bucket(
+                        &action.kind,
+                        s.stacks[s.actor],
+                        s.street_bets[s.actor],
+                        s.street_bets[1 - s.actor],
+                        s.pot,
+                    );
+                    sh.observe_own_bucket(bucket)
+                };
+                if let Some(t) = self.tracker.as_mut() {
+                    let _ = t.apply_action(applied);
+                }
+                return;
+            }
+            // Opponent action: translate the off-tree size to the in-tree
+            // bucket with the randomized pseudo-harmonic, then advance.
+            // Clone the real pre-action state first, then borrow the shadow
+            // (borrowck: cannot hold &tracker and &mut shadow at once).
             let real_before = self.tracker.as_ref().map(|t| t.state().clone());
             if let Some(rb) = real_before {
                 let applied = {
