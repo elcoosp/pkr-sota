@@ -1136,6 +1136,12 @@ impl CompactRegretTable {
             // than rejecting a checkpoint that may well be correct.
             stored_norm.bucket_width = current.bucket_width;
         }
+        if stored_norm.stack_bb_div2 == 0 {
+            // Pre-field checkpoint: was 100bb. Normalise so a default
+            // (PKR_STACK_BB=100) run matches; a 200bb run (expected 100)
+            // then correctly rejects it.
+            stored_norm.stack_bb_div2 = 50;
+        }
         if &stored_norm != current {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

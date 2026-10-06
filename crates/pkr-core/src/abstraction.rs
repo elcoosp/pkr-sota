@@ -379,7 +379,11 @@ pub struct AbstractionFingerprint {
     /// marker, so a width mismatch would silently misread them; this
     /// field makes such a load abort.
     pub bucket_width: u8,
-    pub _pad: [u8; 2],
+    /// Starting stack in bb/2 (100bb -> 50). 0 in a pre-field checkpoint
+    /// is normalised to 50 (=100bb) on load. A 200bb run writes 100, so a
+    /// 100bb checkpoint refuses to load into it.
+    pub stack_bb_div2: u8,
+    pub _pad: [u8; 1],
 }
 
 impl AbstractionFingerprint {
@@ -441,7 +445,8 @@ impl AbstractionFingerprint {
             action_legal_v: 1,
             centroid_feature_v,
             bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") { 2 } else { 1 },
-            _pad: [0; 2],
+            stack_bb_div2: crate::state::stack_bb_div2(),
+            _pad: [0; 1],
         }
     }
 
@@ -474,6 +479,17 @@ impl AbstractionFingerprint {
                 "bucket_width mismatch: stored={} current={} (1=u8/k<=255, \
                  2=u16/k<=65535; set PKR_BUCKET_U16 to match the tables)",
                 stored_w, expected.bucket_width,
+            );
+        }
+        // stack_bb_div2==0 is a pre-field checkpoint -> normalised to 50
+        // (=100bb). A 200bb run writes 100, so a 100bb checkpoint rejects.
+        let stored_s = if self.stack_bb_div2 == 0 { 50 } else { self.stack_bb_div2 };
+        if stored_s != expected.stack_bb_div2 {
+            return format!(
+                "stack_bb_div2 mismatch: stored={} current={} ({}bb vs {}bb; \
+                 set PKR_STACK_BB to match the checkpoint)",
+                stored_s, expected.stack_bb_div2,
+                stored_s as u32 * 2, expected.stack_bb_div2 as u32 * 2,
             );
         }
         if self.centroid_feature_v != expected.centroid_feature_v {

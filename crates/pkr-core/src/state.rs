@@ -23,6 +23,31 @@ use pkr_contracts::Evaluator;
 /// without a corresponding 10-100x iteration budget increase.
 pub const SIG_V2_STREET_MONEY: bool = false;
 
+/// Starting stack in chips (1 bb = 2 chips). Env `PKR_STACK_BB`, default
+/// 100. Slumbot is 200 bb; the fingerprint records it so a 100 bb
+/// checkpoint refuses to load into a 200 bb run.
+pub fn stack_chips() -> f32 {
+    stack_bb() * 2.0
+}
+
+/// Big blinds per starting stack (`PKR_STACK_BB`, default 100, clamped).
+pub fn stack_bb() -> f32 {
+    use std::sync::OnceLock;
+    static S: OnceLock<f32> = OnceLock::new();
+    *S.get_or_init(|| {
+        std::env::var("PKR_STACK_BB")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|v| (20.0..=400.0).contains(v))
+            .unwrap_or(100.0)
+    })
+}
+
+/// `stack_bb / 2` for the 1-byte fingerprint field (100bb -> 50).
+pub fn stack_bb_div2() -> u8 {
+    (stack_bb() / 2.0).round().clamp(1.0, 200.0) as u8
+}
+
 /// Version tag stored in bits 60..64 of `history_signature_v2()`.
 pub const SIG_V2_VERSION: u64 = 2;
 
