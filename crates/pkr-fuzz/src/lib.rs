@@ -395,7 +395,7 @@ pub struct EvalContext<'a> {
     /// uniform opponent range — no tracker here) and falls back to the
     /// blueprint if it declines. Used by `pkr-tournament` to compare a
     /// searched policy against a raw blueprint.
-    pub search: Option<&'a pkr_runtime::subgame::SubgameHandle>,
+    pub search: Option<&'a dyn pkr_runtime::subgame::SearchHandle>,
 }
 
 const K_BUCKETS: usize = 6;

@@ -85,8 +85,8 @@ fn play_one(
     runout: &[u8; 5],
     hero_seat: u8,
     base_seed: u64,
-    search_hero: Option<&pkr_runtime::subgame::SubgameHandle>,
-    search_villain: Option<&pkr_runtime::subgame::SubgameHandle>,
+    search_hero: Option<&dyn pkr_runtime::subgame::SearchHandle>,
+    search_villain: Option<&dyn pkr_runtime::subgame::SearchHandle>,
 ) -> f32 {
     assert!(hero_seat < 2, "hero_seat must be 0 or 1");
     let vill_seat = 1 - hero_seat;
@@ -413,8 +413,8 @@ pub fn tournament(
     evaluator: &dyn Evaluator,
     hands: u32,
     base_seed: u64,
-    search_a: Option<&pkr_runtime::subgame::SubgameHandle>,
-    search_b: Option<&pkr_runtime::subgame::SubgameHandle>,
+    search_a: Option<&dyn pkr_runtime::subgame::SearchHandle>,
+    search_b: Option<&dyn pkr_runtime::subgame::SearchHandle>,
 ) -> TournamentResult {
     let mut diffs: Vec<f64> = Vec::with_capacity(hands as usize);
     let mut sum_a_seat0 = 0.0f64;

@@ -120,7 +120,8 @@ fn main() {
 
     // Optional per-side subgame search. Same checkpoint, one side searched,
     // isolates search's head-to-head effect.
-    let mk_handle = |search: bool, table: &Arc<pkr_cfr::table::CompactRegretTable>| {
+    let mk_handle = |search: bool, table: &Arc<pkr_cfr::table::CompactRegretTable>|
+        -> Option<Box<dyn pkr_runtime::subgame::SearchHandle>> {
         if !search { return None; }
         let cfg = pkr_runtime::subgame::SubgameConfig {
             evaluator: Arc::new(pkr_eval::NlheEvaluator),
@@ -130,7 +131,7 @@ fn main() {
             hands_per_range: search_hands,
             enabled_streets: [false, false, true, true],
         };
-        Some(pkr_runtime::subgame::SubgameHandle::new(cfg))
+        Some(Box::new(pkr_runtime::subgame::SubgameHandle::new(cfg)))
     };
     let handle_a = mk_handle(search_a, &table_a);
     let handle_b = mk_handle(search_b, &table_b);
@@ -139,7 +140,7 @@ fn main() {
     }
 
     eprintln!("running {hands} deals, seed {seed} ...");
-    let r = tournament(&pa, &pb, abs.as_ref(), &ev, hands, seed, handle_a.as_ref(), handle_b.as_ref());
+    let r = tournament(&pa, &pb, abs.as_ref(), &ev, hands, seed, handle_a.as_deref(), handle_b.as_deref());
 
     println!();
     println!("=== pkr-tournament ===");
