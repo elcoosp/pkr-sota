@@ -155,7 +155,7 @@ impl Trainer {
                     let deck_slice = &deck[4..9];
 
                     for &t in traversers {
-                        let mut state = GameState::new(200.0, 1.0, 2.0);
+                        let mut state = GameState::new(pkr_core::state::stack_chips(), 1.0, 2.0);
                         state.set_hole_cards(hero, villain);
                         let mut deck_idx = 0usize;
                         traverse(

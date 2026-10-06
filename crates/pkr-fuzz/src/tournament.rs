@@ -98,7 +98,7 @@ fn play_one(
         [villain_hole, hero_hole]
     };
 
-    let mut state = GameState::new(200.0, 1.0, 2.0);
+    let mut state = GameState::new(pkr_core::state::stack_chips(), 1.0, 2.0);
     state.set_hole_cards(holes[0], holes[1]);
 
     // We need two contexts so seat 0 uses one provider and seat 1 the
