@@ -202,6 +202,12 @@ fn main() {
     println!();
     println!("=== pkr-tournament ===");
     println!("  A: {}", a_path.display());
+    if std::env::var("PKR_SEARCH_DEBUG").is_ok() {
+        use std::sync::atomic::Ordering;
+        let n = pkr_runtime::vsearch::VSEARCH_SOLVE_COUNT.load(Ordering::Relaxed);
+        let r = pkr_runtime::vsearch::VSEARCH_GATE_REFUSED.load(Ordering::Relaxed);
+        eprintln!("[SEARCH_DEBUG] solve_root invoked {} times, street gate refused {} times", n, r);
+    }
     println!("  B: {}", b_path.display());
     println!("  hands: {}  seed: {}", hands, seed);
     println!();

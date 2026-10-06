@@ -9,6 +9,14 @@
 
 use pkr_contracts::Evaluator;
 use pkr_subgame::vector::{spec_from_state, Act, Solver};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Diagnostic counter: how many times a solve was ACTUALLY
+/// started (passed the street gate and built a tree). Read by
+/// the instrumentation binaries when PKR_SEARCH_DEBUG=1.
+pub static VSEARCH_SOLVE_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Diagnostic counter: how many times the street gate refused.
+pub static VSEARCH_GATE_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 pub struct VSearchCfg {
     pub bet_fracs: Vec<f32>,
@@ -46,8 +54,10 @@ pub fn solve_root(
     // flop through. `VSearchHandle::decide` gates too; this covers the
     // free-function callers.
     if !cfg.enabled_streets[st.street as usize] {
+        VSEARCH_GATE_REFUSED.fetch_add(1, Ordering::Relaxed);
         return None;
     }
+    VSEARCH_SOLVE_COUNT.fetch_add(1, Ordering::Relaxed);
     let spec = spec_from_state(st, ranges, cfg.bet_fracs.clone(), cfg.max_raises);
     let ev = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
     let mut solver = Solver::new(spec, &ev);
