@@ -21,7 +21,8 @@ fn workspace() -> std::path::PathBuf {
 }
 
 fn table_path(rel: &str) -> String {
-    workspace().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    let dir = std::env::var("PKR_DATA_DIR").unwrap_or_else(|_| "outputs/v34long".into());
+    workspace().join(dir).join(rel).to_string_lossy().into_owned()
 }
 
 fn street_name(s: Street) -> &'static str {
@@ -40,10 +41,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     abs.init_table(1, &table_path("abstraction.bin"))?;
     abs.init_table(2, &table_path("turn_abstraction.bin"))?;
     abs.init_table(3, &table_path("river_buckets.bin"))?;
+    let k = abs.k();
     let abs_arc: Arc<dyn AbstractionBuilder> = Arc::new(abs);
 
     let table = CompactRegretTable::with_capacity(60_000_000);
-    let fp = AbstractionFingerprint::from_constants(200);
+    let fp = AbstractionFingerprint::from_constants(k as u32);
     table.load_checkpoint(&table_path("train.ckpt"), &fp)?;
     let table = Arc::new(table);
 
