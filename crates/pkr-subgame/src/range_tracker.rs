@@ -85,6 +85,14 @@ fn uniform_board_free(board: &[u8]) -> [f64; N_HANDS] {
     r
 }
 
+/// The concrete hole for a combinadic hand index (0..N_HANDS). Public
+/// so callers building a masked range (e.g. a uniform over board-free
+/// hands) don't have to duplicate the cache.
+#[inline]
+pub fn hole_at(idx: usize) -> [u8; 2] {
+    hole_cache()[idx]
+}
+
 fn hole_cache() -> &'static [[u8; 2]; N_HANDS] {
     static CACHE: OnceLock<Box<[[u8; 2]; N_HANDS]>> = OnceLock::new();
     CACHE.get_or_init(|| {
