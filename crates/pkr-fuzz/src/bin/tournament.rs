@@ -37,6 +37,7 @@ fn main() {
     let mut tables: Option<PathBuf> = None;
     let mut hands: u32 = 20_000;
     let mut seed: u64 = 42;
+    let mut sig: u8 = 3; // V3 by default; 4 = V4, 5 = V5, 0 = V1
     let mut search_a = false;
     let mut search_b = false;
     let mut search_iters: u32 = 50;
@@ -52,6 +53,7 @@ fn main() {
             "--tables" => { tables = args.get(i + 1).map(PathBuf::from); i += 2; }
             "--hands" => { hands = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(hands); i += 2; }
             "--seed" => { seed = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
+            "--sig" => { sig = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(sig); i += 2; }
             "--search-a" => { search_a = true; i += 1; }
             "--search-b" => { search_b = true; i += 1; }
             "--search-vector" => { search_vector = true; i += 1; }
@@ -68,6 +70,35 @@ fn main() {
             "--search-iters" => { search_iters = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_iters); i += 2; }
             "--search-hands" => { search_hands = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_hands); i += 2; }
             _ => { i += 1; }
+        }
+    }
+
+    // MUST be set before any fingerprint / signature call:
+    // sig_*_size_aware() are process-global OnceLocks, and the
+    // checkpoint's fingerprint records sig_version. Wrong value => the
+    // load aborts with a bare "sig_version: N vs M". Mirrors
+    // lbr_eval's handling so the two instruments accept the same flag.
+    // sig: 0 = V1, 1/3 = V3 (default), 4 = V4, 5 = V5.
+    match sig {
+        5 => {
+            std::env::set_var("PKR_SIG_V5", "1");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V3", "1");
+        }
+        4 => {
+            std::env::set_var("PKR_SIG_V4", "1");
+            std::env::set_var("PKR_SIG_V5", "0");
+            std::env::set_var("PKR_SIG_V3", "1");
+        }
+        3 | 1 => {
+            std::env::set_var("PKR_SIG_V3", "1");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V5", "0");
+        }
+        _ => {
+            std::env::set_var("PKR_SIG_V3", "0");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V5", "0");
         }
     }
 
@@ -120,7 +151,7 @@ fn main() {
         .unwrap_or_else(|e| { eprintln!("init river: {e:?}"); std::process::exit(1); });
 
     let k = abs.k();
-    eprintln!("abstraction: k={k} from {}", tdir.display());
+    eprintln!("abstraction: k={k} from {} (sig={sig})", tdir.display());
 
     let table_a = Arc::new(load_table(&a_path, k));
     let table_b = Arc::new(load_table(&b_path, k));
