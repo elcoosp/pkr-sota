@@ -26,6 +26,16 @@ pub struct VSearchCfg {
     /// default: a preflop/flop exact solve is far too large for the
     /// runtime budget.
     pub enabled_streets: [bool; 4],
+    /// Root safety bound: clamp the root to the largest convex blend with
+    /// the blueprint whose opponent-BR is no worse than the pure
+    /// blueprint's (vector-path analog of `safe_solve_root_p0_strategy`).
+    /// Off by default; ON is the safe choice against an off-distribution
+    /// opponent.
+    pub bound: bool,
+    /// Hard wall-clock cap for ONE solve, in milliseconds. `iterate_budgeted`
+    /// checks the clock every few iterations and stops early if exceeded.
+    /// 0 = no cap (bounded only by `iters`).
+    pub time_budget_ms: u64,
 }
 
 impl Default for VSearchCfg {
@@ -35,6 +45,8 @@ impl Default for VSearchCfg {
             max_raises: 2,
             iters: 200,
             enabled_streets: [false, false, true, true],
+            bound: false,
+            time_budget_ms: 0,
         }
     }
 }
@@ -66,6 +78,100 @@ pub fn solve_root(
     }
     solver.iterate(cfg.iters);
     Some(solver.root_strategy(our_hand))
+}
+
+/// `solve_root` with a **root safety bound**: the root decision is
+/// clamped to the largest convex blend with the blueprint whose opponent
+/// best-response value does not exceed the pure blueprint's. Every
+/// non-root node keeps the search continuation.
+///
+/// In-sample heuristic bound (vector-path analog of
+/// `safe_solve_root_p0_strategy`), NOT the CFR-D gadget. Falls back to
+/// the raw solve if the root or blueprint is unavailable.
+pub fn solve_root_bounded(
+    st: &pkr_core::state::GameState,
+    ranges: [Vec<f32>; 2],
+    our_hand: [u8; 2],
+    cfg: &VSearchCfg,
+    abs: &dyn pkr_contracts::AbstractionBuilder,
+    tbl: &pkr_cfr::table::CompactRegretTable,
+) -> Option<Vec<(Act, f32)>> {
+    if !cfg.enabled_streets[st.street as usize] {
+        return None;
+    }
+    let spec = spec_from_state(st, ranges, cfg.bet_fracs.clone(), cfg.max_raises);
+    let ev = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
+    let mut solver = Solver::new(spec, &ev);
+    if solver.n_root_actions() == 0 {
+        return None;
+    }
+    iterate_budgeted(&mut solver, cfg);
+
+    let mut sig_buf = [0u8; 8];
+    let sig_len = st.infoset_signature_into(&mut sig_buf);
+    let history_sig = &sig_buf[..sig_len];
+    let Some(bp_root) =
+        solver.blueprint_root_strategy(abs, tbl, history_sig, st.street as u8, st)
+    else {
+        return Some(solver.root_strategy(our_hand));
+    };
+    let Some(search_root) = solver.root_strategy_all() else {
+        return Some(solver.root_strategy(our_hand));
+    };
+
+    let br_search = solver.p1_br_value();
+    solver.set_root_strategy(&bp_root);
+    let br_bp = solver.p1_br_value();
+
+    let final_root = if br_search <= br_bp {
+        search_root.clone()
+    } else {
+        let mut lo = 0.0f32;
+        let mut hi = 1.0f32;
+        let mut best = bp_root.clone();
+        for _ in 0..12 {
+            let mid = 0.5 * (lo + hi);
+            let mixed = Solver::blend_root(&search_root, &bp_root, mid);
+            solver.set_root_strategy(&mixed);
+            let br = solver.p1_br_value();
+            if br <= br_bp {
+                best = mixed;
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+            if hi - lo < 1e-3 {
+                break;
+            }
+        }
+        best
+    };
+    solver.set_root_strategy(&final_root);
+    Some(solver.root_strategy(our_hand))
+}
+
+/// Iteration chunk size for the wall-clock check. Small enough to
+/// respect the budget; large enough to stay off the hot path.
+const BUDGET_CHECK_EVERY: u32 = 5;
+
+/// `solver.iterate` with a wall-clock cap: stops after `cfg.iters` OR
+/// `cfg.time_budget_ms` elapsed, whichever first.
+fn iterate_budgeted(solver: &mut Solver, cfg: &VSearchCfg) {
+    if cfg.time_budget_ms == 0 {
+        solver.iterate(cfg.iters);
+        return;
+    }
+    let start = std::time::Instant::now();
+    let budget = std::time::Duration::from_millis(cfg.time_budget_ms);
+    let mut done = 0u32;
+    while done < cfg.iters {
+        let chunk = BUDGET_CHECK_EVERY.min(cfg.iters - done);
+        solver.iterate(chunk);
+        done += chunk;
+        if start.elapsed() >= budget {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -265,6 +371,8 @@ mod handle_tests {
             max_raises: 2,
             iters: 1,
             enabled_streets: [false, false, true, true], // flop disabled
+            bound: false,
+            time_budget_ms: 0,
         };
         let holes = pkr_subgame::vector::hole_table();
         let mut r = vec![0.0f32; 1326];
@@ -286,6 +394,8 @@ mod handle_tests {
             max_raises: 2,
             iters: 30,
             enabled_streets: [false, false, false, true], // river only
+            bound: false,
+            time_budget_ms: 0,
         });
         let st = river_state();
         // Uniform over everything not on the board or our hole.
@@ -325,6 +435,8 @@ mod handle_tests {
             max_raises: 2,
             iters: 30,
             enabled_streets: [false, false, false, false],
+            bound: false,
+            time_budget_ms: 0,
         });
         let st = river_state();
         let r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
@@ -344,6 +456,8 @@ mod handle_tests {
             max_raises: 2,
             iters: 5,
             enabled_streets: [false, false, false, true],
+            bound: false,
+            time_budget_ms: 0,
         });
         let st = river_state();
         // Board contains 20; put mass ONLY on hands containing card 20.
@@ -370,6 +484,8 @@ mod handle_tests {
             max_raises: 2,
             iters: 10,
             enabled_streets: [false, false, false, true],
+            bound: false,
+            time_budget_ms: 0,
         });
         let st = river_state();
         // Board contains 20 (flop), so a hole of [20, 5] overlaps.
