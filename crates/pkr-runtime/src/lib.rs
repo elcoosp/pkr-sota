@@ -2,6 +2,7 @@
 pub mod session;
 pub mod subgame;
 pub mod translate_live;
+pub mod shadow;
 
 pub mod lookup;
 pub mod mmap;
