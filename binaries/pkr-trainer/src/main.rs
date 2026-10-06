@@ -533,6 +533,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Some(ckpt) if ckpt.exists() && cli.fresh => {
+            // GUARD: never silently destroy a real checkpoint (>=1 MB)
+            // on --fresh. This class of accident wiped v42's 187 MB
+            // train.ckpt once. Require an explicit PKR_FORCE_FRESH=1.
+            let sz = std::fs::metadata(ckpt).map(|m| m.len()).unwrap_or(0);
+            if sz >= 1_000_000 && std::env::var("PKR_FORCE_FRESH").as_deref() != Ok("1") {
+                eprintln!(
+                    "FATAL: --fresh would overwrite existing checkpoint {} ({} bytes). \
+                     Set PKR_FORCE_FRESH=1 to confirm, or pass a different --checkpoint.",
+                    ckpt.display(), sz,
+                );
+                std::process::exit(3);
+            }
             eprintln!(
                 "WARNING: --fresh: existing checkpoint {} will be overwritten",
                 ckpt.display()
