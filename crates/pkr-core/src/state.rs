@@ -900,27 +900,26 @@ impl GameState {
     /// V5 signature: V4's fields plus a 2-bit previous-street-aggressor
     /// class (0/1 = seat, 2 = none/prior street not bet).
     pub fn history_signature_v5(&self) -> u64 {
-        let n_actions = (self.actions_this_street as u64).min(7);
-        let raises = (self.total_raises as u64).min(7);
-        let last_was_bet = if self.history_len > 0 {
-            matches!(
-                self.history[self.history_len as usize - 1].kind,
-                ActionKind::Bet(_)
-            ) as u64
+        // Plan Task 2.2 layout:
+        //   bits 0..10  V3-minimal (n_actions|raises|last_was_bet|faced)
+        //   preflop     base-7 packed abstract_history at bits 10..44
+        //   postflop    SPR class (bits 10..12) | prev-aggressor (bit 12)
+        let v3 = self.history_signature_v3() & 0x3FF;
+        let tail: u64 = if self.street == Street::Preflop {
+            let mut seq = 0u64;
+            for i in 0..(self.abstract_history_len as usize).min(12) {
+                seq = seq * 7 + (self.abstract_history[i] as u64 + 1);
+            }
+            seq << 10
         } else {
-            0
+            let eff = (self.stacks[0] + self.street_bets[0])
+                .min(self.stacks[1] + self.street_bets[1]);
+            let spr = eff / self.street_start_pot.max(1.0);
+            let c: u64 = if spr >= 8.0 { 0 } else if spr >= 3.0 { 1 } else if spr >= 1.0 { 2 } else { 3 };
+            let agg = (self.prev_street_aggressor == 1) as u64;
+            (c << 10) | (agg << 12)
         };
-        let faced = (self.last_bet_fraction_bucket() as u64) & 0x7;
-        let pot_bb = (self.street_start_pot / self.bb.max(1e-6)).max(1.0);
-        let pot_class = ((pot_bb.log2().floor() as u64) / 2).min(3);
-        let prev_aggr = (self.prev_street_aggressor as u64) & 0x3;
-        (n_actions & 0x7)
-            | ((raises & 0x7) << 3)
-            | ((last_was_bet & 0x1) << 6)
-            | ((faced & 0x7) << 7)
-            | ((pot_class & 0x3) << 10)
-            | ((prev_aggr & 0x3) << 12)
-            | (SIG_V5_VERSION << 60)
+        v3 | tail | (SIG_V5_VERSION << 60)
     }
 
     pub fn history_signature_v2(&self) -> u64 {
