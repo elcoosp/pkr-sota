@@ -145,7 +145,15 @@ impl crate::subgame::SearchHandle for VSearchHandle {
 
         // Opponent range: mask board cards and cards we hold (they cannot
         // be in the opponent's hand), then f64 -> f32.
+        //
+        // The MASKED sum must be non-zero. If masking removed every
+        // hand with mass (e.g. the caller passed a range that only
+        // contained our cards or board cards), the solve would return
+        // a uniform strategy — indistinguishable from a real answer,
+        // and wrong. The sampled `SubgameHandle` guards the same way;
+        // the vector path previously did not.
         let mut opp_r = vec![0.0f32; pkr_subgame::vector::N];
+        let mut opp_mass = 0.0f64;
         for h in 0..pkr_subgame::vector::N {
             let hh = pkr_subgame::range_tracker::hole_at(h);
             if hh.iter().any(|c| board.contains(c)) {
@@ -154,7 +162,14 @@ impl crate::subgame::SearchHandle for VSearchHandle {
             if hh.iter().any(|c| our_hole.contains(c)) {
                 continue;
             }
-            opp_r[h] = opp_range[h] as f32;
+            let w = opp_range[h];
+            if w > 0.0 {
+                opp_r[h] = w as f32;
+                opp_mass += w;
+            }
+        }
+        if opp_mass <= 1e-9 {
+            return None;
         }
 
         // Solver seats: 0 = OOP (postflop non-dealer), 1 = IP.
@@ -305,6 +320,35 @@ mod handle_tests {
         let r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
         let out = h.decide(&st, &[0, 5], &r);
         assert!(out.is_none(), "disabled street must return None");
+    }
+
+    /// Regression: an opponent range whose mass is entirely removed by
+    /// masking (all hands share a board card, or all hands share our
+    /// cards) must return None, not a uniform strategy. Uniform is
+    /// indistinguishable from a real answer and would silently mislead
+    /// the caller.
+    #[test]
+    fn vsearch_handle_returns_none_on_empty_masked_range() {
+        let h = VSearchHandle::new(VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 5,
+            enabled_streets: [false, false, false, true],
+        });
+        let st = river_state();
+        // Board contains 20; put mass ONLY on hands containing card 20.
+        // Every hand will be masked out; opp_mass must be 0 -> None.
+        let mut r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        let mut any = false;
+        for i in 0..pkr_subgame::range_tracker::N_HANDS {
+            let hh = pkr_subgame::range_tracker::hole_at(i);
+            if hh.contains(&20) {
+                r[i] = 1.0; any = true;
+            }
+        }
+        assert!(any, "fixture sanity: at least one hand contains card 20");
+        let out = h.decide(&st, &[0, 5], &r);
+        assert!(out.is_none(), "empty masked opponent range must return None");
     }
 
     /// Our hole overlapping the board must return None, not panic or
