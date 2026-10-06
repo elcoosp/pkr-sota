@@ -189,3 +189,98 @@ impl crate::subgame::SearchHandle for VSearchHandle {
         }
     }
 }
+
+#[cfg(test)]
+mod handle_tests {
+    use super::*;
+    use crate::subgame::SearchHandle;
+    use pkr_core::state::{Action, ActionKind, GameState};
+
+    /// Build a river state by playing check-check to the river.
+    fn river_state() -> GameState {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.set_hole_cards([0, 5], [10, 15]);
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.advance_street_in_place(&[20, 25, 30]);
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.advance_street_in_place(&[35]);
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.advance_street_in_place(&[44]);
+        s
+    }
+
+    /// The trait path must return a normalized distribution over buckets
+    /// when handed a live river state and a nondegenerate opponent range.
+    #[test]
+    fn vsearch_handle_through_trait() {
+        let h = VSearchHandle::new(VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 30,
+            enabled_streets: [false, false, false, true], // river only
+        });
+        let st = river_state();
+        // Uniform over everything not on the board or our hole.
+        let board = &st.board[..st.board_len as usize];
+        let our = [0u8, 5u8];
+        let mut r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        let mut n = 0usize;
+        for i in 0..pkr_subgame::range_tracker::N_HANDS {
+            let hh = pkr_subgame::range_tracker::hole_at(i);
+            if hh.iter().any(|c| board.contains(c)) { continue; }
+            if hh.iter().any(|c| our.contains(c)) { continue; }
+            r[i] = 1.0; n += 1;
+        }
+        assert!(n > 100, "expected a nonempty opponent range");
+        let u = 1.0 / n as f64;
+        for x in r.iter_mut() { if *x > 0.0 { *x = u; } }
+
+        let out = h.decide(&st, &our, &r);
+        let Some(dist) = out else {
+            panic!("VSearchHandle::decide returned None on a river state");
+        };
+        let sum: f64 = dist.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "distribution must sum to 1, got {sum}"
+        );
+        assert!(dist.iter().all(|x| *x >= 0.0), "negative probability");
+    }
+
+    /// When the street is not enabled the trait must return None (so the
+    /// caller falls through to the blueprint). This is the short-circuit
+    /// that keeps PKR_VSEARCH from trying to solve a flop.
+    #[test]
+    fn vsearch_handle_returns_none_when_street_disabled() {
+        let h = VSearchHandle::new(VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 30,
+            enabled_streets: [false, false, false, false],
+        });
+        let st = river_state();
+        let r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        let out = h.decide(&st, &[0, 5], &r);
+        assert!(out.is_none(), "disabled street must return None");
+    }
+
+    /// Our hole overlapping the board must return None, not panic or
+    /// solve with a nonsense point mass.
+    #[test]
+    fn vsearch_handle_returns_none_on_board_hole_overlap() {
+        let h = VSearchHandle::new(VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 10,
+            enabled_streets: [false, false, false, true],
+        });
+        let st = river_state();
+        // Board contains 20 (flop), so a hole of [20, 5] overlaps.
+        let r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        let out = h.decide(&st, &[20, 5], &r);
+        assert!(out.is_none(), "hole overlapping the board must return None");
+    }
+}
