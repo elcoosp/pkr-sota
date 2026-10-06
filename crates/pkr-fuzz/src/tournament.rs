@@ -506,6 +506,17 @@ mod tests {
         assert!(!r.a_b_diverge);
     }
 
+    /// Task 0.2: A vs A must be EXACTLY zero (paired duplicate design).
+    #[test]
+    fn self_h2h_is_exactly_zero() {
+        // Uniform provider, no search, same instance both sides.
+        let (abs, ev) = workspace_smoke();
+        let r = tournament(&Uniform, &Uniform, &abs, &ev, 50, 42, None, None);
+        assert_eq!(r.mean_diff, 0.0, "A vs A mean_diff must be exactly 0");
+        assert_eq!(r.se_diff, 0.0, "A vs A se_diff must be exactly 0");
+        assert_eq!(r.t, 0.0);
+    }
+
     /// A trivial provider that always returns uniform over 6 buckets.
     struct Uniform;
     impl BlueprintProvider for Uniform {
