@@ -12,3 +12,4 @@ pkr-abstraction = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 pkr-runtime = { workspace = true }
+pkr-subgame = { workspace = true }

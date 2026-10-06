@@ -1289,6 +1289,7 @@ dependencies = [
  "pkr-core",
  "pkr-eval",
  "pkr-runtime",
+ "pkr-subgame",
  "rand",
  "rayon",
 ]
