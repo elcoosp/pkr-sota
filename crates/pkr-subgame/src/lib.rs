@@ -43,6 +43,22 @@ pub fn class_of(rank: u32) -> usize {
 }
 const MAX_TREE_DEPTH: u32 = 50;
 
+/// Cap on chance-node children at build time. 0 = enumerate all (flop 47,
+/// turn 46). When set (env `PKR_SUBGAME_MAX_RIVERS=K`), a chance node
+/// keeps K evenly-spaced cards instead of all — shrinking a turn
+/// subgame's tree ~46/K and making search ~10x faster at the cost of a
+/// coarser (sampled) river expectation.
+fn max_rivers() -> usize {
+    use std::sync::OnceLock;
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("PKR_SUBGAME_MAX_RIVERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -344,8 +360,12 @@ pub fn safe_solve_root_p0_strategy(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUC
 /// not rely on an in-sample BR comparison.
 pub fn safe_resolve_gadget(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
     let (abs, tbl) = cfg.blueprint?;
+    let t0 = std::time::Instant::now();
     let mut solver = Solver::new(cfg);
+    let t_new = t0.elapsed();
     let bp = solver.build_blueprint_strategy(abs, tbl);
+    let t_bp = t0.elapsed() - t_new;
+    let t1 = std::time::Instant::now();
     let mut gv = vec![0.0f64; solver.n_deals];
     for d in 0..solver.n_deals {
         let v0 = solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
@@ -355,8 +375,17 @@ pub fn safe_resolve_gadget(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
     solver.gadget_reg = (0..solver.n_deals * 2)
         .map(|_| AtomicU64::new(0))
         .collect();
+    let t_gv = t1.elapsed();
     solver.use_gadget = true;
+    let t2 = std::time::Instant::now();
     solver.solve();
+    let t_solve = t2.elapsed();
+    if std::env::var("PKR_SOLVE_TIME").is_ok() {
+        eprintln!(
+            "SOLVE-TIME: new={:?} bp_strat={:?} gadget_val={:?} solve={:?} (nodes={} deals={})",
+            t_new, t_bp, t_gv, t_solve, solver.n_nodes, solver.n_deals
+        );
+    }
     solver.root_p0_strategy_aggregated()
 }
 
@@ -595,6 +624,16 @@ fn build_tree(state: &mut GameState, nodes: &mut Vec<PublicNode>, depth: u32) ->
                 remaining.push(c);
             }
         }
+        // Optional river subsample (see max_rivers).
+        let cap = max_rivers();
+        if cap > 0 && remaining.len() > cap {
+            let n = remaining.len();
+            let mut sub = Vec::with_capacity(cap);
+            for i in 0..cap {
+                sub.push(remaining[i * n / cap]);
+            }
+            remaining = sub;
+        }
         let mut children = Vec::with_capacity(remaining.len());
         for card in remaining {
             state.advance_street_in_place(&[card]);
@@ -730,7 +769,17 @@ impl<'a> Solver<'a> {
             for j in 0..cfg.p1_range.hands.len() {
                 let h0 = cfg.p0_range.hands[i];
                 let h1 = cfg.p1_range.hands[j];
-                if incompatible(&h0, &h1) || h0[0] == h0[1] || h1[0] == h1[1] {
+                // Defensive: reject deals whose hole shares a card with the
+                // board. A caller can pass an unmasked range (e.g. a naive
+                // uniform); such a deal is impossible and would produce a
+                // garbage abstraction index (observed: hole/board overlap
+                // -> turn read out of range -> EHS fallback).
+                let board = &cfg.root.board[..cfg.root.board_len as usize];
+                if incompatible(&h0, &h1)
+                    || h0[0] == h0[1] || h1[0] == h1[1]
+                    || h0.iter().any(|c| board.contains(c))
+                    || h1.iter().any(|c| board.contains(c))
+                {
                     continue;
                 }
                 let prior = cfg.p0_range.probs[i] * cfg.p1_range.probs[j];
