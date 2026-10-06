@@ -40,6 +40,7 @@ fn main() {
     let mut river = None;
     let mut hands: u32 = 5000;
     let mut seed: u64 = 42;
+    let mut sig: u8 = 3; // V3 by default; 4 = V4, 5 = V5, 0 = V1
 
     let mut i = 1;
     while i < args.len() {
@@ -52,7 +53,34 @@ fn main() {
             "--river-table"   => { river   = args.get(i + 1).cloned(); i += 2; }
             "--hands" => { hands = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(hands); i += 2; }
             "--seed"  => { seed  = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
+            "--sig"   => { sig   = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(sig); i += 2; }
             _ => { i += 1; }
+        }
+    }
+
+    // MUST be set before any fingerprint / signature call (OnceLocks).
+    // See crates/pkr-fuzz/src/bin/tournament.rs and lbr_eval for the
+    // same block. sig: 0 = V1, 1/3 = V3 (default), 4 = V4, 5 = V5.
+    match sig {
+        5 => {
+            std::env::set_var("PKR_SIG_V5", "1");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V3", "1");
+        }
+        4 => {
+            std::env::set_var("PKR_SIG_V4", "1");
+            std::env::set_var("PKR_SIG_V5", "0");
+            std::env::set_var("PKR_SIG_V3", "1");
+        }
+        3 | 1 => {
+            std::env::set_var("PKR_SIG_V3", "1");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V5", "0");
+        }
+        _ => {
+            std::env::set_var("PKR_SIG_V3", "0");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V5", "0");
         }
     }
 
@@ -83,7 +111,7 @@ fn main() {
     abs.init_table(3, &rv).unwrap_or_else(|e| { eprintln!("init river: {e:?}"); std::process::exit(1); });
 
     let k = abs.k();
-    eprintln!("abstraction loaded: k={k}");
+    eprintln!("abstraction loaded: k={k} (sig={sig})");
 
     let table = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(k as u32);
