@@ -44,6 +44,8 @@ fn main() {
     let mut search_iters: u32 = 50;
     let mut search_hands: usize = 12;
     let mut search_vector = false;
+    let mut search_bound = false;
+    let mut search_budget_ms: u64 = 0;
     let mut search_streets: [bool; 4] = [false, false, true, true];
 
     let mut i = 1;
@@ -58,6 +60,8 @@ fn main() {
             "--search-a" => { search_a = true; i += 1; }
             "--search-b" => { search_b = true; i += 1; }
             "--search-vector" => { search_vector = true; i += 1; }
+            "--search-bound" => { search_bound = true; i += 1; }
+            "--search-budget-ms" => { search_budget_ms = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_budget_ms); i += 2; }
             "--search-streets" => {
                 if let Some(s) = args.get(i+1) {
                     let mut e = [false; 4];
@@ -176,8 +180,19 @@ fn main() {
                 max_raises: 2,
                 iters: search_iters,
                 enabled_streets: search_streets,
+                bound: search_bound,
+                time_budget_ms: search_budget_ms,
             };
-            return Some(Box::new(pkr_runtime::vsearch::VSearchHandle::new(cfg)));
+            let h: Box<dyn pkr_runtime::subgame::SearchHandle> = if search_bound {
+                Box::new(pkr_runtime::vsearch::VSearchHandle::with_bound(
+                    cfg,
+                    abs.clone() as Arc<dyn pkr_contracts::AbstractionBuilder>,
+                    table.clone(),
+                ))
+            } else {
+                Box::new(pkr_runtime::vsearch::VSearchHandle::new(cfg))
+            };
+            return Some(h);
         }
         let cfg = pkr_runtime::subgame::SubgameConfig {
             evaluator: Arc::new(pkr_eval::NlheEvaluator),
@@ -193,7 +208,7 @@ fn main() {
     let handle_b = mk_handle(search_b, &table_b);
     if search_a || search_b {
         let kind = if search_vector { "vector" } else { "sampled" };
-        eprintln!("search: A={search_a} B={search_b} kind={kind} streets={search_streets:?} ({search_iters} iters, {search_hands} hands/range)");
+        eprintln!("search: A={search_a} B={search_b} kind={kind} streets={search_streets:?} bound={search_bound} budget={search_budget_ms}ms ({search_iters} iters, {search_hands} hands/range)");
     }
 
     eprintln!("running {hands} deals, seed {seed} ...");
