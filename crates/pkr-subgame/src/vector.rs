@@ -327,6 +327,160 @@ impl<'a> Solver<'a> {
         } else { vec![] }
     }
     pub fn n_root_actions(&self) -> usize { if let Node::Act(an) = &self.root { an.acts.len() } else { 0 } }
+
+    // -----------------------------------------------------------------
+    // Safety-bound primitives (root-level blend toward the blueprint).
+    //
+    // The raw vector solve has no safety bound. The 2026-10-06 measurement
+    // showed it helps (LBR -376, H2H +1.25 chips/deal), but an
+    // off-distribution opponent could still punish it. These methods let
+    // `solve_root_bounded` clamp the ROOT to the largest convex blend with
+    // the blueprint whose opponent-BR value is no worse than the pure
+    // blueprint's. Every non-root node keeps the search continuation.
+    //
+    // This is the vector-path analog of `safe_solve_root_p0_strategy`
+    // (sampled path). It is an in-sample heuristic, NOT the CFR-D gadget
+    // (plan Task 4.4); the gadget remains follow-up.
+    // -----------------------------------------------------------------
+
+    /// The solved root average strategy as per-action, per-hand
+    /// probabilities: `out[a][h] = P(play action a | hand h)`.
+    /// `None` if the root is not a decision node.
+    pub fn root_strategy_all(&self) -> Option<Vec<Vec<f32>>> {
+        if let Node::Act(an) = &self.root {
+            let n = an.acts.len();
+            let mut st = vec![0.0f32; n * N];
+            avg_strat(&an.ssum, n, &mut st);
+            let mut out = Vec::with_capacity(n);
+            for a in 0..n {
+                out.push(st[a * N..(a + 1) * N].to_vec());
+            }
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    /// Overwrite the root's average-strategy sums so the root plays
+    /// exactly `probs[a][h]`. `avg_strat` normalizes, so the scale is
+    /// irrelevant; 1e6 keeps the arithmetic clean. Only the root is
+    /// touched.
+    pub fn set_root_strategy(&mut self, probs: &[Vec<f32>]) {
+        if let Node::Act(an) = &mut self.root {
+            let n = an.acts.len();
+            for a in 0..n.min(probs.len()) {
+                for h in 0..N {
+                    an.ssum[a * N + h] = probs[a][h].max(0.0) * 1e6;
+                }
+            }
+        }
+    }
+
+    /// P1's best-response value in chips against the tree's *current*
+    /// strategy, weighted by P1's range and its compatibility with P0's.
+    /// This is the security number: how much a best-responding opponent
+    /// wins. Mirrors the `p == 1` term of `exploitability()`.
+    pub fn p1_br_value(&self) -> f32 {
+        let cf = self.br(&self.root, 1, &self.spec.ranges[0]);
+        let mut z = 0.0f64;
+        let mut v = 0.0f64;
+        let mut tot_o = 0.0f32;
+        let mut card = [0.0f32; 52];
+        compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
+        for h in 0..N {
+            if !self.valid_root[h] {
+                continue;
+            }
+            let w = self.spec.ranges[1][h] as f64;
+            if w == 0.0 {
+                continue;
+            }
+            let comp = tot_o
+                - card[self.holes[h][0] as usize]
+                - card[self.holes[h][1] as usize]
+                + self.spec.ranges[0][h];
+            z += w * comp as f64;
+            v += w * cf[h] as f64;
+        }
+        if z > 0.0 {
+            (v / z) as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// The blueprint's strategy at the root, per action per hand, mapped
+    /// onto the vector tree's root actions. `st` supplies the root
+    /// scalars `action_bucket` needs; it must be the same state
+    /// `spec_from_state` was built from.
+    pub fn blueprint_root_strategy(
+        &self,
+        abs: &dyn pkr_contracts::AbstractionBuilder,
+        tbl: &pkr_cfr::table::CompactRegretTable,
+        history_sig: &[u8],
+        street: u8,
+        st: &pkr_core::state::GameState,
+    ) -> Option<Vec<Vec<f32>>> {
+        let an = match &self.root {
+            Node::Act(an) => an,
+            _ => return None,
+        };
+        let n = an.acts.len();
+        let actor = an.player;
+        let a_stacks = st.stacks[actor];
+        let a_street = st.street_bets[actor];
+        let o_street = st.street_bets[1 - actor];
+        let pot = st.pot;
+        let bucket_of: Vec<usize> = an
+            .acts
+            .iter()
+            .map(|act| {
+                let kind = match act {
+                    Act::Fold => pkr_core::state::ActionKind::Fold,
+                    Act::Check => pkr_core::state::ActionKind::Check,
+                    Act::Call => pkr_core::state::ActionKind::Call,
+                    Act::Bet(t) => pkr_core::state::ActionKind::Bet(*t),
+                };
+                pkr_core::abstraction::action_bucket(&kind, a_stacks, a_street, o_street, pot)
+                    as usize
+            })
+            .collect();
+        let mut out = vec![vec![0.0f32; N]; n];
+        for h in 0..N {
+            if !self.valid_root[h] {
+                continue;
+            }
+            let hole = self.holes[h];
+            let hash = abs.get_infoset_hash(&hole, &self.spec.board, history_sig, street);
+            let mut strat = [0.0f32; 6];
+            tbl.get_average_strategy_into(hash, &mut strat);
+            let mut bucket_count = [0u8; 6];
+            for &b in &bucket_of {
+                if b < 6 {
+                    bucket_count[b] = bucket_count[b].saturating_add(1);
+                }
+            }
+            for a in 0..n {
+                let b = bucket_of[a];
+                if b < 6 && bucket_count[b] > 0 {
+                    out[a][h] = strat[b] / bucket_count[b] as f32;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Convex blend of two root strategies: `alpha * a + (1 - alpha) * b`.
+    pub fn blend_root(a: &[Vec<f32>], b: &[Vec<f32>], alpha: f32) -> Vec<Vec<f32>> {
+        let n = a.len().min(b.len());
+        (0..n)
+            .map(|ai| {
+                (0..N)
+                    .map(|h| alpha * a[ai][h] + (1.0 - alpha) * b[ai][h])
+                    .collect()
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +530,72 @@ mod tests {
         assert!(!strat.is_empty());
         let sum: f32 = strat.iter().map(|(_, p)| *p).sum();
         assert!((sum - 1.0).abs() < 1e-3, "root strategy must sum to 1, got {sum}");
+    }
+
+    #[test]
+    fn root_strategy_all_sums_to_one_and_set_roundtrips() {
+        // Trivial evaluator: every hand ties. Keeps the test independent
+        // of pkr-eval and fast.
+        fn trivial_eval(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        let board: Vec<u8> = vec![20, 25, 30, 35, 44];
+        let mut r = vec![0.0f32; N];
+        for h in 0..N {
+            let hh = hole_table()[h];
+            if !hh.iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
+        }
+        let spec = Spec {
+            board,
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
+            ranges: [r.clone(), r],
+        };
+        let mut s = Solver::new(spec, &trivial_eval);
+        s.iterate(20);
+
+        let full = s.root_strategy_all().expect("root is a decision node");
+        for h in 0..N {
+            if !s.valid_root[h] { continue; }
+            let sum: f32 = full.iter().map(|a| a[h]).sum();
+            assert!((sum - 1.0).abs() < 1e-3, "hand {h} sums to {sum}");
+        }
+
+        // set_root_strategy then re-read round-trips.
+        let n_actions = full.len();
+        let forced: Vec<Vec<f32>> = (0..n_actions)
+            .map(|a| {
+                let mut v = vec![0.0f32; N];
+                for h in 0..N {
+                    v[h] = if a == 0 { 1.0 } else { 0.0 };
+                }
+                v
+            })
+            .collect();
+        s.set_root_strategy(&forced);
+        let after = s.root_strategy_all().expect("still a decision node");
+        for h in 0..N {
+            if !s.valid_root[h] { continue; }
+            assert!((after[0][h] - 1.0).abs() < 1e-3, "h={h} after[0]={}", after[0][h]);
+            for a in 1..n_actions {
+                assert!(after[a][h].abs() < 1e-3, "h={h} a={a} = {}", after[a][h]);
+            }
+        }
+
+        assert!(s.p1_br_value().is_finite());
+
+        let blended = Solver::blend_root(&full, &full, 0.3);
+        for a in 0..n_actions {
+            for h in 0..N {
+                assert!((blended[a][h] - full[a][h]).abs() < 1e-6);
+            }
+        }
     }
 
     #[test]
