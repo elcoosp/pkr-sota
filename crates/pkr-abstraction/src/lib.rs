@@ -735,6 +735,12 @@ impl AbstractionBuilder for KMeansAbstraction {
         let ehs_fallback = || {
             // C5c: count this fallback so the trainer can abort.
             FALLBACK_COUNTS[(street as usize) & 3].fetch_add(1, Ordering::Relaxed);
+            if std::env::var("PKR_FB_DEBUG").is_ok() {
+                eprintln!(
+                    "FB-DEBUG: ehs fallback street={street} board_len={} hole={hole:?} board={board:?}",
+                    board.len()
+                );
+            }
             warn_mc_fallback_once();
             let (ehs, ehs_sq) = calculate_ehs(hole, board, self.evaluator.as_ref());
             nearest_centroid(ehs, ehs_sq, centroids)
