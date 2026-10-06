@@ -112,7 +112,17 @@ pub fn observed_bet_bucket(
     let pot = state.pot.max(1.2);
     let x = (total - committed).max(0.0) / pot;
     let jam_frac = (state.stacks[a] + state.street_bets[a] - committed) / pot;
-    Some(translate_bet(x, jam_frac, rng))
+    let b = translate_bet(x, jam_frac, rng);
+    // Task 1.2: log each translation so threshold-camping is visible.
+    if std::env::var("PKR_TRANSLATE_LOG").is_ok() {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true).append(true).open("/tmp/translate.jsonl")
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{{\"x\":{x:.4},\"jam_frac\":{jam_frac:.4},\"bucket\":{b}}}");
+        }
+    }
+    Some(b)
 }
 
 #[cfg(test)]
