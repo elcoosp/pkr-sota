@@ -222,17 +222,31 @@ mod tests {
 /// because we know our cards exactly.
 pub struct VSearchHandle {
     pub cfg: VSearchCfg,
+    /// Blueprint sources for the root safety bound (`cfg.bound`). When
+    /// `bound` is true but these are `None`, `decide` falls back to the
+    /// raw solve (and prints a one-time warning under PKR_SEARCH_DEBUG).
+    pub bound_abs: Option<std::sync::Arc<dyn pkr_contracts::AbstractionBuilder>>,
+    pub bound_tbl: Option<std::sync::Arc<pkr_cfr::table::CompactRegretTable>>,
 }
 
 impl VSearchHandle {
     pub fn new(cfg: VSearchCfg) -> Self {
-        VSearchHandle { cfg }
+        VSearchHandle { cfg, bound_abs: None, bound_tbl: None }
+    }
+
+    /// Construct with the blueprint sources required by the safety bound.
+    pub fn with_bound(
+        cfg: VSearchCfg,
+        abs: std::sync::Arc<dyn pkr_contracts::AbstractionBuilder>,
+        tbl: std::sync::Arc<pkr_cfr::table::CompactRegretTable>,
+    ) -> Self {
+        VSearchHandle { cfg, bound_abs: Some(abs), bound_tbl: Some(tbl) }
     }
 }
 
 impl Default for VSearchHandle {
     fn default() -> Self {
-        VSearchHandle { cfg: VSearchCfg::default() }
+        VSearchHandle { cfg: VSearchCfg::default(), bound_abs: None, bound_tbl: None }
     }
 }
 
@@ -296,7 +310,39 @@ impl crate::subgame::SearchHandle for VSearchHandle {
             (opp_r, our_r)
         };
 
-        let acts = solve_root(state, [r0, r1], *our_hole, &self.cfg)?;
+        let acts = if self.cfg.bound {
+            match (self.bound_abs.as_ref(), self.bound_tbl.as_ref()) {
+                (Some(abs), Some(tbl)) => {
+                    let a: &dyn pkr_contracts::AbstractionBuilder = abs.as_ref();
+                    let t: &pkr_cfr::table::CompactRegretTable = tbl.as_ref();
+                    match solve_root_bounded(state, [r0, r1], *our_hole, &self.cfg, a, t) {
+                        Some(v) => v,
+                        None => return None,
+                    }
+                }
+                _ => {
+                    // bound requested without sources: fall back to raw
+                    // solve. Warn once.
+                    use std::sync::OnceLock;
+                    static WARNED: OnceLock<()> = OnceLock::new();
+                    if WARNED.get().is_none() && std::env::var("PKR_SEARCH_DEBUG").is_ok() {
+                        WARNED.set(()).ok();
+                        eprintln!(
+                            "[vsearch] bound=true but no abstraction/table supplied;                              using the RAW (unbounded) solve"
+                        );
+                    }
+                    match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
+                        Some(v) => v,
+                        None => return None,
+                    }
+                }
+            }
+        } else {
+            match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
+                Some(v) => v,
+                None => return None,
+            }
+        };
 
         let mut out = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
         let mut total = 0.0f64;
