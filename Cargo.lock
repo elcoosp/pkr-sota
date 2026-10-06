@@ -1316,6 +1316,7 @@ dependencies = [
  "pkr-export",
  "pkr-subgame",
  "rand",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
