@@ -84,6 +84,16 @@ fn main() {
     }
     let tdir = td.dir;
 
+    // Task 0.2: a quoted H2H number needs >= 2000 duplicate deals.
+    // Below that the paired SE is too wide to resolve typical effects.
+    if hands < 2000 {
+        eprintln!(
+            "WARNING: --hands {} is below the 2000-deal floor for a quoted \
+             H2H reading (paired SE will be wide).",
+            hands
+        );
+    }
+
     let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap())
         .unwrap_or_else(|e| { eprintln!("load centroids: {e}"); std::process::exit(1); });
     let abs = Arc::new(KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator)));
