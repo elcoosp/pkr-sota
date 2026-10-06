@@ -96,6 +96,7 @@ fn main() {
     let provider = TableProvider::new(&table);
     let ev = pkr_eval::NlheEvaluator;
     let ctx = EvalContext {
+        search: None,
         provider: &provider,
         abstraction: &abs,
         evaluator: &ev,
