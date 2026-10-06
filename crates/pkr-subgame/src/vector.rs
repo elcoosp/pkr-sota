@@ -387,3 +387,36 @@ mod tests {
         }
     }
 }
+
+/// Build a `Spec` from a real `GameState` at our decision, plus the two
+/// players' hole-card ranges (indexed by `index_of`). Postflop, solver
+/// player 0 = OOP (acts first = `1 - dealer`), player 1 = IP.
+///
+/// `ranges` is `[oop_range, ip_range]` already ordered to solver seats.
+pub fn spec_from_state(
+    st: &pkr_core::state::GameState,
+    ranges: [Vec<f32>; 2],
+    bet_fracs: Vec<f32>,
+    max_raises: u8,
+) -> Spec {
+    let board: Vec<u8> = st.board[..st.board_len as usize].to_vec();
+    let dead = (st.pot - st.street_bets[0] - st.street_bets[1]).max(0.0);
+    let stack = (st.stacks[0] + st.street_bets[0])
+        .min(st.stacks[1] + st.street_bets[1]);
+    // OOP is the non-dealer postflop.
+    let oop = 1 - st.dealer;
+    let root_actor = if st.actor == oop { 0 } else { 1 };
+    let root_inv = [st.street_bets[oop], st.street_bets[1 - oop]];
+    Spec {
+        board,
+        dead,
+        stack,
+        root_actor: root_actor as u8,
+        root_inv,
+        bet_fracs,
+        max_raises,
+        min_bet: 2.0,
+        allin_snap: 0.2,
+        ranges,
+    }
+}
