@@ -275,10 +275,23 @@ fn save_checkpoint_rolling(
     let tmp = ckpt.with_extension("ckpt.tmp");
     let prev = ckpt.with_extension("ckpt.prev");
     trainer.save_checkpoint(tmp.to_str().unwrap(), fingerprint)?;
+    // Only rotate once the new file is confirmed on disk.
+    if !tmp.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("save_checkpoint_rolling: {} was not written", tmp.display()),
+        ));
+    }
     if ckpt.exists() {
         std::fs::rename(ckpt, &prev)?;
     }
-    std::fs::rename(&tmp, ckpt)?;
+    if let Err(e) = std::fs::rename(&tmp, ckpt) {
+        // Never leave ckpt missing: restore from .prev, then report.
+        if !ckpt.exists() && prev.exists() {
+            let _ = std::fs::rename(&prev, ckpt);
+        }
+        return Err(e);
+    }
     Ok(())
 }
 fn export_blueprint(
