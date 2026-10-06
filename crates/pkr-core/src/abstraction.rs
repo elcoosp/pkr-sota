@@ -410,7 +410,8 @@ impl AbstractionFingerprint {
         // every existing path is unchanged.
         // 2 = exact 169-class preflop (PKR_PREFLOP_EXACT=1), which
         // bypasses the centroid table and changes every preflop hash.
-        let preflop_exact = std::env::var("PKR_PREFLOP_EXACT").as_deref() == Ok("1");
+        // Task 2.1: default ON; PKR_PREFLOP_EXACT=0 restores legacy.
+        let preflop_exact = std::env::var("PKR_PREFLOP_EXACT").as_deref() != Ok("0");
         let centroid_feature_v: u8 = if preflop_exact {
             2
         } else {
