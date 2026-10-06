@@ -85,6 +85,7 @@ fn eval_harness_runs_against_real_blueprint() {
         provider: &solver,
         abstraction: &abstraction,
         evaluator: evaluator.as_ref(),
+        search: None,
     };
 
     let num_hands = std::env::var("PKR_EVAL_HANDS")
