@@ -42,6 +42,7 @@ fn main() {
     let mut search_iters: u32 = 50;
     let mut search_hands: usize = 12;
     let mut search_vector = false;
+    let mut search_streets: [bool; 4] = [false, false, true, true];
 
     let mut i = 1;
     while i < args.len() {
@@ -54,6 +55,16 @@ fn main() {
             "--search-a" => { search_a = true; i += 1; }
             "--search-b" => { search_b = true; i += 1; }
             "--search-vector" => { search_vector = true; i += 1; }
+            "--search-streets" => {
+                if let Some(s) = args.get(i+1) {
+                    let mut e = [false; 4];
+                    for ch in s.chars() {
+                        match ch { 'p' => e[0]=true, 'f' => e[1]=true, 't' => e[2]=true, 'r' => e[3]=true, _=>{} }
+                    }
+                    search_streets = e;
+                }
+                i += 2;
+            }
             "--search-iters" => { search_iters = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_iters); i += 2; }
             "--search-hands" => { search_hands = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_hands); i += 2; }
             _ => { i += 1; }
@@ -130,7 +141,7 @@ fn main() {
                 bet_fracs: vec![0.5, 1.0],
                 max_raises: 2,
                 iters: search_iters,
-                enabled_streets: [false, false, true, true],
+                enabled_streets: search_streets,
             };
             return Some(Box::new(pkr_runtime::vsearch::VSearchHandle::new(cfg)));
         }
@@ -140,7 +151,7 @@ fn main() {
             table: table.clone(),
             iters: search_iters,
             hands_per_range: search_hands,
-            enabled_streets: [false, false, true, true],
+            enabled_streets: search_streets,
         };
         Some(Box::new(pkr_runtime::subgame::SubgameHandle::new(cfg)))
     };
@@ -148,7 +159,7 @@ fn main() {
     let handle_b = mk_handle(search_b, &table_b);
     if search_a || search_b {
         let kind = if search_vector { "vector" } else { "sampled" };
-        eprintln!("search: A={search_a} B={search_b} kind={kind} ({search_iters} iters, {search_hands} hands/range)");
+        eprintln!("search: A={search_a} B={search_b} kind={kind} streets={search_streets:?} ({search_iters} iters, {search_hands} hands/range)");
     }
 
     eprintln!("running {hands} deals, seed {seed} ...");
