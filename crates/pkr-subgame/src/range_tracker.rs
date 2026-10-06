@@ -292,6 +292,12 @@ impl<'a> RangeTracker<'a> {
         }
     }
 
+    /// Overwrite a player's range (Task 4.3). Used after a search solve
+    /// to set our own range to the strategy we actually played.
+    pub fn set_range(&mut self, player: u8, r: &[f64; N_HANDS]) {
+        if player == 0 { self.p0 = Box::new(*r); } else { self.p1 = Box::new(*r); }
+    }
+
     /// Advance the street with `new_cards` (3 for flop, 1 for turn/river).
     pub fn advance_street(&mut self, new_cards: &[u8]) -> Result<(), RangeError> {
         self.undo_stack.push((self.p0.clone(), self.p1.clone()));
