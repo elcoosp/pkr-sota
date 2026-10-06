@@ -37,7 +37,8 @@ fn main() {
     let mut tables: Option<PathBuf> = None;
     let mut hands: u32 = 20_000;
     let mut seed: u64 = 42;
-    let mut sig: u8 = 3; // V3 by default; 4 = V4, 5 = V5, 0 = V1
+    let mut sig: Option<u8> = None; // set by --sig; None = leave PKR_SIG_* alone
+
     let mut search_a = false;
     let mut search_b = false;
     let mut search_iters: u32 = 50;
@@ -53,7 +54,7 @@ fn main() {
             "--tables" => { tables = args.get(i + 1).map(PathBuf::from); i += 2; }
             "--hands" => { hands = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(hands); i += 2; }
             "--seed" => { seed = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
-            "--sig" => { sig = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(sig); i += 2; }
+            "--sig" => { sig = args.get(i + 1).and_then(|s| s.parse::<u8>().ok()); i += 2; }
             "--search-a" => { search_a = true; i += 1; }
             "--search-b" => { search_b = true; i += 1; }
             "--search-vector" => { search_vector = true; i += 1; }
@@ -79,7 +80,8 @@ fn main() {
     // load aborts with a bare "sig_version: N vs M". Mirrors
     // lbr_eval's handling so the two instruments accept the same flag.
     // sig: 0 = V1, 1/3 = V3 (default), 4 = V4, 5 = V5.
-    match sig {
+    if let Some(sig_v) = sig {
+      match sig_v {
         5 => {
             std::env::set_var("PKR_SIG_V5", "1");
             std::env::set_var("PKR_SIG_V4", "0");
@@ -100,6 +102,7 @@ fn main() {
             std::env::set_var("PKR_SIG_V4", "0");
             std::env::set_var("PKR_SIG_V5", "0");
         }
+      }
     }
 
     let a_path = a_path.unwrap_or_else(|| {
@@ -151,7 +154,7 @@ fn main() {
         .unwrap_or_else(|e| { eprintln!("init river: {e:?}"); std::process::exit(1); });
 
     let k = abs.k();
-    eprintln!("abstraction: k={k} from {} (sig={sig})", tdir.display());
+    eprintln!("abstraction: k={k} from {} (sig={sig:?})", tdir.display());
 
     let table_a = Arc::new(load_table(&a_path, k));
     let table_b = Arc::new(load_table(&b_path, k));
