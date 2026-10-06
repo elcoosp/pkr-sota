@@ -14,11 +14,20 @@ pub struct VSearchCfg {
     pub bet_fracs: Vec<f32>,
     pub max_raises: u8,
     pub iters: u32,
+    /// Which streets the vector solver may be invoked on. Turn+river by
+    /// default: a preflop/flop exact solve is far too large for the
+    /// runtime budget.
+    pub enabled_streets: [bool; 4],
 }
 
 impl Default for VSearchCfg {
     fn default() -> Self {
-        VSearchCfg { bet_fracs: vec![0.5, 1.0], max_raises: 2, iters: 200 }
+        VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 200,
+            enabled_streets: [false, false, true, true],
+        }
     }
 }
 
@@ -110,6 +119,10 @@ impl crate::subgame::SearchHandle for VSearchHandle {
         opp_range: &[f64; pkr_subgame::range_tracker::N_HANDS],
     ) -> Option<[f64; crate::subgame::SUBGAME_BUCKETS]> {
         use pkr_core::state::ActionKind;
+
+        if !self.cfg.enabled_streets[state.street as usize] {
+            return None;
+        }
 
         let board: &[u8] = &state.board[..state.board_len as usize];
 

@@ -41,6 +41,7 @@ fn main() {
     let mut search_b = false;
     let mut search_iters: u32 = 50;
     let mut search_hands: usize = 12;
+    let mut search_vector = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -52,6 +53,7 @@ fn main() {
             "--seed" => { seed = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
             "--search-a" => { search_a = true; i += 1; }
             "--search-b" => { search_b = true; i += 1; }
+            "--search-vector" => { search_vector = true; i += 1; }
             "--search-iters" => { search_iters = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_iters); i += 2; }
             "--search-hands" => { search_hands = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_hands); i += 2; }
             _ => { i += 1; }
@@ -123,6 +125,15 @@ fn main() {
     let mk_handle = |search: bool, table: &Arc<pkr_cfr::table::CompactRegretTable>|
         -> Option<Box<dyn pkr_runtime::subgame::SearchHandle>> {
         if !search { return None; }
+        if search_vector {
+            let cfg = pkr_runtime::vsearch::VSearchCfg {
+                bet_fracs: vec![0.5, 1.0],
+                max_raises: 2,
+                iters: search_iters,
+                enabled_streets: [false, false, true, true],
+            };
+            return Some(Box::new(pkr_runtime::vsearch::VSearchHandle::new(cfg)));
+        }
         let cfg = pkr_runtime::subgame::SubgameConfig {
             evaluator: Arc::new(pkr_eval::NlheEvaluator),
             abstraction: abs.clone() as Arc<dyn pkr_contracts::AbstractionBuilder>,
@@ -136,7 +147,8 @@ fn main() {
     let handle_a = mk_handle(search_a, &table_a);
     let handle_b = mk_handle(search_b, &table_b);
     if search_a || search_b {
-        eprintln!("search: A={search_a} B={search_b} ({search_iters} iters, {search_hands} hands/range)");
+        let kind = if search_vector { "vector" } else { "sampled" };
+        eprintln!("search: A={search_a} B={search_b} kind={kind} ({search_iters} iters, {search_hands} hands/range)");
     }
 
     eprintln!("running {hands} deals, seed {seed} ...");
