@@ -471,6 +471,37 @@ mod handle_tests {
         assert!(dist.iter().all(|x| *x >= 0.0), "negative probability");
     }
 
+    /// `bound: true` with no abstraction/table must NOT panic — it falls
+    /// back to the raw solve and returns a normalized distribution.
+    #[test]
+    fn bound_handle_falls_back_without_sources() {
+        let h = VSearchHandle::new(VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 10,
+            enabled_streets: [false, false, false, true],
+            bound: true,
+            time_budget_ms: 0,
+        });
+        let st = river_state();
+        let board = &st.board[..st.board_len as usize];
+        let our = [0u8, 5u8];
+        let mut r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        let mut n = 0usize;
+        for i in 0..pkr_subgame::range_tracker::N_HANDS {
+            let hh = pkr_subgame::range_tracker::hole_at(i);
+            if hh.iter().any(|c| board.contains(c)) { continue; }
+            if hh.iter().any(|c| our.contains(c)) { continue; }
+            r[i] = 1.0; n += 1;
+        }
+        let u = 1.0 / n as f64;
+        for x in r.iter_mut() { if *x > 0.0 { *x = u; } }
+        let out = crate::subgame::SearchHandle::decide(&h, &st, &our, &r);
+        assert!(out.is_some(), "bound without sources must fall back to raw solve");
+        let sum: f64 = out.unwrap().iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "distribution must sum to 1");
+    }
+
     /// When the street is not enabled the trait must return None (so the
     /// caller falls through to the blueprint). This is the short-circuit
     /// that keeps PKR_VSEARCH from trying to solve a flop.
