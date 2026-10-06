@@ -39,6 +39,15 @@ pub fn solve_root(
     our_hand: [u8; 2],
     cfg: &VSearchCfg,
 ) -> Option<Vec<(Act, f32)>> {
+    // Gate the street HERE, at the single choke point. A flop solve
+    // enumerates 47 turns x 46 rivers ~ 2162 showdowns over 1326 hands
+    // and would hang or OOM the bot. Without this check a caller that
+    // used `st.street != Preflop` as a proxy for "enabled" would let a
+    // flop through. `VSearchHandle::decide` gates too; this covers the
+    // free-function callers.
+    if !cfg.enabled_streets[st.street as usize] {
+        return None;
+    }
     let spec = spec_from_state(st, ranges, cfg.bet_fracs.clone(), cfg.max_raises);
     let ev = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
     let mut solver = Solver::new(spec, &ev);
@@ -210,6 +219,37 @@ mod handle_tests {
         s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
         s.advance_street_in_place(&[44]);
         s
+    }
+
+    /// Regression: solve_root MUST refuse a flop (or any disabled
+    /// street) before building the tree. A flop build enumerates 47x46
+    /// rivers and hangs. Before the fix the free function had no gate
+    /// and advise() used `!= Preflop` as a proxy for "enabled".
+    #[test]
+    fn solve_root_refuses_flop() {
+        // check-call to the flop (board has 3 cards).
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.set_hole_cards([0, 5], [10, 15]);
+        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.advance_street_in_place(&[20, 25, 30]);
+        assert_eq!(s.street as usize, 1, "must be on the flop");
+
+        let cfg = VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 1,
+            enabled_streets: [false, false, true, true], // flop disabled
+        };
+        let holes = pkr_subgame::vector::hole_table();
+        let mut r = vec![0.0f32; 1326];
+        for h in 0..1326 {
+            if !holes[h].iter().any(|c| s.board[..s.board_len as usize].contains(c)) {
+                r[h] = 1.0;
+            }
+        }
+        let out = solve_root(&s, [r.clone(), r], [0, 5], &cfg);
+        assert!(out.is_none(), "flop solve must be refused by enabled_streets");
     }
 
     /// The trait path must return a normalized distribution over buckets

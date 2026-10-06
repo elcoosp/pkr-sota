@@ -178,12 +178,22 @@ impl<'a> RuntimeSession<'a> {
         }
         let opp = 1 - self.our_seat;
 
-        // Phase 4: vector-form search when PKR_VSEARCH=1 and the street
-        // is enabled. Falls through to the sampled/blueprint path on
-        // any failure. Ranges are ordered [OOP, IP] for the solver.
-        if vsearch_enabled() && st.street != pkr_core::state::Street::Preflop {
-            if let Some(dist) = self.advise_vsearch(st, our_hole) {
-                return Some(dist);
+        // Phase 4: vector-form search when PKR_VSEARCH=1 and the
+        // CURRENT STREET IS ENABLED IN VSearchCfg. Falls through to the
+        // sampled/blueprint path on any failure. Ranges are ordered
+        // [OOP, IP] for the solver.
+        //
+        // The prior gate was `st.street != Street::Preflop`, which is a
+        // proxy for "postflop", NOT "enabled". Combined with solve_root
+        // not checking enabled_streets, a flop state reached the flop
+        // tree build and hung. Both are now fixed; this gate is the
+        // single place that decides whether to even attempt a solve.
+        if vsearch_enabled() {
+            let cfg = crate::vsearch::VSearchCfg::default();
+            if cfg.enabled_streets[st.street as usize] {
+                if let Some(dist) = self.advise_vsearch(st, our_hole) {
+                    return Some(dist);
+                }
             }
         }
 
