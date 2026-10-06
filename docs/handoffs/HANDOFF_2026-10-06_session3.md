@@ -67,7 +67,27 @@ Output: `outputs/vsearch-measurement/`, `/tmp/vsearch-measure2-result.txt`.
 
 ---
 
-## Section 3 — Preliminary smoke result (NOT the measurement)
+## Section 3 — MEASUREMENT RESULT: vector search HELPS
+
+`docs/experiments/vsearch-measurement-result.md` (full writeup).
+
+| instrument | blueprint | search | Δ | t |
+|---|---|---|---|---|
+| LBR (20k hands) | 821.08 ± 84.24 | **444.33 ± 88.63** | −376.75 | −3.1 |
+| H2H (20k deals) | — | — | **+1.254 chips/deal** | **+6.25** |
+
+Both instruments pass the handoff §4 decision rule. This is the first
+search variant to do so (the sampled solver passed LBR alone and lost
+H2H by −6.06 chips/deal).
+
+**SHIP the vector search** — to the blueprint+search policy. Not yet
+to an external opponent: the raw solve still needs the CFR-D gadget.
+
+---
+
+## Section 3b — Prelim smoke (superseded by §3)
+
+
 
 200-hand LBR, seed 42, 400 samples:
 
