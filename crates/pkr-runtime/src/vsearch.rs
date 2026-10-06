@@ -76,3 +76,103 @@ mod tests {
         }
     }
 }
+
+/// `SearchHandle` implementation backed by the vector-form solver.
+///
+/// This is what PKR_VSEARCH-style measurement needs: the sampled
+/// `SubgameHandle` and this handle share one trait so that LBR and the
+/// tournament can pick either without a hard dependency.
+///
+/// Ranges handed in via `decide` are only the OPPONENT's. Our own range
+/// is a point mass at `our_hole` (masked for board compatibility),
+/// because we know our cards exactly.
+pub struct VSearchHandle {
+    pub cfg: VSearchCfg,
+}
+
+impl VSearchHandle {
+    pub fn new(cfg: VSearchCfg) -> Self {
+        VSearchHandle { cfg }
+    }
+}
+
+impl Default for VSearchHandle {
+    fn default() -> Self {
+        VSearchHandle { cfg: VSearchCfg::default() }
+    }
+}
+
+impl crate::subgame::SearchHandle for VSearchHandle {
+    fn decide(
+        &self,
+        state: &pkr_core::state::GameState,
+        our_hole: &[u8; 2],
+        opp_range: &[f64; pkr_subgame::range_tracker::N_HANDS],
+    ) -> Option<[f64; crate::subgame::SUBGAME_BUCKETS]> {
+        use pkr_core::state::ActionKind;
+
+        let board: &[u8] = &state.board[..state.board_len as usize];
+
+        // Our range: point mass at our hole, masked if it overlaps board.
+        let mut our_r = vec![0.0f32; pkr_subgame::vector::N];
+        if !our_hole.iter().any(|c| board.contains(c)) {
+            our_r[pkr_subgame::vector::index_of(*our_hole)] = 1.0;
+        } else {
+            return None;
+        }
+
+        // Opponent range: mask board cards and cards we hold (they cannot
+        // be in the opponent's hand), then f64 -> f32.
+        let mut opp_r = vec![0.0f32; pkr_subgame::vector::N];
+        for h in 0..pkr_subgame::vector::N {
+            let hh = pkr_subgame::range_tracker::hole_at(h);
+            if hh.iter().any(|c| board.contains(c)) {
+                continue;
+            }
+            if hh.iter().any(|c| our_hole.contains(c)) {
+                continue;
+            }
+            opp_r[h] = opp_range[h] as f32;
+        }
+
+        // Solver seats: 0 = OOP (postflop non-dealer), 1 = IP.
+        let oop = 1 - state.dealer;
+        let (r0, r1) = if state.actor == oop {
+            (our_r, opp_r)
+        } else {
+            (opp_r, our_r)
+        };
+
+        let acts = solve_root(state, [r0, r1], *our_hole, &self.cfg)?;
+
+        let mut out = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
+        let mut total = 0.0f64;
+        for (act, p) in &acts {
+            let kind = match act {
+                Act::Fold => ActionKind::Fold,
+                Act::Check => ActionKind::Check,
+                Act::Call => ActionKind::Call,
+                Act::Bet(t) => ActionKind::Bet(*t),
+            };
+            let b = pkr_core::abstraction::action_bucket(
+                &kind,
+                state.stacks[state.actor],
+                state.street_bets[state.actor],
+                state.street_bets[1 - state.actor],
+                state.pot,
+            ) as usize;
+            if b < crate::subgame::SUBGAME_BUCKETS {
+                out[b] += *p as f64;
+                total += *p as f64;
+            }
+        }
+        if total > 1e-9 {
+            for x in out.iter_mut() {
+                *x /= total;
+            }
+            Some(out)
+        } else {
+            None
+        }
+    }
+}
