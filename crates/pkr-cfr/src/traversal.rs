@@ -429,10 +429,20 @@ pub fn traverse(
     if acting_player == traverser {
         let idx = traverser_idx.expect("traverser_idx set for traverser");
         let mut v = [0.0f32; K];
+        // Task 3.1: Pluribus-style probability-0 pruning. Skip a
+        // zero-probability NON-jam action 95% of the time once past
+        // warmup; its regret still updates on the ~5% that recurse.
+        let cfg = crate::config::TrainConfig::global();
+        let may_prune = cfg.prune && global_iteration > cfg.prune_warmup;
         for a in 0..K {
             let count = action_counts[a];
             if count == 0 {
                 v[a] = f32::NAN;
+                continue;
+            }
+            if may_prune && strategy[a] == 0.0 && a != 5 && rng.random::<f32>() < 0.95 {
+                v[a] = f32::NAN;
+                metrics.pruned_actions += 1;
                 continue;
             }
             let pick_idx = pick_in_bucket(a as u8, rng.random_range(0..count));

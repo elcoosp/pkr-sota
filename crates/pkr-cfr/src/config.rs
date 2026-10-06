@@ -113,6 +113,11 @@ pub struct TrainConfig {
     /// run (`PKR_ANNEAL_EPS=1`). Off by default to preserve the
     /// current fixed-epsilon behavior.
     pub anneal_eps: bool,
+    /// Task 3.1: skip probability-0 non-jam actions most of the time at
+    /// traverser nodes (Pluribus-style). Off by default.
+    pub prune: bool,
+    /// Iteration before which pruning is disabled (let regrets settle).
+    pub prune_warmup: u32,
 }
 
 impl Default for TrainConfig {
@@ -134,6 +139,8 @@ impl Default for TrainConfig {
             linear_cfr: false,
             total_iters: 200_000_000.0,
             anneal_eps: false,
+            prune: false,
+            prune_warmup: 20_000_000,
         }
     }
 }
@@ -169,6 +176,8 @@ impl TrainConfig {
             strict_bets: env_bool("PKR_STRICT_BETS", d.strict_bets),
             skip_forced: env_bool("PKR_SKIP_FORCED", d.skip_forced),
             avg_at_traverser: env_bool("PKR_AVG_AT_TRAVERSER", d.avg_at_traverser),
+            prune: env_bool("PKR_PRUNE", d.prune),
+            prune_warmup: env_parse("PKR_PRUNE_WARMUP", d.prune_warmup, |_| true),
             linear_cfr: env_bool("PKR_LINEAR_CFR", d.linear_cfr),
             total_iters: env_parse("PKR_TOTAL_ITERS", d.total_iters, |v| *v > 0.0),
             anneal_eps: env_bool("PKR_ANNEAL_EPS", d.anneal_eps),

@@ -35,6 +35,8 @@ pub struct LocalMetrics {
     /// C5d: incremented when `*deck_idx > deck.len()` mid-runout.
     /// Same class of silent-0.0 bug as depth_overflows.
     pub deck_overflows: u64,
+    /// Task 3.1: actions skipped by probability-0 pruning.
+    pub pruned_actions: u64,
     pub depth_hist: [u32; 32],
 }
 
