@@ -37,6 +37,10 @@ fn main() {
     let mut tables: Option<PathBuf> = None;
     let mut hands: u32 = 20_000;
     let mut seed: u64 = 42;
+    let mut search_a = false;
+    let mut search_b = false;
+    let mut search_iters: u32 = 50;
+    let mut search_hands: usize = 12;
 
     let mut i = 1;
     while i < args.len() {
@@ -46,6 +50,10 @@ fn main() {
             "--tables" => { tables = args.get(i + 1).map(PathBuf::from); i += 2; }
             "--hands" => { hands = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(hands); i += 2; }
             "--seed" => { seed = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
+            "--search-a" => { search_a = true; i += 1; }
+            "--search-b" => { search_b = true; i += 1; }
+            "--search-iters" => { search_iters = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_iters); i += 2; }
+            "--search-hands" => { search_hands = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_hands); i += 2; }
             _ => { i += 1; }
         }
     }
@@ -78,7 +86,7 @@ fn main() {
 
     let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap())
         .unwrap_or_else(|e| { eprintln!("load centroids: {e}"); std::process::exit(1); });
-    let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+    let abs = Arc::new(KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator)));
     abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap())
         .unwrap_or_else(|e| { eprintln!("init preflop: {e:?}"); std::process::exit(1); });
     abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap())
@@ -91,8 +99,8 @@ fn main() {
     let k = abs.k();
     eprintln!("abstraction: k={k} from {}", tdir.display());
 
-    let table_a = load_table(&a_path, k);
-    let table_b = load_table(&b_path, k);
+    let table_a = Arc::new(load_table(&a_path, k));
+    let table_b = Arc::new(load_table(&b_path, k));
     eprintln!("A: {} keys from {}", table_a.len(), a_path.display());
     eprintln!("B: {} keys from {}", table_b.len(), b_path.display());
 
@@ -100,8 +108,28 @@ fn main() {
     let pb = TableProvider::new(&table_b);
     let ev = pkr_eval::NlheEvaluator;
 
+    // Optional per-side subgame search. Same checkpoint, one side searched,
+    // isolates search's head-to-head effect.
+    let mk_handle = |search: bool, table: &Arc<pkr_cfr::table::CompactRegretTable>| {
+        if !search { return None; }
+        let cfg = pkr_runtime::subgame::SubgameConfig {
+            evaluator: Arc::new(pkr_eval::NlheEvaluator),
+            abstraction: abs.clone() as Arc<dyn pkr_contracts::AbstractionBuilder>,
+            table: table.clone(),
+            iters: search_iters,
+            hands_per_range: search_hands,
+            enabled_streets: [false, false, true, true],
+        };
+        Some(pkr_runtime::subgame::SubgameHandle::new(cfg))
+    };
+    let handle_a = mk_handle(search_a, &table_a);
+    let handle_b = mk_handle(search_b, &table_b);
+    if search_a || search_b {
+        eprintln!("search: A={search_a} B={search_b} ({search_iters} iters, {search_hands} hands/range)");
+    }
+
     eprintln!("running {hands} deals, seed {seed} ...");
-    let r = tournament(&pa, &pb, &abs, &ev, hands, seed);
+    let r = tournament(&pa, &pb, abs.as_ref(), &ev, hands, seed, handle_a.as_ref(), handle_b.as_ref());
 
     println!();
     println!("=== pkr-tournament ===");
