@@ -11,6 +11,7 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod range_tracker;
+pub mod vector;
 
 use pkr_cfr::table::CompactRegretTable;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
