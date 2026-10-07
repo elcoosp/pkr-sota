@@ -1,6 +1,7 @@
 # CFR-D gadget for the vector solver — design (not yet implemented)
 
-**Status:** design only. The shipped safety bound
+**Status:** Stage 1 (Const node) IMPLEMENTED + tested — see
+`cfr-d-gadget-status.md`. Stages 2-4 specified. The shipped safety bound
 (`docs/experiments/vsearch-safety-bound.md`) is the heuristic root
 blend. This specifies the theorem-backed replacement.
 
