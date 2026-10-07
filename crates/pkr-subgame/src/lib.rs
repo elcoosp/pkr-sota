@@ -1766,21 +1766,46 @@ mod gadget_safety_tests {
     use std::sync::Arc;
 
     fn fixture() -> Option<(KMeansAbstraction, CompactRegretTable)> {
+        // Honor PKR_TEST_TABLES / PKR_TEST_CKPT so this safety test can
+        // run on real artifacts. Set the sig env BEFORE any fingerprint
+        // call (OnceLocks) so the V5 checkpoint loads.
+        let env_override = std::env::var("PKR_TEST_CKPT").is_ok();
+        if env_override {
+            std::env::set_var("PKR_SIG_V5", "1");
+            std::env::set_var("PKR_SIG_V4", "0");
+            std::env::set_var("PKR_SIG_V3", "1");
+        }
         let m = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let ws = m.parent()?.parent()?;
-        let t = ws.join("outputs/v0-smoke");
-        let ck = ws.join("outputs/v8-fixture/train.ckpt");
+        let (t, ck) = match (
+            std::env::var("PKR_TEST_TABLES"),
+            std::env::var("PKR_TEST_CKPT"),
+        ) {
+            (Ok(t), Ok(c)) => (std::path::PathBuf::from(t), std::path::PathBuf::from(c)),
+            _ => (
+                ws.join("outputs/v0-smoke"),
+                ws.join("outputs/v8-fixture/train.ckpt"),
+            ),
+        };
         if !ck.exists() { return None; }
         let store = load_centroids(t.join("centroids.bin").to_str()?).ok()?;
         let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
         abs.init_table(0, t.join("preflop_abstraction.bin").to_str()?).ok()?;
-        abs.init_table(1, t.join("flop_abstraction.bin").to_str()?).ok()?;
+        // flop table name varies by run: new = abstraction.bin, old = flop_abstraction.bin
+        let flop = if t.join("abstraction.bin").exists() {
+            t.join("abstraction.bin")
+        } else {
+            t.join("flop_abstraction.bin")
+        };
+        abs.init_table(1, flop.to_str()?).ok()?;
         abs.init_table(2, t.join("turn_abstraction.bin").to_str()?).ok()?;
         abs.init_table(3, t.join("river_buckets.bin").to_str()?).ok()?;
-        let tbl = CompactRegretTable::with_capacity(1_000_000);
+        let tbl = CompactRegretTable::with_capacity(60_000_000);
         let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(abs.k() as u32);
-        tbl.load_checkpoint(ck.to_str()?, &fp).ok()?;
-        Some((abs, tbl))
+        match tbl.load_checkpoint(ck.to_str()?, &fp) {
+            Ok(_) => Some((abs, tbl)),
+            Err(e) => { eprintln!("fixture load failed: {e}"); None }
+        }
     }
 
     /// The gadget's whole point: the resolved root is no more exploitable
