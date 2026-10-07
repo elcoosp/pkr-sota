@@ -420,7 +420,22 @@ pub fn tournament(
     let mut sum_a_seat0 = 0.0f64;
     let mut sum_b_seat0 = 0.0f64;
 
+    // Progress: a 20k-deal search H2H runs for hours and the loop prints
+    // nothing otherwise. Every ~10% (min 500, max 2000 deals) to stderr.
+    let progress_every = (hands / 10).clamp(1, 2000);
+    let t_start = std::time::Instant::now();
+
     for i in 0..hands as u64 {
+        if i > 0 && i % progress_every as u64 == 0 {
+            let done = i as f64;
+            let elapsed = t_start.elapsed().as_secs_f64().max(1e-9);
+            let rate = done / elapsed;
+            let eta = (hands as f64 - done) / rate.max(1e-9);
+            eprintln!(
+                "[tournament] {i}/{} deals ({:.0}%), {:.2} deals/s, ETA {:.0}m",
+                hands, 100.0 * done / hands as f64, rate, eta / 60.0
+            );
+        }
         let seed = base_seed.wrapping_add(i);
         let (h0, h1, runout) = deal_hand(seed);
 
