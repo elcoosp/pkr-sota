@@ -514,6 +514,11 @@ impl<'a> Solver<'a> {
     }
     pub fn n_root_actions(&self) -> usize { self.p0_root().map(|an| an.acts.len()).unwrap_or(0) }
 
+    /// The root (P0) actions, in order. Pairs with `root_strategy_all`.
+    pub fn root_acts(&self) -> Vec<Act> {
+        self.p0_root().map(|an| an.acts.clone()).unwrap_or_default()
+    }
+
     // -----------------------------------------------------------------
     // Safety-bound primitives (root-level blend toward the blueprint).
     //
