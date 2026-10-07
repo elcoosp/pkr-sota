@@ -221,7 +221,15 @@ fn main() {
         use std::sync::atomic::Ordering;
         let n = pkr_runtime::vsearch::VSEARCH_SOLVE_COUNT.load(Ordering::Relaxed);
         let r = pkr_runtime::vsearch::VSEARCH_GATE_REFUSED.load(Ordering::Relaxed);
-        eprintln!("[SEARCH_DEBUG] solve_root invoked {} times, street gate refused {} times", n, r);
+        eprintln!(
+            "[SEARCH_DEBUG] solve_root invoked {} times, gate refused {} times | \
+             bounded: solves={} kept_search={} blended={} fell_back={}",
+            n, r,
+            pkr_runtime::vsearch::VSEARCH_BOUNDED_SOLVES.load(Ordering::Relaxed),
+            pkr_runtime::vsearch::VSEARCH_BOUND_KEPT_SEARCH.load(Ordering::Relaxed),
+            pkr_runtime::vsearch::VSEARCH_BOUND_BLENDED.load(Ordering::Relaxed),
+            pkr_runtime::vsearch::VSEARCH_BOUND_FELL_BACK.load(Ordering::Relaxed)
+        );
     }
     println!("  B: {}", b_path.display());
     println!("  hands: {}  seed: {}", hands, seed);

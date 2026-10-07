@@ -17,6 +17,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub static VSEARCH_SOLVE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic counter: how many times the street gate refused.
 pub static VSEARCH_GATE_REFUSED: AtomicU64 = AtomicU64::new(0);
+/// Diagnostic: how many bounded solves ran.
+pub static VSEARCH_BOUNDED_SOLVES: AtomicU64 = AtomicU64::new(0);
+/// Diagnostic: bounded solves that kept the search root whole
+/// (search root was already at least as safe as the blueprint).
+pub static VSEARCH_BOUND_KEPT_SEARCH: AtomicU64 = AtomicU64::new(0);
+/// Diagnostic: bounded solves that blended toward the blueprint.
+pub static VSEARCH_BOUND_BLENDED: AtomicU64 = AtomicU64::new(0);
+/// Diagnostic: bounded solves that fell back to the raw solve
+/// (blueprint/root unavailable).
+pub static VSEARCH_BOUND_FELL_BACK: AtomicU64 = AtomicU64::new(0);
 
 pub struct VSearchCfg {
     pub bet_fracs: Vec<f32>,
@@ -99,6 +109,8 @@ pub fn solve_root_bounded(
     if !cfg.enabled_streets[st.street as usize] {
         return None;
     }
+    VSEARCH_SOLVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    VSEARCH_BOUNDED_SOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let spec = spec_from_state(st, ranges, cfg.bet_fracs.clone(), cfg.max_raises);
     let ev = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
     let mut solver = Solver::new(spec, &ev);
@@ -116,6 +128,7 @@ pub fn solve_root_bounded(
         return Some(solver.root_strategy(our_hand));
     };
     let Some(search_root) = solver.root_strategy_all() else {
+        VSEARCH_BOUND_FELL_BACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return Some(solver.root_strategy(our_hand));
     };
 
@@ -124,8 +137,10 @@ pub fn solve_root_bounded(
     let br_bp = solver.opp_br_value();
 
     let final_root = if br_search <= br_bp {
+        VSEARCH_BOUND_KEPT_SEARCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         search_root.clone()
     } else {
+        VSEARCH_BOUND_BLENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut lo = 0.0f32;
         let mut hi = 1.0f32;
         let mut best = bp_root.clone();
