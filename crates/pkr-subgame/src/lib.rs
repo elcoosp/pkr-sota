@@ -396,6 +396,36 @@ pub fn safe_resolve_gadget(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
 ///
 /// `None` if the root isn't a P0 decision node, or no deal survived
 /// range intersection.
+/// P1's counterfactual value against the BLUEPRINT, per P1 hand
+/// (0..1326), for the subgame rooted at `cfg.root`. The CFR-D gadget's
+/// Terminate payoff: the value P1 guarantees by leaving the subgame for
+/// the blueprint. Reuses the sampled tree (which threads infoset
+/// signatures via a real `GameState`) and its tested
+/// `blueprint_value_p0`. Only the blueprint enters, so the sampled
+/// solver's search weakness is irrelevant. Zero if no blueprint.
+pub fn p1_cbv_per_hand(cfg: &POCConfig) -> Vec<f64> {
+    let n = crate::range_tracker::N_HANDS;
+    let mut out = vec![0.0f64; n];
+    let Some((abs, tbl)) = cfg.blueprint else {
+        return out;
+    };
+    let solver = Solver::new(cfg);
+    let bp = solver.build_blueprint_strategy(abs, tbl);
+    let mut wsum = vec![0.0f64; n];
+    for (d, deal) in solver.deals.iter().enumerate() {
+        let h1 = crate::range_tracker::index_of_hole(&deal.h1);
+        let v_p1 = -solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
+        out[h1] += deal.prior * v_p1;
+        wsum[h1] += deal.prior;
+    }
+    for h in 0..n {
+        if wsum[h] > 1e-12 {
+            out[h] /= wsum[h];
+        }
+    }
+    out
+}
+
 pub fn solve_root_p0_strategy(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
     let mut solver = Solver::new(cfg);
     solver.solve();

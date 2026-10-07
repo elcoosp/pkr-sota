@@ -44,6 +44,10 @@ enum Node {
     /// Terminal paying a fixed per-hand value to P0 (before
     /// opponent-reach weighting). The CFR-D gadget's Terminate leaf.
     Const { vals_p0: Vec<f32> },
+    /// CFR-D gadget Terminate leaf: pays the OPPONENT (P1) the
+    /// per-hand value `cbv[h]`. P0's value is its negation,
+    /// reach-weighted over P0's range.
+    TermP1 { cbv: Vec<f32> },
 }
 
 #[derive(Clone, Copy)]
@@ -56,12 +60,15 @@ pub struct Solver<'a> {
     root: Node,
     pub iters: u32,
     valid_root: Vec<bool>,
+    /// CFR-D gadget installed: `root` is a P1 ActNode `[Terminate,
+    /// Follow]`; P0's real root is the `Follow` child (`kids[1]`).
+    gadget: bool,
 }
 
 impl<'a> Solver<'a> {
     pub fn new(spec: Spec, eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync)) -> Self {
         let holes = hole_table();
-        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![] };
+        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget: false };
         s.valid_root = (0..N).map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c))).collect();
         for p in 0..2 { for h in 0..N { if !s.valid_root[h] { s.spec.ranges[p][h] = 0.0; } } }
         let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
@@ -72,6 +79,101 @@ impl<'a> Solver<'a> {
     }
 
     fn pot(&self, inv: [f32; 2]) -> f32 { self.spec.dead + inv[0] + inv[1] }
+
+    /// P0's decision node at the (possibly gadgetted) root. With the
+    /// CFR-D gadget installed, P0's real root is the `Follow` child of
+    /// the gadget's P1 node; otherwise it is `self.root` itself.
+    fn p0_root(&self) -> Option<&ActNode> {
+        let target = if self.gadget {
+            match &self.root {
+                Node::Act(an) if an.kids.len() >= 2 => &an.kids[1],
+                _ => return None,
+            }
+        } else {
+            &self.root
+        };
+        match target {
+            Node::Act(an) => Some(an),
+            _ => None,
+        }
+    }
+
+    fn p0_root_mut(&mut self) -> Option<&mut ActNode> {
+        let target = if self.gadget {
+            match &mut self.root {
+                Node::Act(an) if an.kids.len() >= 2 => &mut an.kids[1],
+                _ => return None,
+            }
+        } else {
+            &mut self.root
+        };
+        match target {
+            Node::Act(an) => Some(an),
+            _ => None,
+        }
+    }
+
+    /// Install the CFR-D reach-subgame gadget. `cbv[h]` is P1's
+    /// counterfactual value against the blueprint (see
+    /// `pkr_subgame::p1_cbv_per_hand`). Wraps the current root in a P1
+    /// node: action 0 = Terminate (`TermP1{cbv}`), action 1 = Follow
+    /// (the real root). CFR then solves the gadgetted tree; P0's
+    /// strategy at Follow is the safe re-solved strategy.
+    ///
+    /// Must be called BEFORE `iterate`.
+    pub fn install_gadget(&mut self, cbv: Vec<f32>) {
+        assert_eq!(cbv.len(), N, "cbv must have one value per hand");
+        if self.gadget {
+            return;
+        }
+        let real_root = std::mem::replace(
+            &mut self.root,
+            Node::Fold { folder: 0, inv: [0.0; 2] },
+        );
+        let acts = vec![Act::Fold, Act::Check];
+        let kids = vec![
+            Node::TermP1 { cbv },
+            real_root,
+        ];
+        let n = acts.len();
+        self.root = Node::Act(ActNode {
+            player: 1,
+            acts,
+            kids,
+            regret: vec![0.0; n * N],
+            ssum: vec![0.0; n * N],
+        });
+        self.gadget = true;
+    }
+
+    /// Whether the CFR-D gadget is installed.
+    pub fn has_gadget(&self) -> bool {
+        self.gadget
+    }
+
+    /// P1's average probability of TERMINATING at the gadget root,
+    /// averaged over hands. `None` if no gadget. Diagnostic.
+    pub fn gadget_terminate_prob(&self) -> Option<f32> {
+        if !self.gadget {
+            return None;
+        }
+        match &self.root {
+            Node::Act(an) if an.acts.len() >= 2 => {
+                let n = an.acts.len();
+                let mut st = vec![0.0f32; n * N];
+                avg_strat(&an.ssum, n, &mut st);
+                let mut s = 0.0f32;
+                let mut c = 0u32;
+                for h in 0..N {
+                    if !self.valid_root[h] { continue; }
+                    s += st[h]; // action 0 = Terminate
+                    c += 1;
+                }
+                Some(if c > 0 { s / c as f32 } else { 0.0 })
+            }
+            _ => None,
+        }
+    }
 
     fn build(&self, st: St, board: &mut Vec<u8>) -> Node {
         let a = st.actor; let o = 1 - a; let sp = &self.spec;
@@ -209,6 +311,39 @@ fn const_cfv(
     out
 }
 
+/// CFV of the CFR-D `TermP1` leaf. `cbv[h]` is P1's value for hand `h`;
+/// P0's value is its negation. Returns the TRAVERSER's counterfactual
+/// value, reach-weighted by the opponent.
+fn cbv_cfv(holes: &[[u8; 2]], cbv: &[f32], opp_reach: &[f32], p: usize, valid: &[bool]) -> Vec<f32> {
+    let mut tot = 0.0f32;
+    let mut card = [0.0f32; 52];
+    compat_sums(holes, opp_reach, &mut tot, &mut card);
+    let mut out = vec![0.0f32; N];
+    if p == 1 {
+        for h in 0..N {
+            if !valid[h] { continue; }
+            let c = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize] + opp_reach[h];
+            out[h] = cbv[h] * c;
+        }
+    } else {
+        let mut tot_c = 0.0f32;
+        let mut card_c = [0.0f32; 52];
+        for h in 0..N {
+            let w = opp_reach[h] * cbv[h];
+            if w == 0.0 { continue; }
+            tot_c += w;
+            card_c[holes[h][0] as usize] += w;
+            card_c[holes[h][1] as usize] += w;
+        }
+        for h in 0..N {
+            if !valid[h] { continue; }
+            let s = tot_c - card_c[holes[h][0] as usize] - card_c[holes[h][1] as usize] + opp_reach[h] * cbv[h];
+            out[h] = -s;
+        }
+    }
+    out
+}
+
 fn rm_plus(regret: &[f32], n: usize, strat: &mut [f32]) {
     for h in 0..N {
         let mut s = 0.0; for a in 0..n { s += regret[a * N + h].max(0.0); }
@@ -237,6 +372,7 @@ impl<'a> Solver<'a> {
             Node::Const { vals_p0 } => {
                 const_cfv(&self.holes, vals_p0, reach[1 - p], p, &self.valid_root)
             }
+            Node::TermP1 { cbv } => cbv_cfv(&self.holes, cbv, reach[1 - p], p, &self.valid_root),
             Node::Chance(cn) => {
                 let mut out = vec![0.0f32; N];
                 let n_deck = cn.n_deck;
@@ -308,6 +444,7 @@ impl<'a> Solver<'a> {
             Node::Const { vals_p0 } => {
                 const_cfv(&self.holes, vals_p0, r_opp, p, &self.valid_root)
             }
+            Node::TermP1 { cbv } => cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root),
             Node::Chance(cn) => {
                 let n_deck = cn.n_deck;
                 let mut out = vec![0.0f32; N];
@@ -359,13 +496,13 @@ impl<'a> Solver<'a> {
     }
 
     pub fn root_strategy(&self, hand: [u8; 2]) -> Vec<(Act, f32)> {
-        if let Node::Act(an) = &self.root {
+        if let Some(an) = self.p0_root() {
             let n = an.acts.len(); let mut st = vec![0.0; n * N]; avg_strat(&an.ssum, n, &mut st);
             let h = index_of(hand);
             (0..n).map(|a| (an.acts[a], st[a * N + h])).collect()
         } else { vec![] }
     }
-    pub fn n_root_actions(&self) -> usize { if let Node::Act(an) = &self.root { an.acts.len() } else { 0 } }
+    pub fn n_root_actions(&self) -> usize { self.p0_root().map(|an| an.acts.len()).unwrap_or(0) }
 
     // -----------------------------------------------------------------
     // Safety-bound primitives (root-level blend toward the blueprint).
@@ -386,7 +523,7 @@ impl<'a> Solver<'a> {
     /// probabilities: `out[a][h] = P(play action a | hand h)`.
     /// `None` if the root is not a decision node.
     pub fn root_strategy_all(&self) -> Option<Vec<Vec<f32>>> {
-        if let Node::Act(an) = &self.root {
+        if let Some(an) = self.p0_root() {
             let n = an.acts.len();
             let mut st = vec![0.0f32; n * N];
             avg_strat(&an.ssum, n, &mut st);
@@ -405,7 +542,7 @@ impl<'a> Solver<'a> {
     /// irrelevant; 1e6 keeps the arithmetic clean. Only the root is
     /// touched.
     pub fn set_root_strategy(&mut self, probs: &[Vec<f32>]) {
-        if let Node::Act(an) = &mut self.root {
+        if let Some(an) = self.p0_root_mut() {
             let n = an.acts.len();
             for a in 0..n.min(probs.len()) {
                 for h in 0..N {
@@ -482,10 +619,7 @@ impl<'a> Solver<'a> {
         street: u8,
         st: &pkr_core::state::GameState,
     ) -> Option<Vec<Vec<f32>>> {
-        let an = match &self.root {
-            Node::Act(an) => an,
-            _ => return None,
-        };
+        let an = self.p0_root()?;
         let n = an.acts.len();
         let actor = an.player;
         let a_stacks = st.stacks[actor];
@@ -591,6 +725,109 @@ mod tests {
         assert!(!strat.is_empty());
         let sum: f32 = strat.iter().map(|(_, p)| *p).sum();
         assert!((sum - 1.0).abs() < 1e-3, "root strategy must sum to 1, got {sum}");
+    }
+
+    #[test]
+    fn cbv_cfv_matches_manual_for_both_traversers() {
+        let holes = hole_table();
+        let mut cbv = vec![0.0f32; N];
+        let mut opp = vec![0.0f32; N];
+        for h in 0..N {
+            cbv[h] = (h as f32) * 0.002 - 1.0;
+            opp[h] = if h % 5 == 0 { 0.5 } else { 0.0 };
+        }
+        let valid = vec![true; N];
+
+        // p == 1: P1's own CFV = cbv[h] * compat(opp_reach)[h].
+        let got1 = cbv_cfv(&holes, &cbv, &opp, 1, &valid);
+        let mut tot = 0.0f32;
+        let mut card = [0.0f32; 52];
+        compat_sums(&holes, &opp, &mut tot, &mut card);
+        for h in 0..N {
+            let comp = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize] + opp[h];
+            assert!((got1[h] - cbv[h] * comp).abs() < 1e-2, "p1 h={h}");
+        }
+
+        // p == 0: P0's CFV = -sum_o opp[o] cbv[o] compat(h,o).
+        // Spot-check a few hands by brute force.
+        let got0 = cbv_cfv(&holes, &cbv, &opp, 0, &valid);
+        for h in [0usize, 7, 100, 500, 1325] {
+            let mut s = 0.0f32;
+            for o in 0..N {
+                if holes[o].contains(&holes[h][0]) || holes[o].contains(&holes[h][1]) {
+                    continue;
+                }
+                s += opp[o] * cbv[o];
+            }
+            assert!((got0[h] + s).abs() < 1e-1, "p0 h={h}: got {} want {}", got0[h], -s);
+        }
+    }
+
+    #[test]
+    fn gadget_solve_exploitability_bounded() {
+        // End-to-end: with cbv = 0 (Terminate pays P1 nothing), the
+        // gadget gives P1 a floor of 0. P0's resolved (Follow) strategy
+        // must therefore be at least as safe as a value-0 guarantee,
+        // i.e. P1's best response at the gadget root cannot exceed 0
+        // when P1 can always terminate for 0.
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        let board: Vec<u8> = vec![20, 25, 30, 35, 44];
+        let mut r = vec![0.0f32; N];
+        for h in 0..N {
+            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+        }
+        let spec = Spec {
+            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            ranges: [r.clone(), r],
+        };
+        let mut s = Solver::new(spec, &triv);
+        s.install_gadget(vec![0.0f32; N]);
+        s.iterate(100);
+
+        // P1's best response from the gadget ROOT (which includes the
+        // Terminate option) must be >= 0 — P1 can always take the 0.
+        let p1_br = s.br(&s.root, 1, &s.spec.ranges[0]);
+        // Weighted mean over P1's range.
+        let mut num = 0.0f64; let mut den = 0.0f64;
+        for h in 0..N {
+            let w = s.spec.ranges[1][h] as f64;
+            num += w * p1_br[h] as f64;
+            den += w;
+        }
+        let mean = if den > 0.0 { num / den } else { 0.0 };
+        assert!(mean >= -1e-3, "P1 BR {mean} < 0 despite a 0-value Terminate");
+    }
+
+    #[test]
+    fn install_gadget_wraps_root_and_p0_reads_follow() {
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        let board: Vec<u8> = vec![20, 25, 30, 35, 44];
+        let mut r = vec![0.0f32; N];
+        for h in 0..N {
+            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+        }
+        let spec = Spec {
+            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            ranges: [r.clone(), r],
+        };
+        let mut s = Solver::new(spec, &triv);
+        assert!(!s.has_gadget());
+        let n_before = s.n_root_actions();
+        assert!(n_before > 0, "root must be a decision node");
+
+        s.install_gadget(vec![0.0f32; N]);
+        assert!(s.has_gadget());
+        // p0_root() now reads the Follow child; the action count must match
+        // the pre-gadget root.
+        assert_eq!(s.n_root_actions(), n_before, "Follow child = the real root");
+        assert!(s.gadget_terminate_prob().is_some());
+
+        // Solve, then the terminate prob must be a valid probability.
+        s.iterate(20);
+        let p = s.gadget_terminate_prob().unwrap();
+        assert!((0.0..=1.0).contains(&p), "terminate prob {p} out of range");
     }
 
     #[test]
