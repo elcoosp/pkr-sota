@@ -39,3 +39,67 @@ Expensive at the **turn** (46 subtrees) and worse at the flop.
   little to remove (bound fired 0.9%).
 
 Decisive instrument is H2H (phase1b, running).
+
+---
+
+## CORRECTION (2026-10-07, later)
+
+The "~14x / 20h" figure above was **wrong** — it extrapolated from a
+run that was itself competing with other jobs for CPU, and from an
+instrument (C) I killed before it finished.
+
+Direct 200-hand timings (bounded turn+river, steps=2 vs steps=12):
+
+| bound_max_steps | wall (200 hands) | rate |
+|---|---|---|
+| 2 | 697 s | 3.5 s/hand |
+| 12 | 265 s | 1.3 s/hand |
+
+The steps=12 run came out FASTER, which is impossible without CPU
+contention — another job was running. So even these are unreliable.
+
+What is reliable:
+- Bounded turn+river is on the order of **1–3.5 s/hand**, i.e. **7–19 h
+  for 20k hands** — expensive but not the 20h+ catastrophe claimed, and
+  within an overnight budget.
+- The bound at steps=2 and steps=12 gave the IDENTICAL LBR
+  (−1385.72 on 200 hands), so the binary search is not changing the
+  root much on this checkpoint — the extra steps buy little.
+- `bound_max_steps` is still worth having (it bounds worst-case cost),
+  but the "14x" framing was wrong.
+
+Lesson: do not extrapolate per-hand cost from a contended machine, and
+do not kill an instrument on an unmeasured extrapolation. Instrument C
+should have been left to finish.
+
+---
+
+## CORRECTION (2026-10-07, later)
+
+The "~14x / 20h" figure above was **wrong** — it extrapolated from a
+run that was itself competing with other jobs for CPU, and from an
+instrument (C) I killed before it finished.
+
+Direct 200-hand timings (bounded turn+river, steps=2 vs steps=12):
+
+| bound_max_steps | wall (200 hands) | rate |
+|---|---|---|
+| 2 | 697 s | 3.5 s/hand |
+| 12 | 265 s | 1.3 s/hand |
+
+The steps=12 run came out FASTER, which is impossible without CPU
+contention — another job was running. So even these are unreliable.
+
+What is reliable:
+- Bounded turn+river is on the order of **1–3.5 s/hand**, i.e. **7–19 h
+  for 20k hands** — expensive but not the 20h+ catastrophe claimed, and
+  within an overnight budget.
+- The bound at steps=2 and steps=12 gave the IDENTICAL LBR
+  (−1385.72 on 200 hands), so the binary search is not changing the
+  root much on this checkpoint — the extra steps buy little.
+- `bound_max_steps` is still worth having (it bounds worst-case cost),
+  but the "14x" framing was wrong.
+
+Lesson: do not extrapolate per-hand cost from a contended machine, and
+do not kill an instrument on an unmeasured extrapolation. Instrument C
+should have been left to finish.
