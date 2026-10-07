@@ -42,6 +42,13 @@ pub struct VSearchCfg {
     /// Off by default; ON is the safe choice against an off-distribution
     /// opponent.
     pub bound: bool,
+    /// Binary-search steps for the bound alpha. Each step is one full
+    /// `opp_br_value` tree walk. 12 = default (fine at the river). Set
+    /// 2-4 for TURN solves, where the tree is ~46x the river. Fewer steps
+    /// = coarser (more conservative) blend, still SAFE (the `BR <= bp`
+    /// check holds). 0 = keep the search root if already safe, else pure
+    /// blueprint — cheapest safe mode.
+    pub bound_max_steps: u32,
     /// Hard wall-clock cap for ONE solve, in milliseconds. `iterate_budgeted`
     /// checks the clock every few iterations and stops early if exceeded.
     /// 0 = no cap (bounded only by `iters`).
@@ -56,6 +63,7 @@ impl Default for VSearchCfg {
             iters: 200,
             enabled_streets: [false, false, true, true],
             bound: false,
+            bound_max_steps: 12,
             time_budget_ms: 0,
         }
     }
@@ -433,6 +441,7 @@ mod handle_tests {
             iters: 1,
             enabled_streets: [false, false, true, true], // flop disabled
             bound: false,
+            bound_max_steps: 12,
             time_budget_ms: 0,
         };
         let holes = pkr_subgame::vector::hole_table();
@@ -456,6 +465,7 @@ mod handle_tests {
             iters: 30,
             enabled_streets: [false, false, false, true], // river only
             bound: false,
+            bound_max_steps: 12,
             time_budget_ms: 0,
         });
         let st = river_state();
@@ -496,6 +506,7 @@ mod handle_tests {
             iters: 10,
             enabled_streets: [false, false, false, true],
             bound: true,
+            bound_max_steps: 12,
             time_budget_ms: 0,
         });
         let st = river_state();
@@ -528,6 +539,7 @@ mod handle_tests {
             iters: 30,
             enabled_streets: [false, false, false, false],
             bound: false,
+            bound_max_steps: 12,
             time_budget_ms: 0,
         });
         let st = river_state();
@@ -549,6 +561,7 @@ mod handle_tests {
             iters: 5,
             enabled_streets: [false, false, false, true],
             bound: false,
+            bound_max_steps: 12,
             time_budget_ms: 0,
         });
         let st = river_state();
@@ -577,6 +590,7 @@ mod handle_tests {
             iters: 10,
             enabled_streets: [false, false, false, true],
             bound: false,
+            bound_max_steps: 12,
             time_budget_ms: 0,
         });
         let st = river_state();
