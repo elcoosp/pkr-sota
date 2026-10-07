@@ -36,7 +36,15 @@ pub enum Act { Fold, Check, Call, Bet(f32) }
 struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<Node>, regret: Vec<f32>, ssum: Vec<f32> }
 struct ShowNode { inv: f32, worst_first: Vec<u16>, rank: Vec<u32> }
 struct ChanceNode { cards: Vec<u8>, kids: Vec<Node>, n_deck: f32 }
-enum Node { Act(ActNode), Fold { folder: usize, inv: [f32; 2] }, Show(ShowNode), Chance(ChanceNode) }
+enum Node {
+    Act(ActNode),
+    Fold { folder: usize, inv: [f32; 2] },
+    Show(ShowNode),
+    Chance(ChanceNode),
+    /// Terminal paying a fixed per-hand value to P0 (before
+    /// opponent-reach weighting). The CFR-D gadget's Terminate leaf.
+    Const { vals_p0: Vec<f32> },
+}
 
 #[derive(Clone, Copy)]
 struct St { inv: [f32; 2], actor: usize, n_act: u8, raises: u8, last_raise: f32 }
@@ -176,6 +184,31 @@ fn show_cfv(holes: &[[u8; 2]], sn: &ShowNode, r_opp: &[f32], v: f32) -> Vec<f32>
     out
 }
 
+/// CFV of a `Node::Const` terminal: pays `vals_p0[h]` to P0, weighted by
+/// the opponent's reach (same convention as `fold_cfv` / `show_cfv`).
+/// `p` is the traverser; the returned value is theirs.
+fn const_cfv(
+    holes: &[[u8; 2]],
+    vals_p0: &[f32],
+    opp_reach: &[f32],
+    p: usize,
+    valid: &[bool],
+) -> Vec<f32> {
+    let mut tot = 0.0f32;
+    let mut card = [0.0f32; 52];
+    compat_sums(holes, opp_reach, &mut tot, &mut card);
+    let sign = if p == 0 { 1.0f32 } else { -1.0f32 };
+    let mut out = vec![0.0f32; N];
+    for h in 0..N {
+        if !valid[h] {
+            continue;
+        }
+        let comp = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize] + opp_reach[h];
+        out[h] = sign * vals_p0[h] * comp;
+    }
+    out
+}
+
 fn rm_plus(regret: &[f32], n: usize, strat: &mut [f32]) {
     for h in 0..N {
         let mut s = 0.0; for a in 0..n { s += regret[a * N + h].max(0.0); }
@@ -201,6 +234,9 @@ impl<'a> Solver<'a> {
                 fold_cfv(&self.holes, reach[1 - p], val, &self.valid_root)
             }
             Node::Show(sn) => show_cfv(&self.holes, sn, reach[1 - p], sp.dead * 0.5 + sn.inv),
+            Node::Const { vals_p0 } => {
+                const_cfv(&self.holes, vals_p0, reach[1 - p], p, &self.valid_root)
+            }
             Node::Chance(cn) => {
                 let mut out = vec![0.0f32; N];
                 let n_deck = cn.n_deck;
@@ -269,6 +305,9 @@ impl<'a> Solver<'a> {
                 fold_cfv(&self.holes, r_opp, val, &self.valid_root)
             }
             Node::Show(sn) => show_cfv(&self.holes, sn, r_opp, sp.dead * 0.5 + sn.inv),
+            Node::Const { vals_p0 } => {
+                const_cfv(&self.holes, vals_p0, r_opp, p, &self.valid_root)
+            }
             Node::Chance(cn) => {
                 let n_deck = cn.n_deck;
                 let mut out = vec![0.0f32; N];
@@ -552,6 +591,39 @@ mod tests {
         assert!(!strat.is_empty());
         let sum: f32 = strat.iter().map(|(_, p)| *p).sum();
         assert!((sum - 1.0).abs() < 1e-3, "root strategy must sum to 1, got {sum}");
+    }
+
+    #[test]
+    fn const_cfv_matches_manual_for_both_traversers() {
+        // const_cfv(holes, vals_p0, opp_reach, p, valid):
+        //   out[h] = sign(p) * vals_p0[h] * compat(opp_reach)[h]
+        // where compat(r)[h] = sum_{o compatible with h} r[o].
+        let holes = hole_table();
+        let mut vals = vec![0.0f32; N];
+        let mut opp = vec![0.0f32; N];
+        for h in 0..N {
+            vals[h] = (h as f32) * 0.001;
+            opp[h] = if h % 3 == 0 { 1.0 } else { 0.0 };
+        }
+        let valid = vec![true; N];
+
+        for p in [0usize, 1usize] {
+            let got = const_cfv(&holes, &vals, &opp, p, &valid);
+            let sign = if p == 0 { 1.0f32 } else { -1.0f32 };
+            // manual compat
+            let mut tot = 0.0f32;
+            let mut card = [0.0f32; 52];
+            compat_sums(&holes, &opp, &mut tot, &mut card);
+            for h in 0..N {
+                let comp = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize] + opp[h];
+                let want = sign * vals[h] * comp;
+                assert!(
+                    (got[h] - want).abs() < 1e-3,
+                    "p={p} h={h}: got {} want {}",
+                    got[h], want
+                );
+            }
+        }
     }
 
     #[test]
