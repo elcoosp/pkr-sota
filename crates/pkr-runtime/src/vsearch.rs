@@ -27,6 +27,7 @@ pub static VSEARCH_BOUND_BLENDED: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic: bounded solves that fell back to the raw solve
 /// (blueprint/root unavailable).
 pub static VSEARCH_BOUND_FELL_BACK: AtomicU64 = AtomicU64::new(0);
+pub static VSEARCH_GADGET_SOLVES: AtomicU64 = AtomicU64::new(0);
 
 pub struct VSearchCfg {
     pub bet_fracs: Vec<f32>,
@@ -217,6 +218,7 @@ pub fn solve_root_gadgetted(
     let mut solver = Solver::new(spec, &|h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b));
     if solver.n_root_actions() == 0 { return None; }
     solver.install_gadget(cbv);
+    VSEARCH_GADGET_SOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     solver.iterate(cfg.iters);
     Some(solver.root_strategy(our_hand))
 }
