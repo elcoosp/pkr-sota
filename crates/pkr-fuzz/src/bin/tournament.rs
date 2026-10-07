@@ -45,6 +45,7 @@ fn main() {
     let mut search_hands: usize = 12;
     let mut search_vector = false;
     let mut search_bound = false;
+    let mut search_gadget = false;
     let mut search_bound_steps: u32 = 12;
     let mut search_budget_ms: u64 = 0;
     let mut search_streets: [bool; 4] = [false, false, true, true];
@@ -62,6 +63,7 @@ fn main() {
             "--search-b" => { search_b = true; i += 1; }
             "--search-vector" => { search_vector = true; i += 1; }
             "--search-bound" => { search_bound = true; i += 1; }
+            "--search-gadget" => { search_gadget = true; i += 1; }
             "--search-bound-steps" => { search_bound_steps = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_bound_steps); i += 2; }
             "--search-budget-ms" => { search_budget_ms = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_budget_ms); i += 2; }
             "--search-streets" => {
@@ -183,10 +185,11 @@ fn main() {
                 iters: search_iters,
                 enabled_streets: search_streets,
                 bound: search_bound,
+                gadget: search_gadget,
                 bound_max_steps: search_bound_steps,
                 time_budget_ms: search_budget_ms,
             };
-            let h: Box<dyn pkr_runtime::subgame::SearchHandle> = if search_bound {
+            let h: Box<dyn pkr_runtime::subgame::SearchHandle> = if search_bound || search_gadget {
                 Box::new(pkr_runtime::vsearch::VSearchHandle::with_bound(
                     cfg,
                     abs.clone() as Arc<dyn pkr_contracts::AbstractionBuilder>,

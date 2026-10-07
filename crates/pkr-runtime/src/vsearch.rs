@@ -42,6 +42,11 @@ pub struct VSearchCfg {
     /// Off by default; ON is the safe choice against an off-distribution
     /// opponent.
     pub bound: bool,
+    /// CFR-D gadget: give the acting player's opponent a per-hand
+    /// Terminate option for their blueprint value. Safe by construction
+    /// (independent of ranges). Requires the acting player to be OOP and
+    /// a blueprint source; falls back to the raw solve otherwise.
+    pub gadget: bool,
     /// Binary-search steps for the bound alpha. Each step is one full
     /// `opp_br_value` tree walk. 12 = default (fine at the river). Set
     /// 2-4 for TURN solves, where the tree is ~46x the river. Fewer steps
@@ -63,6 +68,7 @@ impl Default for VSearchCfg {
             iters: 200,
             enabled_streets: [false, false, true, true],
             bound: false,
+            gadget: false,
             bound_max_steps: 12,
             time_budget_ms: 0,
         }
@@ -170,6 +176,48 @@ pub fn solve_root_bounded(
         best
     };
     solver.set_root_strategy(&final_root);
+    Some(solver.root_strategy(our_hand))
+}
+
+/// CFR-D gadget solve: gives the OPPONENT of the acting player a
+/// per-hand TERMINATE option for their blueprint-continuation value, so
+/// the resolved strategy is safe independent of the ranges.
+/// Requires the acting player to be solver-P0 (OOP); returns None
+/// otherwise (IP-acting gadget not yet wired).
+pub fn solve_root_gadgetted(
+    st: &pkr_core::state::GameState,
+    ranges: [Vec<f32>; 2],
+    our_hand: [u8; 2],
+    cfg: &VSearchCfg,
+    abs: &dyn pkr_contracts::AbstractionBuilder,
+    tbl: &pkr_cfr::table::CompactRegretTable,
+) -> Option<Vec<(Act, f32)>> {
+    if !cfg.enabled_streets[st.street as usize] { return None; }
+    let spec = spec_from_state(st, ranges.clone(), cfg.bet_fracs.clone(), cfg.max_raises);
+    if spec.root_actor != 0 { return None; }
+    let holes = pkr_subgame::vector::hole_table();
+    let to_hp = |r: &[f32]| {
+        let mut hs = Vec::new(); let mut ps = Vec::new();
+        for h in 0..r.len() { if r[h] > 0.0 { hs.push(holes[h]); ps.push(r[h] as f64); } }
+        (hs, ps)
+    };
+    let (h0, p0) = to_hp(&ranges[0]);
+    let (h1, p1) = to_hp(&ranges[1]);
+    if h0.is_empty() || h1.is_empty() { return None; }
+    let ev = pkr_eval::NlheEvaluator;
+    let poc = pkr_subgame::POCConfig {
+        root: st.clone(),
+        p0_range: pkr_subgame::Range::weighted(h0, p0),
+        p1_range: pkr_subgame::Range::weighted(h1, p1),
+        iterations: 1,
+        evaluator: &ev,
+        blueprint: Some((abs, tbl)),
+    };
+    let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
+    let mut solver = Solver::new(spec, &|h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b));
+    if solver.n_root_actions() == 0 { return None; }
+    solver.install_gadget(cbv);
+    solver.iterate(cfg.iters);
     Some(solver.root_strategy(our_hand))
 }
 
@@ -333,7 +381,25 @@ impl crate::subgame::SearchHandle for VSearchHandle {
             (opp_r, our_r)
         };
 
-        let acts = if self.cfg.bound {
+        let acts = if self.cfg.gadget {
+            match (self.bound_abs.as_ref(), self.bound_tbl.as_ref()) {
+                (Some(abs), Some(tbl)) => {
+                    let a: &dyn pkr_contracts::AbstractionBuilder = abs.as_ref();
+                    let t: &pkr_cfr::table::CompactRegretTable = tbl.as_ref();
+                    match solve_root_gadgetted(state, [r0.clone(), r1.clone()], *our_hole, &self.cfg, a, t) {
+                        Some(v) => v,
+                        None => match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
+                            Some(v) => v,
+                            None => return None,
+                        },
+                    }
+                }
+                _ => match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
+                    Some(v) => v,
+                    None => return None,
+                },
+            }
+        } else if self.cfg.bound {
             match (self.bound_abs.as_ref(), self.bound_tbl.as_ref()) {
                 (Some(abs), Some(tbl)) => {
                     let a: &dyn pkr_contracts::AbstractionBuilder = abs.as_ref();
@@ -441,6 +507,7 @@ mod handle_tests {
             iters: 1,
             enabled_streets: [false, false, true, true], // flop disabled
             bound: false,
+            gadget: false,
             bound_max_steps: 12,
             time_budget_ms: 0,
         };
@@ -465,6 +532,7 @@ mod handle_tests {
             iters: 30,
             enabled_streets: [false, false, false, true], // river only
             bound: false,
+            gadget: false,
             bound_max_steps: 12,
             time_budget_ms: 0,
         });
@@ -496,6 +564,40 @@ mod handle_tests {
         assert!(dist.iter().all(|x| *x >= 0.0), "negative probability");
     }
 
+    /// The gadget path must fall back to the raw solve when no
+    /// abstraction/table is supplied, returning a distribution (same
+    /// contract as `bound`).
+    #[test]
+    fn solve_root_gadgetted_runs() {
+        let h = VSearchHandle::new(VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: 10,
+            enabled_streets: [false, false, false, true],
+            bound: false,
+            gadget: true,
+            bound_max_steps: 12,
+            time_budget_ms: 0,
+        });
+        let st = river_state();
+        let board = &st.board[..st.board_len as usize];
+        let our = [0u8, 5u8];
+        let mut r = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        let mut n = 0usize;
+        for i in 0..pkr_subgame::range_tracker::N_HANDS {
+            let hh = pkr_subgame::range_tracker::hole_at(i);
+            if hh.iter().any(|c| board.contains(c)) { continue; }
+            if hh.iter().any(|c| our.contains(c)) { continue; }
+            r[i] = 1.0; n += 1;
+        }
+        let u = 1.0 / n as f64;
+        for x in r.iter_mut() { if *x > 0.0 { *x = u; } }
+        let out = crate::subgame::SearchHandle::decide(&h, &st, &our, &r);
+        assert!(out.is_some(), "gadget without sources falls back to raw solve");
+        let sum: f64 = out.unwrap().iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+    }
+
     /// `bound: true` with no abstraction/table must NOT panic — it falls
     /// back to the raw solve and returns a normalized distribution.
     #[test]
@@ -506,6 +608,7 @@ mod handle_tests {
             iters: 10,
             enabled_streets: [false, false, false, true],
             bound: true,
+            gadget: false,
             bound_max_steps: 12,
             time_budget_ms: 0,
         });
@@ -539,6 +642,7 @@ mod handle_tests {
             iters: 30,
             enabled_streets: [false, false, false, false],
             bound: false,
+            gadget: false,
             bound_max_steps: 12,
             time_budget_ms: 0,
         });
@@ -561,6 +665,7 @@ mod handle_tests {
             iters: 5,
             enabled_streets: [false, false, false, true],
             bound: false,
+            gadget: false,
             bound_max_steps: 12,
             time_budget_ms: 0,
         });
@@ -590,6 +695,7 @@ mod handle_tests {
             iters: 10,
             enabled_streets: [false, false, false, true],
             bound: false,
+            gadget: false,
             bound_max_steps: 12,
             time_budget_ms: 0,
         });
