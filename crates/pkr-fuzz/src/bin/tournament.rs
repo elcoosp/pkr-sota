@@ -236,6 +236,7 @@ fn main() {
             pkr_runtime::vsearch::VSEARCH_BOUND_BLENDED.load(Ordering::Relaxed),
             pkr_runtime::vsearch::VSEARCH_BOUND_FELL_BACK.load(Ordering::Relaxed)
         );
+        eprintln!("[SEARCH_DEBUG] gadget_solves={}", pkr_runtime::vsearch::VSEARCH_GADGET_SOLVES.load(Ordering::Relaxed));
     }
     println!("  B: {}", b_path.display());
     println!("  hands: {}  seed: {}", hands, seed);
