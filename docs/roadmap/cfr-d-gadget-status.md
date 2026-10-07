@@ -59,3 +59,67 @@ LBR −933 (vs −1307 gadget-off). Fires for both OOP and IP actors.
 
 A vector-native cbv (threading the infoset signature to avoid the
 sampled tree) would be faster. Current cbv is correct and affordable.
+
+---
+
+## Verification (2026-10-07, real artifacts)
+
+`crates/pkr-runtime/tests/gadget_both_seats.rs` (`#[ignore]`d; run
+`cargo test -p pkr-runtime --test gadget_both_seats -- --ignored
+--nocapture`) runs `solve_root_gadgetted` on the V5 checkpoint +
+`v42-post-audit` tables, river spot, real ranges (our hand = point mass,
+opponent = uniform-over-board-free).
+
+### VERIFIED
+
+- **Both seats return a valid strategy.**
+  - OOP actor: `sum=1.000`, `[Check 0.966, Bet2 0.011, Bet4 0.011, Bet198 0.011]`
+  - IP actor: `sum=1.000`, `[Check 0.079, Bet2 0.080, Bet4 0.081, Bet198 0.760]`
+  The dealer-flip seat plumbing reaches a real solve; the IP path does
+  not return `None` and produces a distinct strategy.
+- **`p1_cbv_per_hand` is real.** `finite=true, nonzero=990,
+  min=-1.525, max=10.470` — non-trivial, finite, no blow-up. The
+  point-mass range keeps the sampled tree at 1×1326 deals.
+
+### NOT VERIFIED (honest)
+
+- **The safety theorem.** The `#[ignore]`d acceptance tests use a
+  trivial (all-ties) evaluator and prove only that the *mechanism*
+  honors Terminate (P1's BR ≥ the floor). A real-blueprint
+  exploitability comparison — gadgetted strategy ≤ blueprint
+  exploitability on the same subgame — is NOT done.
+- **Performance.** cbv took ~85 s per seat (170 s for both) in the
+  debug test build. Fine offline; too slow for real-time without
+  caching or a release build. Not benchmarked in release.
+
+---
+
+## Verification (2026-10-07, real artifacts)
+
+`crates/pkr-runtime/tests/gadget_both_seats.rs` (`#[ignore]`d; run
+`cargo test -p pkr-runtime --test gadget_both_seats -- --ignored
+--nocapture`) runs `solve_root_gadgetted` on the V5 checkpoint +
+`v42-post-audit` tables, river spot, real ranges (our hand = point mass,
+opponent = uniform-over-board-free).
+
+### VERIFIED
+
+- **Both seats return a valid strategy.**
+  - OOP actor: `sum=1.000`, `[Check 0.966, Bet2 0.011, Bet4 0.011, Bet198 0.011]`
+  - IP actor: `sum=1.000`, `[Check 0.079, Bet2 0.080, Bet4 0.081, Bet198 0.760]`
+  The dealer-flip seat plumbing reaches a real solve; the IP path does
+  not return `None` and produces a distinct strategy.
+- **`p1_cbv_per_hand` is real.** `finite=true, nonzero=990,
+  min=-1.525, max=10.470` — non-trivial, finite, no blow-up. The
+  point-mass range keeps the sampled tree at 1×1326 deals.
+
+### NOT VERIFIED (honest)
+
+- **The safety theorem.** The `#[ignore]`d acceptance tests use a
+  trivial (all-ties) evaluator and prove only that the *mechanism*
+  honors Terminate (P1's BR ≥ the floor). A real-blueprint
+  exploitability comparison — gadgetted strategy ≤ blueprint
+  exploitability on the same subgame — is NOT done.
+- **Performance.** cbv took ~85 s per seat (170 s for both) in the
+  debug test build. Fine offline; too slow for real-time without
+  caching or a release build. Not benchmarked in release.
