@@ -44,10 +44,9 @@ enum Node {
     /// Terminal paying a fixed per-hand value to P0 (before
     /// opponent-reach weighting). The CFR-D gadget's Terminate leaf.
     Const { vals_p0: Vec<f32> },
-    /// CFR-D gadget Terminate leaf: pays the OPPONENT (P1) the
-    /// per-hand value `cbv[h]`. P0's value is its negation,
-    /// reach-weighted over P0's range.
-    TermP1 { cbv: Vec<f32> },
+    /// CFR-D gadget Terminate leaf: pays `payee` (0 or 1) the
+    /// per-hand value `cbv[h]`; the other player gets its negation.
+    TermGadget { cbv: Vec<f32>, payee: u8 },
 }
 
 #[derive(Clone, Copy)]
@@ -60,15 +59,17 @@ pub struct Solver<'a> {
     root: Node,
     pub iters: u32,
     valid_root: Vec<bool>,
-    /// CFR-D gadget installed: `root` is a P1 ActNode `[Terminate,
-    /// Follow]`; P0's real root is the `Follow` child (`kids[1]`).
-    gadget: bool,
+    /// CFR-D gadget installed: `Some(payee)` where `payee` (0 or 1) is
+    /// the player the Terminate leaf pays. `root` is then an ActNode for
+    /// player `1 - payee` with kids `[Terminate, Follow]`; P0's real
+    /// root is the `Follow` child (`kids[1]`).
+    gadget_player: Option<u8>,
 }
 
 impl<'a> Solver<'a> {
     pub fn new(spec: Spec, eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync)) -> Self {
         let holes = hole_table();
-        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget: false };
+        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None };
         s.valid_root = (0..N).map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c))).collect();
         for p in 0..2 { for h in 0..N { if !s.valid_root[h] { s.spec.ranges[p][h] = 0.0; } } }
         let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
@@ -84,7 +85,7 @@ impl<'a> Solver<'a> {
     /// CFR-D gadget installed, P0's real root is the `Follow` child of
     /// the gadget's P1 node; otherwise it is `self.root` itself.
     fn p0_root(&self) -> Option<&ActNode> {
-        let target = if self.gadget {
+        let target = if self.gadget_player.is_some() {
             match &self.root {
                 Node::Act(an) if an.kids.len() >= 2 => &an.kids[1],
                 _ => return None,
@@ -99,7 +100,7 @@ impl<'a> Solver<'a> {
     }
 
     fn p0_root_mut(&mut self) -> Option<&mut ActNode> {
-        let target = if self.gadget {
+        let target = if self.gadget_player.is_some() {
             match &mut self.root {
                 Node::Act(an) if an.kids.len() >= 2 => &mut an.kids[1],
                 _ => return None,
@@ -121,40 +122,49 @@ impl<'a> Solver<'a> {
     /// strategy at Follow is the safe re-solved strategy.
     ///
     /// Must be called BEFORE `iterate`.
-    pub fn install_gadget(&mut self, cbv: Vec<f32>) {
+    pub fn install_gadget(&mut self, cbv: Vec<f32>, payee: u8) {
         assert_eq!(cbv.len(), N, "cbv must have one value per hand");
-        if self.gadget {
+        assert!(payee < 2, "payee must be 0 or 1");
+        if self.gadget_player.is_some() {
             return;
         }
+        // The gadget node belongs to the OPPONENT of the payee; the
+        // payee is exactly the player the acting side re-solves against.
+        let gadget_actor = (1 - payee) as usize;
         let real_root = std::mem::replace(
             &mut self.root,
             Node::Fold { folder: 0, inv: [0.0; 2] },
         );
         let acts = vec![Act::Fold, Act::Check];
         let kids = vec![
-            Node::TermP1 { cbv },
+            Node::TermGadget { cbv, payee },
             real_root,
         ];
         let n = acts.len();
         self.root = Node::Act(ActNode {
-            player: 1,
+            player: gadget_actor,
             acts,
             kids,
             regret: vec![0.0; n * N],
             ssum: vec![0.0; n * N],
         });
-        self.gadget = true;
+        self.gadget_player = Some(payee);
     }
 
     /// Whether the CFR-D gadget is installed.
     pub fn has_gadget(&self) -> bool {
-        self.gadget
+        self.gadget_player.is_some()
+    }
+
+    /// The player the gadget's Terminate leaf pays (0 or 1), if any.
+    pub fn gadget_payee(&self) -> Option<u8> {
+        self.gadget_player
     }
 
     /// P1's average probability of TERMINATING at the gadget root,
     /// averaged over hands. `None` if no gadget. Diagnostic.
     pub fn gadget_terminate_prob(&self) -> Option<f32> {
-        if !self.gadget {
+        if self.gadget_player.is_none() {
             return None;
         }
         match &self.root {
@@ -314,12 +324,12 @@ fn const_cfv(
 /// CFV of the CFR-D `TermP1` leaf. `cbv[h]` is P1's value for hand `h`;
 /// P0's value is its negation. Returns the TRAVERSER's counterfactual
 /// value, reach-weighted by the opponent.
-fn cbv_cfv(holes: &[[u8; 2]], cbv: &[f32], opp_reach: &[f32], p: usize, valid: &[bool]) -> Vec<f32> {
+fn cbv_cfv(holes: &[[u8; 2]], cbv: &[f32], opp_reach: &[f32], p: usize, valid: &[bool], payee: u8) -> Vec<f32> {
     let mut tot = 0.0f32;
     let mut card = [0.0f32; 52];
     compat_sums(holes, opp_reach, &mut tot, &mut card);
     let mut out = vec![0.0f32; N];
-    if p == 1 {
+    if p as u8 == payee {
         for h in 0..N {
             if !valid[h] { continue; }
             let c = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize] + opp_reach[h];
@@ -372,7 +382,7 @@ impl<'a> Solver<'a> {
             Node::Const { vals_p0 } => {
                 const_cfv(&self.holes, vals_p0, reach[1 - p], p, &self.valid_root)
             }
-            Node::TermP1 { cbv } => cbv_cfv(&self.holes, cbv, reach[1 - p], p, &self.valid_root),
+            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, reach[1 - p], p, &self.valid_root, *payee),
             Node::Chance(cn) => {
                 let mut out = vec![0.0f32; N];
                 let n_deck = cn.n_deck;
@@ -444,7 +454,7 @@ impl<'a> Solver<'a> {
             Node::Const { vals_p0 } => {
                 const_cfv(&self.holes, vals_p0, r_opp, p, &self.valid_root)
             }
-            Node::TermP1 { cbv } => cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root),
+            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root, *payee),
             Node::Chance(cn) => {
                 let n_deck = cn.n_deck;
                 let mut out = vec![0.0f32; N];
@@ -739,7 +749,7 @@ mod tests {
         let valid = vec![true; N];
 
         // p == 1: P1's own CFV = cbv[h] * compat(opp_reach)[h].
-        let got1 = cbv_cfv(&holes, &cbv, &opp, 1, &valid);
+        let got1 = cbv_cfv(&holes, &cbv, &opp, 1, &valid, 1);
         let mut tot = 0.0f32;
         let mut card = [0.0f32; 52];
         compat_sums(&holes, &opp, &mut tot, &mut card);
@@ -750,7 +760,7 @@ mod tests {
 
         // p == 0: P0's CFV = -sum_o opp[o] cbv[o] compat(h,o).
         // Spot-check a few hands by brute force.
-        let got0 = cbv_cfv(&holes, &cbv, &opp, 0, &valid);
+        let got0 = cbv_cfv(&holes, &cbv, &opp, 0, &valid, 1);
         for h in [0usize, 7, 100, 500, 1325] {
             let mut s = 0.0f32;
             for o in 0..N {
@@ -790,7 +800,7 @@ mod tests {
         // gadget root (with Terminate) to P1's BR at a plain tree with
         // the SAME terminate option removed.
         let mut g = Solver::new(mk_spec(), &triv);
-        g.install_gadget(cbv.clone());
+        g.install_gadget(cbv.clone(), 1);
         g.iterate(80);
 
         // P1 BR at the gadget root includes Terminate -> at least the
@@ -836,7 +846,7 @@ mod tests {
             ranges: [r.clone(), r],
         };
         let mut s = Solver::new(spec, &triv);
-        s.install_gadget(vec![0.0f32; N]);
+        s.install_gadget(vec![0.0f32; N], 1);
         s.iterate(100);
 
         // P1's best response from the gadget ROOT (which includes the
@@ -871,7 +881,7 @@ mod tests {
         let n_before = s.n_root_actions();
         assert!(n_before > 0, "root must be a decision node");
 
-        s.install_gadget(vec![0.0f32; N]);
+        s.install_gadget(vec![0.0f32; N], 1);
         assert!(s.has_gadget());
         // p0_root() now reads the Follow child; the action count must match
         // the pre-gadget root.

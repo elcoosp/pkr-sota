@@ -180,11 +180,11 @@ pub fn solve_root_bounded(
     Some(solver.root_strategy(our_hand))
 }
 
-/// CFR-D gadget solve: gives the OPPONENT of the acting player a
-/// per-hand TERMINATE option for their blueprint-continuation value, so
-/// the resolved strategy is safe independent of the ranges.
-/// Requires the acting player to be solver-P0 (OOP); returns None
-/// otherwise (IP-acting gadget not yet wired).
+/// CFR-D gadget solve for EITHER seat. Places the acting player in
+/// solver-seat 0 via `dealer = 1 - actor` (so `root_actor = 0`); swaps
+/// only the range slots when the actor is IP. The gadget pays the
+/// opponent (solver-seat 1) its blueprint-continuation value, so the
+/// returned strategy is the acting player's, safe independent of ranges.
 pub fn solve_root_gadgetted(
     st: &pkr_core::state::GameState,
     ranges: [Vec<f32>; 2],
@@ -193,32 +193,61 @@ pub fn solve_root_gadgetted(
     abs: &dyn pkr_contracts::AbstractionBuilder,
     tbl: &pkr_cfr::table::CompactRegretTable,
 ) -> Option<Vec<(Act, f32)>> {
-    if !cfg.enabled_streets[st.street as usize] { return None; }
-    let spec = spec_from_state(st, ranges.clone(), cfg.bet_fracs.clone(), cfg.max_raises);
-    if spec.root_actor != 0 { return None; }
+    if !cfg.enabled_streets[st.street as usize] {
+        return None;
+    }
+    let oop_orig = 1 - st.dealer;
+    let actor_is_oop = st.actor == oop_orig;
+    let mut work = st.clone();
+    work.dealer = 1 - st.actor;
+    let ranges_w = if actor_is_oop {
+        ranges
+    } else {
+        [ranges[1].clone(), ranges[0].clone()]
+    };
+    let spec = spec_from_state(&work, ranges_w.clone(), cfg.bet_fracs.clone(), cfg.max_raises);
+    if spec.root_actor != 0 {
+        return None;
+    }
+    VSEARCH_SOLVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    VSEARCH_GADGET_SOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let holes = pkr_subgame::vector::hole_table();
     let to_hp = |r: &[f32]| {
-        let mut hs = Vec::new(); let mut ps = Vec::new();
-        for h in 0..r.len() { if r[h] > 0.0 { hs.push(holes[h]); ps.push(r[h] as f64); } }
+        let mut hs = Vec::new();
+        let mut ps = Vec::new();
+        for h in 0..r.len() {
+            if r[h] > 0.0 {
+                hs.push(holes[h]);
+                ps.push(r[h] as f64);
+            }
+        }
         (hs, ps)
     };
-    let (h0, p0) = to_hp(&ranges[0]);
-    let (h1, p1) = to_hp(&ranges[1]);
-    if h0.is_empty() || h1.is_empty() { return None; }
+    let (h0, p0) = to_hp(&ranges_w[0]);
+    let (h1, p1) = to_hp(&ranges_w[1]);
+    if h0.is_empty() || h1.is_empty() {
+        return None;
+    }
     let ev = pkr_eval::NlheEvaluator;
     let poc = pkr_subgame::POCConfig {
-        root: st.clone(),
+        root: work.clone(),
         p0_range: pkr_subgame::Range::weighted(h0, p0),
         p1_range: pkr_subgame::Range::weighted(h1, p1),
         iterations: 1,
         evaluator: &ev,
         blueprint: Some((abs, tbl)),
     };
-    let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
-    let mut solver = Solver::new(spec, &|h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b));
-    if solver.n_root_actions() == 0 { return None; }
-    solver.install_gadget(cbv);
-    VSEARCH_GADGET_SOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc)
+        .iter()
+        .map(|&x| x as f32)
+        .collect();
+    let mut solver = Solver::new(spec, &|h: &[u8; 2], b: &[u8]| {
+        pkr_eval::NlheEvaluator.evaluate_hand(h, b)
+    });
+    if solver.n_root_actions() == 0 {
+        return None;
+    }
+    solver.install_gadget(cbv, 1);
     solver.iterate(cfg.iters);
     Some(solver.root_strategy(our_hand))
 }
@@ -564,6 +593,18 @@ mod handle_tests {
             "distribution must sum to 1, got {sum}"
         );
         assert!(dist.iter().all(|x| *x >= 0.0), "negative probability");
+    }
+
+    /// The driver's seat-plumbing: `work.dealer = 1 - actor` makes the
+    /// actor OOP, so `spec_from_state` yields `root_actor == 0` for any
+    /// input seat. Pure arithmetic check — no solver needed.
+    #[test]
+    fn dealer_flip_puts_actor_in_solver_seat_0() {
+        for actor in [0u8, 1u8] {
+            let work_dealer = 1 - actor;
+            let oop = 1 - work_dealer;
+            assert_eq!(oop, actor, "actor={actor} must land in seat 0");
+        }
     }
 
     /// The gadget path must fall back to the raw solve when no

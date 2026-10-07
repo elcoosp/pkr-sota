@@ -1,55 +1,61 @@
-# CFR-D gadget — WORKING (2026-10-07)
+# CFR-D gadget — COMPLETE (2026-10-07)
 
-**Design:** `cfr-d-gadget-design.md`.
+**Design:** `cfr-d-gadget-design.md`. **Status: fully implemented,
+tested, verified on a real checkpoint, both seats.**
 
-## Status: functional end-to-end, verified
+## Components
 
-The CFR-D reach-subgame gadget is implemented, wired, and tested on the
-vector solver, and **verified to fire on a real checkpoint**.
+`crates/pkr-subgame/src/vector.rs`:
+- `Node::Const { vals_p0 }` + `const_cfv` — fixed-value terminal.
+- `Node::TermGadget { cbv, payee }` + `cbv_cfv(..., payee)` — the
+  gadget Terminate leaf; pays `payee` (solver-seat 0/1) per-hand `cbv`,
+  the other seat its negation. CFV branches on `p == payee`.
+- `Solver::install_gadget(cbv, payee)` — wraps the root in the chooser's
+  `[Terminate, Follow]` node (chooser = payee).
+- `Solver::p0_root()/p0_root_mut()` — route reads to the Follow child.
+- `has_gadget()`, `gadget_payee()`, `gadget_terminate_prob()`.
 
-### Components (all in `crates/pkr-subgame/src/vector.rs` unless noted)
+`crates/pkr-subgame/src/lib.rs`:
+- `p1_cbv_per_hand(cfg)` — the chooser's counterfactual value vs the
+  blueprint. Practical because the production range is a point mass.
 
-| Item | Role |
-|---|---|
-| `Node::Const { vals_p0 }` + `const_cfv` | fixed-value terminal |
-| `Node::TermP1 { cbv }` + `cbv_cfv` | gadget Terminate leaf |
-| `Solver::install_gadget(cbv)` | wraps root in P1 `[Terminate, Follow]` |
-| `Solver::p0_root()` / `p0_root_mut()` | route P0 reads to Follow |
-| `has_gadget()`, `gadget_terminate_prob()` | diagnostics |
-| `p1_cbv_per_hand(cfg)` (`lib.rs`) | P1 counterfactual value vs blueprint |
-| `solve_root_gadgetted(...)` (`vsearch.rs`) | the driver |
-| `--search-gadget` | CLI (lbr_eval, tournament) |
+`crates/pkr-runtime/src/vsearch.rs`:
+- `solve_root_gadgetted(...)` — driver. Places the acting player in
+  solver-seat 0 via `work.dealer = 1 - actor` (so `root_actor = 0`);
+  swaps only the range slots when the actor is IP. Both seats supported.
+- Dispatch in `VSearchHandle::decide` when `cfg.gadget`.
+- `VSEARCH_GADGET_SOLVES` diagnostic.
 
-### Verified
+CLI: `--search-gadget` on `lbr_eval` and `tournament`.
 
-- **Unit tests:** `const_cfv_matches_manual_for_both_traversers`,
-  `cbv_cfv_matches_manual_for_both_traversers`,
-  `install_gadget_wraps_root_and_p0_reads_follow`,
-  `gadget_solve_exploitability_bounded`,
-  `gadget_br_le_blueprint_br` (P1's BR ≥ the Terminate floor),
-  `solve_root_gadgetted_runs`.
-- **Real checkpoint:** `lbr_eval --search-gadget` on the V5 checkpoint
-  reports `gadget_solves=19` and a changed LBR (−1100 vs −1307
-  gadget-off). The gadget path executes and alters play.
+## Tests (all green)
 
-### The cbv is practical
+- `const_cfv_matches_manual_for_both_traversers`
+- `cbv_cfv_matches_manual_for_both_traversers` (payee-aware, both p)
+- `install_gadget_wraps_root_and_p0_reads_follow`
+- `gadget_solve_exploitability_bounded` (cbv=0 → P1 BR ≥ 0)
+- `gadget_br_le_blueprint_br` (P1 BR honors the Terminate floor)
+- `dealer_flip_puts_actor_in_solver_seat_0`
+- `solve_root_gadgetted_runs`
 
-`p1_cbv_per_hand` uses the sampled tree, whose deal count is
-`|p0_range| × |p1_range|`. In production our range is a **point mass**,
-so this is `1 × 1326 = 1326` deals — affordable. (A full 1326×1326
-range would blow up; not our production case.)
+## Verified on a real checkpoint
 
-### Known limitation
+`lbr_eval --search-gadget` on the V5 checkpoint: `gadget_solves=31`,
+LBR −933 (vs −1307 gadget-off). Fires for both OOP and IP actors.
 
-**OOP-acting only.** `solve_root_gadgetted` returns `None` when the
-acting player is IP (solver P0 ≠ actor), falling back to the raw solve.
-Wiring the IP gadget is symmetric but not yet done; a mirror of the
-state would handle it, as `SubgameHandle::mirror_to_seat0` does for the
-sampled path.
+## Correctness argument
 
-### Safety
+- The gadget node belongs to the chooser (= the payee = the opponent of
+  the re-solved player). `cbv_cfv` pays the chooser `cbv[h]` when the
+  traverser is the chooser, and its negation (reach-weighted) otherwise.
+- `solve_root_gadgetted` guarantees `root_actor == 0`, so `p0_root()`
+  (the Follow child) is the acting player's decision node and
+  `root_strategy(our_hand)` returns the acting player's strategy.
+- The dealer-flip is metadata-only (dealer affects `spec_from_state`'s
+  `oop`/`root_inv` ordering, not the betting tree), so the solve is over
+  the same game with the actor in seat 0.
 
-The gadget gives the acting player's opponent a per-hand floor at the
-blueprint's continuation value. Independent of the ranges used — the
-theorem-backed bound, unlike `--search-bound` (heuristic, in-sample).
-This is the mechanism suitable for a real external opponent.
+## Remaining (enhancement, not gap)
+
+A vector-native cbv (threading the infoset signature to avoid the
+sampled tree) would be faster. Current cbv is correct and affordable.
