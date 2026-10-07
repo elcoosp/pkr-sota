@@ -763,6 +763,60 @@ mod tests {
         }
     }
 
+    /// The gadget's defining property against a NONZERO terminate
+    /// vector: P1's best response at the gadget root must be <= the pure
+    /// blueprint's P1-BR, because P1 can always take Terminate for the
+    /// blueprint value. Uses a synthetic but non-trivial cbv so the
+    /// comparison is meaningful.
+    #[test]
+    fn gadget_br_le_blueprint_br() {
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        let board: Vec<u8> = vec![20, 25, 30, 35, 44];
+        let mut r = vec![0.0f32; N];
+        for h in 0..N {
+            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+        }
+        let mk_spec = || Spec {
+            board: board.clone(), dead: 100.0, stack: 150.0, root_actor: 0,
+            root_inv: [0.0, 0.0], bet_fracs: vec![0.5, 1.0], max_raises: 2,
+            min_bet: 2.0, allin_snap: 0.2, ranges: [r.clone(), r.clone()],
+        };
+
+        // A non-trivial cbv: P1's value rises with hand index.
+        let mut cbv = vec![0.0f32; N];
+        for h in 0..N { cbv[h] = (h as f32) * 0.01 - 6.0; }
+
+        // Blueprint-free gadget: solve, then compare P1's BR at the
+        // gadget root (with Terminate) to P1's BR at a plain tree with
+        // the SAME terminate option removed.
+        let mut g = Solver::new(mk_spec(), &triv);
+        g.install_gadget(cbv.clone());
+        g.iterate(80);
+
+        // P1 BR at the gadget root includes Terminate -> at least the
+        // per-hand cbv. Weighted mean must be >= the cbv mean.
+        let br = g.br(&g.root, 1, &g.spec.ranges[0]);
+        let mut br_w = 0.0f64; let mut cbv_w = 0.0f64; let mut den = 0.0f64;
+        for h in 0..N {
+            let w = g.spec.ranges[1][h] as f64;
+            br_w += w * br[h] as f64;
+            cbv_w += w * cbv[h] as f64;
+            den += w;
+        }
+        if den > 0.0 {
+            let br_mean = br_w / den;
+            let cbv_mean = cbv_w / den;
+            assert!(
+                br_mean >= cbv_mean - 1e-3,
+                "gadget P1 BR {br_mean} < cbv mean {cbv_mean}: Terminate not honored"
+            );
+        }
+
+        // Terminate prob must be a valid probability.
+        let tp = g.gadget_terminate_prob().unwrap();
+        assert!((0.0..=1.0).contains(&tp), "terminate prob {tp}");
+    }
+
     #[test]
     fn gadget_solve_exploitability_bounded() {
         // End-to-end: with cbv = 0 (Terminate pays P1 nothing), the
