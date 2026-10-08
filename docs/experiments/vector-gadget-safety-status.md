@@ -29,3 +29,15 @@ Why the vector gadget fails. Candidate causes: CFR not converged at
 80 iters on this tree; the aggregate-root reduction interacting with
 the gadget; or a residual cbv mismatch. Worth a focused session, but
 NOT worth shipping on. Use the sampled gadget.
+
+## Additional check: not a convergence problem
+
+Re-ran the on-tree safety test at 400 iterations (vs 80):
+  blueprint_br = 8.4394
+  gadget_br    = 11.4039   (still worse)
+
+So the failure is NOT CFR under-convergence. The vector gadget is
+apparently incorrect for a structural reason not yet identified
+(candidates: the aggregate-root reduction interacting with the gadget,
+or a residual cbv/reach convention mismatch). NOT chased further -
+the sampled gadget is proven and is the one to ship.
