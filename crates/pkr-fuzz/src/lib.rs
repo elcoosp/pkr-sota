@@ -442,6 +442,48 @@ fn decide_from_blueprint(
         );
     }
 
+    // SEARCH HOOK: when the caller attached a SearchHandle (arena --search),
+    // ask it first. Mirrors tournament::decide_via. Previously ctx.search
+    // was never read here, so arena could not exercise search at all.
+    if let Some(sh) = ctx.search {
+        const NH: usize = 1326;
+        let board = &state.board[..state.board_len as usize];
+        let mut uniform = [0.0f64; NH];
+        let mut n = 0usize;
+        for i in 0..NH {
+            let hh = pkr_subgame::range_tracker::hole_at(i);
+            if hh.iter().any(|c| board.contains(c)) { continue; }
+            uniform[i] = 1.0; n += 1;
+        }
+        if n > 0 {
+            let u = 1.0 / n as f64;
+            for x in uniform.iter_mut() { if *x > 0.0 { *x = u; } }
+            let hole = state.hole[state.actor];
+            if let Some(strat) = sh.decide(state, &hole, &uniform) {
+                // map buckets -> representative legal actions
+                let mut b2a: [Option<usize>; 6] = [None; 6];
+                for (i, a) in buf.iter().take(n_legal).enumerate() {
+                    let b = pkr_core::abstraction::action_bucket(
+                        &a.kind, state.stacks[state.actor], state.street_bets[state.actor],
+                        state.street_bets[1 - state.actor], state.pot) as usize;
+                    if b < 6 && b2a[b].is_none() { b2a[b] = Some(i); }
+                }
+                let total: f64 = (0..6).filter(|&b| b2a[b].is_some()).map(|b| strat[b]).sum();
+                if total > 1e-9 {
+                    let r: f64 = rng.random::<f64>() * total;
+                    let mut acc = 0.0;
+                    let mut pick = (0..6).find(|&b| b2a[b].is_some()).unwrap_or(0);
+                    for b in 0..6 {
+                        if b2a[b].is_none() { continue; }
+                        acc += strat[b];
+                        if r <= acc { pick = b; break; }
+                    }
+                    if let Some(i) = b2a[pick] { return (buf[i], true); }
+                }
+            }
+        }
+    }
+
     // Compute the infoset hash. NOTE: older blueprints (v8 and earlier)
     // were trained with the raw [u8; 5] board array (length 5 always),
     // so we must match that here for lookups to hit. After the T0.2d

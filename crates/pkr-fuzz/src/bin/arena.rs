@@ -41,6 +41,10 @@ fn main() {
     let mut hands: u32 = 5000;
     let mut seed: u64 = 42;
     let mut sig: Option<u8> = None; // set by --sig; None = leave PKR_SIG_* alone
+    let mut search = false;
+    let mut search_vector = false;
+    let mut search_iters: u32 = 50;
+    let mut search_streets: [bool; 4] = [false, false, true, true];
 
 
     let mut i = 1;
@@ -55,6 +59,17 @@ fn main() {
             "--hands" => { hands = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(hands); i += 2; }
             "--seed"  => { seed  = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
             "--sig"   => { sig   = args.get(i + 1).and_then(|s| s.parse::<u8>().ok()); i += 2; }
+            "--search" => { search = true; i += 1; }
+            "--search-vector" => { search = true; search_vector = true; i += 1; }
+            "--search-iters" => { search_iters = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_iters); i += 2; }
+            "--search-streets" => {
+                if let Some(s) = args.get(i+1) {
+                    let mut e = [false; 4];
+                    for ch in s.chars() { match ch { 'p' => e[0]=true, 'f' => e[1]=true, 't' => e[2]=true, 'r' => e[3]=true, _=>{} } }
+                    search_streets = e;
+                }
+                i += 2;
+            }
             _ => { i += 1; }
         }
     }
@@ -126,8 +141,25 @@ fn main() {
 
     let provider = TableProvider::new(&table);
     let ev = pkr_eval::NlheEvaluator;
+    // Optional search handle (vector solver), mirroring lbr_eval/tournament.
+    let search_handle: Option<Box<dyn pkr_runtime::subgame::SearchHandle>> = if search {
+        let cfg = pkr_runtime::vsearch::VSearchCfg {
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            iters: search_iters,
+            enabled_streets: search_streets,
+            bound: false,
+            gadget: false,
+            bound_max_steps: 12,
+            time_budget_ms: 0,
+        };
+        eprintln!("arena search: vector={search_vector} streets={search_streets:?} iters={search_iters}");
+        Some(Box::new(pkr_runtime::vsearch::VSearchHandle::new(cfg)))
+    } else {
+        None
+    };
     let ctx = EvalContext {
-        search: None,
+        search: search_handle.as_deref(),
         provider: &provider,
         abstraction: &abs,
         evaluator: &ev,
