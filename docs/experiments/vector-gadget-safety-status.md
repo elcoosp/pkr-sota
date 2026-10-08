@@ -10,7 +10,7 @@ Result (real V5, river subgame):
   blueprint_br = 8.4394
   gadget_br    = 11.2312   (STILL worse than blueprint)
 
-CONCLusion: the vector gadget does NOT bound exploitability by the
+Conclusion: the vector gadget does NOT bound exploitability by the
 blueprint here. It is UNPROVEN / apparently INCORRECT.
 
 The earlier PROVEN claim (blueprint 8.44 vs gadget 2.18) used a buggy
