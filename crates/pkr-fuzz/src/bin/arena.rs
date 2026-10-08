@@ -167,6 +167,11 @@ fn main() {
 
     let result = run_eval_harness(&ctx, hands, seed);
 
+    if std::env::var("PKR_SEARCH_DEBUG").is_ok() {
+        use std::sync::atomic::Ordering;
+        eprintln!("[SEARCH_DEBUG] arena solve_root invoked {} times",
+            pkr_runtime::vsearch::VSEARCH_SOLVE_COUNT.load(Ordering::Relaxed));
+    }
     println!();
     println!("=== arena: {} hands, seed {} ===", hands, seed);
     println!(
