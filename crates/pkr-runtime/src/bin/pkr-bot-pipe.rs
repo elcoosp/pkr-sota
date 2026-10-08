@@ -15,6 +15,8 @@ use pkr_contracts::AbstractionBuilder;
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use std::io::{BufRead, Write};
 use rand::RngExt;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 
 fn action_from_json(v: &serde_json::Value) -> Option<Action> {
     let player = v.get("player")?.as_u64()? as usize;
@@ -179,7 +181,13 @@ fn main() {
         let chosen: Option<Action> = if n == 0 {
             None
         } else if total > 1e-9 {
-            let r: f32 = rand::rng().random_range(0.0..total);
+            // Common random numbers: if the host passes a per-decision
+            // "seed", use a deterministic RNG so paired runs draw the
+            // same sample (A-vs-A must be exactly 0).
+            let r: f32 = match v.get("seed").and_then(|s| s.as_u64()) {
+                Some(sd) => SmallRng::seed_from_u64(sd).random_range(0.0..total),
+                None => rand::rng().random_range(0.0..total),
+            };
             let mut acc = 0.0f32;
             let mut pick = (0..6).find(|&b| b2a[b].is_some()).unwrap_or(0);
             for b in 0..6 {
