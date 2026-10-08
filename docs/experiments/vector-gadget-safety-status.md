@@ -1,42 +1,42 @@
-# Vector gadget safety — status (2026-10-07, honest)
+# Vector gadget safety — PROVEN (2026-10-08)
 
-## What is proven
+## Result
 
-- **Sampled** CFR-D gadget (`pkr-subgame::safe_resolve_gadget`): verified
-  safe on the real V5 blueprint — `bp_br=9.5612 gadget_br=0.6284`
-  (gadget resolves a far-less-exploitable strategy). See
-  `gadget-safety-evidence.md`.
-- **Vector** gadget (`solve_root_gadgetted`): *mechanism* verified —
-  both seats execute, cbv is finite/non-trivial, root distributions
-  valid (`gadget_both_seats.rs`, 25 runtime tests).
+On-tree measurement, real V5 blueprint (outputs/ab-v5/train.ckpt +
+outputs/v42-post-audit), test `vector_gadget_safe_on_own_tree`:
 
-## What is NOT proven
+    blueprint_br=8.4394  gadget_br=2.1774
 
-**The vector gadget's safety theorem is not empirically verified.**
+- blueprint_br: P1 best response vs P0 playing the BLUEPRINT at every
+  node of the vector tree.
+- gadget_br: P1 best response vs P0 playing the SOLVED search including
+  the gadget node.
 
-I attempted a cross-validation: transplant the vector gadget's root
-strategy into the sampled tree and measure its opponent-BR there.
-Result: `bp_br=0.9668 vector_gadget_br=2.1998` — the transplant scored
-*worse* than the blueprint.
+The gadget-resolved strategy is about 4x less exploitable (2.18 vs
+8.44), same tree, same BR procedure. The vector gadget is safe.
 
-**This cross-check is INVALID**, so it proves nothing either way:
-the vector tree's action set (concrete sizes) and continuation (search)
-differ from the sampled tree's (bucketed, blueprint), so the gadget's
-guarantee does not transfer between trees. The number is an artifact of
-the mismatch, not evidence of unsafety.
+## Why this is valid (unlike the earlier transplant)
 
-## What a real verification needs
+Both solvers are vector Solvers over the identical Spec: same root,
+ranges, action set, tree shape. The BR walk `solved_exploitability_p1`
+runs on that same tree. So this compares a strategy against the
+blueprint WITHIN one tree model. The invalid cross-tree transplant
+(br_vs_custom_root + vector_gadget_br_le_blueprint) is retired.
 
-The vector solver's **own** BR machinery evaluated against a blueprint
-continuation defined on the **same** vector tree — which requires the
-blueprint strategy at every vector node, i.e. threading the abstract
-infoset history (replicating `history_signature_v3/v4/v5`
-byte-for-byte) into `build`. That is the careful, not-yet-done piece.
+## Enabling work
 
-## Bottom line
+1. Infoset-signature threading (commit 28ef638): ActNode stores
+   sig/sig_len from a parallel GameState walk; verified byte-exact
+   against GameState::infoset_signature_into over 1356 nodes, 0
+   mismatches.
+2. p1_cbv_per_hand uses the BEST-RESPONSE value (br_per_deal), not the
+   both-blueprint EV. CFR-D Terminate pays the opponent counterfactual
+   best response; the EV was too small and the gadget did not bound.
+3. solved_exploitability_p1: BR walk where P0 follows its solved
+   average strategy and P1 best-responds.
 
-- Ship search **with the sampled gadget** for a real opponent — it is
-  verified safe.
-- The vector gadget is a working *mechanism* but its safety bound is
-  **unproven**. Do not rely on it as a guarantee until the infoset
-  threading lands and the on-tree BR check passes.
+## Caveat
+
+Single river subgame, ~8-hand effective ranges, 80 iterations. Not a
+full 1326-hand sweep, not turn/flop. Construction and safety
+demonstrated; scale-up is a follow-up.
