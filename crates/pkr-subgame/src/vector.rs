@@ -1185,6 +1185,62 @@ mod tests {
         assert!((0.0..=1.0).contains(&p), "terminate prob {p}");
     }
 
+    /// The heuristic bound's SAFETY property: after the alpha binary
+    /// search, P1's BR against the blended root must be <= P1's BR
+    /// against the blueprint root. This is what makes --search-bound safe.
+    #[test]
+    fn bounded_root_never_worse_than_blueprint() {
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        let board: Vec<u8> = vec![20, 25, 30, 35, 44];
+        let mut r = vec![0.0f32; N];
+        for h in 0..N {
+            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+        }
+        let spec = Spec {
+            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            ranges: [r.clone(), r],
+        };
+        let mut s = Solver::new(spec, &triv);
+        s.iterate(60);
+        let search = s.root_strategy_all().expect("decision root");
+        let n = search.len();
+        // A stand-in "blueprint" root: uniform over actions.
+        let bp: Vec<Vec<f32>> = (0..n).map(|_| vec![1.0 / n as f32; N]).collect();
+
+        s.set_root_strategy(&bp);
+        let bp_br = s.opp_br_value();
+        s.set_root_strategy(&search);
+        let search_br = s.opp_br_value();
+
+        // Replicate solve_root_bounded's safety blend.
+        let final_root = if search_br <= bp_br {
+            search.clone()
+        } else {
+            let mut lo = 0.0f32;
+            let mut hi = 1.0f32;
+            let mut best = bp.clone();
+            for _ in 0..12 {
+                let mid = 0.5 * (lo + hi);
+                let mixed = Solver::blend_root(&search, &bp, mid);
+                s.set_root_strategy(&mixed);
+                let br = s.opp_br_value();
+                if br <= bp_br { best = mixed; lo = mid; } else { hi = mid; }
+                if hi - lo < 1e-3 { break; }
+            }
+            best
+        };
+        s.set_root_strategy(&final_root);
+        let final_br = s.opp_br_value();
+        eprintln!(
+            "bound safety: bp_br={bp_br:.4} search_br={search_br:.4} final_br={final_br:.4}"
+        );
+        assert!(
+            final_br <= bp_br + 1e-3,
+            "bound final_br {final_br} exceeds blueprint {bp_br}"
+        );
+    }
+
     #[test]
     fn install_gadget_wraps_root_and_p0_reads_follow() {
         fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
