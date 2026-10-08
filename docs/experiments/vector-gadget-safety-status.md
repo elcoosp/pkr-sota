@@ -40,3 +40,21 @@ blueprint WITHIN one tree model. The invalid cross-tree transplant
 Single river subgame, ~8-hand effective ranges, 80 iterations. Not a
 full 1326-hand sweep, not turn/flop. Construction and safety
 demonstrated; scale-up is a follow-up.
+
+## Sampled-gadget correctness fix (2026-10-08)
+
+The SAMPLED gadget (`safe_resolve_gadget`) set its Terminate value from
+`blueprint_value_p0` (the both-play-blueprint EXPECTED value). CFR-D
+requires the opponent's COUNTERFACTUAL BEST-RESPONSE value; a too-low
+terminate value weakens the bound. Fixed to `br_per_deal` at all three
+sites (production + two tests). Re-verified on real V5:
+`bp_br=9.5612 gadget_br=0.6284` — still safe (the fix raised the
+terminate value, so the bound is at least as strong).
+
+## Seed-independence fix (2026-10-08)
+
+`tournament` used `base_seed + i`, so seed 43's deals were seed 42's
+shifted by one (19999/20000 shared) — "multi-seed" runs were
+near-duplicates. Fixed to spread the base seed
+(`base_seed.wrapping_mul(0x9E37...).wrapping_add(i)`); a regression test
+`seeds_give_disjoint_deals` now guards it.
