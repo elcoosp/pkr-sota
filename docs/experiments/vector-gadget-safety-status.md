@@ -1,60 +1,29 @@
-# Vector gadget safety — PROVEN (2026-10-08)
+# Vector gadget safety - UNPROVEN (corrected 2026-10-08)
 
-## Result
+The earlier "PROVEN" (blueprint_br=8.44 vs gadget_br=2.18) used a BUGGY
+gadget: install_gadget set chooser = 1 - payee, i.e. the ACTING player
+was given the terminate option, which is meaningless. Fixed to
+chooser = payee (CFR-D: the chooser is the one paid their cbv).
 
-On-tree measurement, real V5 blueprint (outputs/ab-v5/train.ckpt +
-outputs/v42-post-audit), test `vector_gadget_safe_on_own_tree`:
+With the corrected gadget, the on-tree safety test FAILS:
+  blueprint_br = 8.4394
+  gadget_br    = 11.8048   (WORSE than blueprint)
 
-    blueprint_br=8.4394  gadget_br=2.1774
+So the vector gadget is NOT proven safe. The earlier claim is retracted.
 
-- blueprint_br: P1 best response vs P0 playing the BLUEPRINT at every
-  node of the vector tree.
-- gadget_br: P1 best response vs P0 playing the SOLVED search including
-  the gadget node.
+## Root-cause hypothesis (not yet fixed)
 
-The gadget-resolved strategy is about 4x less exploitable (2.18 vs
-8.44), same tree, same BR procedure. The vector gadget is safe.
+p1_cbv_per_hand computes the terminate value on the SAMPLED tree
+(pkr-subgame::POCConfig / lib.rs Solver), but the gadget is installed
+on the VECTOR tree (vector.rs Solver). Different action buckets /
+continuations => the sampled-tree cbv is not P1 BR value in the
+vector tree => the terminate floor is wrong => the gadget does not
+bound. This is the same cross-tree problem that invalidated the
+earlier transplant test.
 
-## Why this is valid (unlike the earlier transplant)
+## What is still true
 
-Both solvers are vector Solvers over the identical Spec: same root,
-ranges, action set, tree shape. The BR walk `solved_exploitability_p1`
-runs on that same tree. So this compares a strategy against the
-blueprint WITHIN one tree model. The invalid cross-tree transplant
-(br_vs_custom_root + vector_gadget_br_le_blueprint) is retired.
-
-## Enabling work
-
-1. Infoset-signature threading (commit 28ef638): ActNode stores
-   sig/sig_len from a parallel GameState walk; verified byte-exact
-   against GameState::infoset_signature_into over 1356 nodes, 0
-   mismatches.
-2. p1_cbv_per_hand uses the BEST-RESPONSE value (br_per_deal), not the
-   both-blueprint EV. CFR-D Terminate pays the opponent counterfactual
-   best response; the EV was too small and the gadget did not bound.
-3. solved_exploitability_p1: BR walk where P0 follows its solved
-   average strategy and P1 best-responds.
-
-## Caveat
-
-Single river subgame, ~8-hand effective ranges, 80 iterations. Not a
-full 1326-hand sweep, not turn/flop. Construction and safety
-demonstrated; scale-up is a follow-up.
-
-## Sampled-gadget correctness fix (2026-10-08)
-
-The SAMPLED gadget (`safe_resolve_gadget`) set its Terminate value from
-`blueprint_value_p0` (the both-play-blueprint EXPECTED value). CFR-D
-requires the opponent's COUNTERFACTUAL BEST-RESPONSE value; a too-low
-terminate value weakens the bound. Fixed to `br_per_deal` at all three
-sites (production + two tests). Re-verified on real V5:
-`bp_br=9.5612 gadget_br=0.6284` — still safe (the fix raised the
-terminate value, so the bound is at least as strong).
-
-## Seed-independence fix (2026-10-08)
-
-`tournament` used `base_seed + i`, so seed 43's deals were seed 42's
-shifted by one (19999/20000 shared) — "multi-seed" runs were
-near-duplicates. Fixed to spread the base seed
-(`base_seed.wrapping_mul(0x9E37...).wrapping_add(i)`); a regression test
-`seeds_give_disjoint_deals` now guards it.
+- Sampled gadget (safe_resolve_gadget): proven safe (bp_br=9.5612 vs
+  gadget_br=0.6284) - that is a DIFFERENT, self-consistent tree.
+- The vector gadget MECHANISM runs (install/solve/read), both seats;
+  its SAFETY is unproven.
