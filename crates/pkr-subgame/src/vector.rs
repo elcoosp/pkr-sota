@@ -167,9 +167,10 @@ impl<'a> Solver<'a> {
         if self.gadget_player.is_some() {
             return;
         }
-        // The gadget node belongs to the OPPONENT of the payee; the
-        // payee is exactly the player the acting side re-solves against.
-        let gadget_actor = (1 - payee) as usize;
+        // CFR-D: the CHOOSER is the one who is paid the terminate value.
+        // (The verified sampled gadget has P1 both choose and receive
+        // their cbv.) So the gadget node's player == payee.
+        let gadget_actor = payee as usize;
         let real_root = std::mem::replace(
             &mut self.root,
             Node::Fold { folder: 0, inv: [0.0; 2] },
@@ -1125,6 +1126,35 @@ mod tests {
         }
         let mean = if den > 0.0 { num / den } else { 0.0 };
         assert!(mean >= -1e-3, "P1 BR {mean} < 0 despite a 0-value Terminate");
+    }
+
+    /// Gadget with payee=0 (the OTHER seat): the chooser node must be
+    /// player 0, the Follow child still P0's real root, and the solve must
+    /// terminate with a valid probability.
+    #[test]
+    fn install_gadget_payee0() {
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        let board: Vec<u8> = vec![20, 25, 30, 35, 44];
+        let mut r = vec![0.0f32; N];
+        for h in 0..N { if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; } }
+        let spec = Spec {
+            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            ranges: [r.clone(), r],
+        };
+        let mut s = Solver::new(spec, &triv);
+        let n_before = s.n_root_actions();
+        s.install_gadget(vec![0.0f32; N], 0);
+        assert_eq!(s.gadget_payee(), Some(0));
+        // chooser node is player 0
+        match &s.root {
+            Node::Act(an) => assert_eq!(an.player, 0, "payee=0 => chooser is player 0"),
+            _ => panic!("root must be the gadget ActNode"),
+        }
+        assert_eq!(s.n_root_actions(), n_before, "Follow child = real root");
+        s.iterate(20);
+        let p = s.gadget_terminate_prob().unwrap();
+        assert!((0.0..=1.0).contains(&p), "terminate prob {p}");
     }
 
     #[test]
