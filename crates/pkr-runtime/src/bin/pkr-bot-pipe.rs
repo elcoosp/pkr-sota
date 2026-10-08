@@ -94,27 +94,56 @@ fn main() {
             Ok(v) => v,
             Err(e) => { eprintln!("bad json: {e}"); continue; }
         };
-        // Rebuild state.
+        // Rebuild state: fresh deal, real hole, then replay the action
+        // record AND advance the board when each street closes. Without
+        // the street advance a "river" request resolved to a PREFLOP
+        // decision (the board was discarded).
         let mut st = GameState::new(pkr_core::state::stack_chips(), 1.0, 2.0);
-        if let (Some(h), Some(b)) = (v.get("hole"), v.get("board")) {
-            let hole: Vec<u8> = h.as_array().unwrap().iter()
-                .map(|x| x.as_u64().unwrap() as u8).collect();
-            let board: Vec<u8> = b.as_array().unwrap().iter()
-                .map(|x| x.as_u64().unwrap() as u8).collect();
+        let board_cards: Vec<u8> = v.get("board").and_then(|b| b.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as u8).collect())
+            .unwrap_or_default();
+        if let Some(h) = v.get("hole").and_then(|h| h.as_array()) {
+            let hole: Vec<u8> = h.iter().filter_map(|x| x.as_u64()).map(|x| x as u8).collect();
             if hole.len() == 2 {
-                // set_hole_cards needs both seats; leave villain 0 for now,
-                // the host supplies real holes via the fuller protocol.
-                st.set_hole_cards([hole[0], hole[1]], [0, 0]);
+                // villain unknown; a deterministic filler is enough because
+                // the decision hashes OUR hole + public board only.
+                st.set_hole_cards([hole[0], hole[1]], [40, 41]);
             }
-            let _ = board;
         }
-        // Apply the action record.
+        let mut dealt = 0usize;
         if let Some(arr) = v.get("actions").and_then(|a| a.as_array()) {
             for a in arr {
                 if let Some(act) = action_from_json(a) {
                     st.apply_action_in_place(&act);
+                    if st.is_street_complete() && st.street != Street::River {
+                        let need = match st.street {
+                            Street::Preflop => 3,
+                            Street::Flop => 1,
+                            Street::Turn => 1,
+                            Street::River => 0,
+                        };
+                        if dealt + need <= board_cards.len() {
+                            let chunk = board_cards[dealt..dealt + need].to_vec();
+                            dealt += need;
+                            st.advance_street_in_place(&chunk);
+                        }
+                    }
                 }
             }
+        }
+        // If the record ended mid-street but the board says we are on a
+        // later street, advance the remainder (host may omit auto-advance).
+        while st.street != Street::River && st.is_street_complete() {
+            let need = match st.street {
+                Street::Preflop => 3,
+                Street::Flop => 1,
+                Street::Turn => 1,
+                Street::River => 0,
+            };
+            if need == 0 || dealt + need > board_cards.len() { break; }
+            let chunk = board_cards[dealt..dealt + need].to_vec();
+            dealt += need;
+            st.advance_street_in_place(&chunk);
         }
         // Decide: hash the acting player's infoset via the abstraction
         // loaded from the tables dir, then read the blueprint advice.
