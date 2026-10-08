@@ -447,7 +447,10 @@ pub fn tournament(
                 hands, 100.0 * done / hands as f64, rate, eta / 60.0
             );
         }
-        let seed = base_seed.wrapping_add(i);
+        // Spread the base seed by a large odd constant so different
+        // --seed values give DISJOINT deal sets. A plain base_seed+i made
+        // seed 43's deals = seed 42's shifted by one (19999/20000 shared).
+        let seed = base_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(i);
         let (h0, h1, runout) = deal_hand(seed);
 
         // Pass 1: A in seat 0, B in seat 1. Measured as seat-0 profit.
@@ -536,6 +539,22 @@ mod tests {
     /// Regression: adjacent base seeds must yield DIFFERENT deals after
     /// the splitmix64 mix. Before the fix, seeds 42-45 produced nearly
     /// identical tournaments.
+    /// Regression: two base seeds must not share deals. Before the fix,
+    /// seed 43 == seed 42 shifted by one, so their samples overlapped
+    /// 19999/20000.
+    #[test]
+    fn seeds_give_disjoint_deals() {
+        let spread = |b: u64, i: u64| b.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(i);
+        let mut shared = 0;
+        let set: std::collections::HashSet<_> = (0..500).map(|i| deal_hand(spread(42, i))).collect();
+        for i in 0..500 {
+            if set.contains(&deal_hand(spread(43, i))) {
+                shared += 1;
+            }
+        }
+        assert!(shared < 5, "seeds 42/43 share {shared}/500 deals");
+    }
+
     #[test]
     fn adjacent_seeds_decorrelate() {
         let a = deal_hand(mix_seed(42));
