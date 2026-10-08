@@ -367,10 +367,14 @@ pub fn safe_resolve_gadget(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
     let bp = solver.build_blueprint_strategy(abs, tbl);
     let t_bp = t0.elapsed() - t_new;
     let t1 = std::time::Instant::now();
+    // CFR-D Terminate value = the opponent's COUNTERFACTUAL BEST-RESPONSE
+    // value against the blueprint (not the both-blueprint EV). A too-low
+    // terminate value leaves the opponent an incentive to enter and
+    // deviate, weakening the safety bound.
+    let br = solver.br_per_deal(&bp); // P1's BR value vs blueprint, per deal
     let mut gv = vec![0.0f64; solver.n_deals];
     for d in 0..solver.n_deals {
-        let v0 = solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
-        gv[d] = -v0; // P1's continuation value
+        gv[d] = br[d];
     }
     solver.gadget_v1 = gv;
     solver.gadget_reg = (0..solver.n_deals * 2)
@@ -1852,9 +1856,10 @@ mod gadget_safety_tests {
         let bp_br = s.br_v1_with_prior(&bp, &priors);
 
         // Gadget resolve.
+        let br = s.br_per_deal(&bp);
         let mut gv = vec![0.0f64; s.n_deals];
         for d in 0..s.n_deals {
-            gv[d] = -s.blueprint_value_p0(s.tree.root, d as u32, &bp);
+            gv[d] = br[d];
         }
         s.gadget_v1 = gv;
         s.gadget_reg = (0..s.n_deals * 2).map(|_| AtomicU64::new(0)).collect();
@@ -1911,8 +1916,9 @@ mod gadget_safety_tests {
         };
         let mut s = Solver::new(&cfg);
         let bp = s.build_blueprint_strategy(&abs, &tbl);
+        let br = s.br_per_deal(&bp);
         let mut gv = vec![0.0f64; s.n_deals];
-        for d in 0..s.n_deals { gv[d] = -s.blueprint_value_p0(s.tree.root, d as u32, &bp); }
+        for d in 0..s.n_deals { gv[d] = br[d]; }
         s.gadget_v1 = gv.clone();
         s.gadget_reg = (0..s.n_deals * 2).map(|_| AtomicU64::new(0)).collect();
         s.use_gadget = true;
