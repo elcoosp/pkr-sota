@@ -33,7 +33,7 @@ pub struct Spec {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act { Fold, Check, Call, Bet(f32) }
 
-struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<Node>, regret: Vec<f32>, ssum: Vec<f32> }
+struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<Node>, regret: Vec<f32>, ssum: Vec<f32>, sig: [u8; 8], sig_len: u8 }
 struct ShowNode { inv: f32, worst_first: Vec<u16>, rank: Vec<u32> }
 struct ChanceNode { cards: Vec<u8>, kids: Vec<Node>, n_deck: f32 }
 enum Node {
@@ -59,6 +59,9 @@ pub struct Solver<'a> {
     root: Node,
     pub iters: u32,
     valid_root: Vec<bool>,
+    /// The real root `GameState`, when the tree was built with history.
+    /// Enables `blueprint_strategy_at` (per-node infoset hashing).
+    root_state: Option<pkr_core::state::GameState>,
     /// CFR-D gadget installed: `Some(payee)` where `payee` (0 or 1) is
     /// the player the Terminate leaf pays. `root` is then an ActNode for
     /// player `1 - payee` with kids `[Terminate, Follow]`; P0's real
@@ -69,17 +72,53 @@ pub struct Solver<'a> {
 impl<'a> Solver<'a> {
     pub fn new(spec: Spec, eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync)) -> Self {
         let holes = hole_table();
-        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None };
+        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None, root_state: None };
         s.valid_root = (0..N).map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c))).collect();
         for p in 0..2 { for h in 0..N { if !s.valid_root[h] { s.spec.ranges[p][h] = 0.0; } } }
         let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
         let mut board = s.spec.board.clone();
         let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 { St { raises: 1, last_raise: (st.inv[0] - st.inv[1]).abs(), n_act: 1, ..st } } else { st };
-        s.root = s.build(st, &mut board);
+        let mut hist = s.root_state.clone();
+        s.root = s.build(st, &mut board, &mut hist);
+        s
+    }
+
+    /// Build with a real root `GameState` so every node stores its
+    /// infoset signature (`blueprint_strategy_at` needs it).
+    pub fn new_with_root_state(
+        spec: Spec,
+        eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync),
+        root_state: pkr_core::state::GameState,
+    ) -> Self {
+        let mut s = Self::new(spec, eval);
+        // rebuild the tree with history threaded
+        s.root_state = Some(root_state.clone());
+        let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
+        let mut board = s.spec.board.clone();
+        let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 { St { raises: 1, last_raise: (st.inv[0] - st.inv[1]).abs(), n_act: 1, ..st } } else { st };
+        let mut hist = Some(root_state);
+        s.root = s.build(st, &mut board, &mut hist);
         s
     }
 
     fn pot(&self, inv: [f32; 2]) -> f32 { self.spec.dead + inv[0] + inv[1] }
+
+    fn to_action(act: &Act, player: usize) -> pkr_core::state::Action {
+        use pkr_core::state::{Action, ActionKind};
+        let kind = match act {
+            Act::Fold => ActionKind::Fold,
+            Act::Check => ActionKind::Check,
+            Act::Call => ActionKind::Call,
+            Act::Bet(t) => ActionKind::Bet(*t),
+        };
+        Action { player, kind }
+    }
+
+    /// Signature of the node at `node_id` (root = 0.. in pre-order), or
+    /// `None` if built without history. Used by blueprint lookups.
+    pub fn root_state_ref(&self) -> Option<&pkr_core::state::GameState> {
+        self.root_state.as_ref()
+    }
 
     /// P0's decision node at the (possibly gadgetted) root. With the
     /// CFR-D gadget installed, P0's real root is the `Follow` child of
@@ -147,6 +186,8 @@ impl<'a> Solver<'a> {
             kids,
             regret: vec![0.0; n * N],
             ssum: vec![0.0; n * N],
+            sig: [0u8; 8],
+            sig_len: 0,
         });
         self.gadget_player = Some(payee);
     }
@@ -185,10 +226,14 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn build(&self, st: St, board: &mut Vec<u8>) -> Node {
+    fn build(&self, st: St, board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> Node {
         let a = st.actor; let o = 1 - a; let sp = &self.spec;
         let pot = self.pot(st.inv);
         let facing = st.inv[o] > st.inv[a] + 1e-6;
+        let (sig, sig_len) = match hist.as_ref() {
+            Some(h) => { let mut b = [0u8; 8]; let l = h.infoset_signature_into(&mut b); (b, l as u8) }
+            None => ([0u8; 8], 0),
+        };
         let mut acts: Vec<Act> = Vec::new();
         let mut kids: Vec<Node> = Vec::new();
         let can_raise = st.raises < sp.max_raises && sp.stack > st.inv[o] + 1e-6;
@@ -211,26 +256,28 @@ impl<'a> Solver<'a> {
         }
         for act in &acts {
             let mut ni = st.inv; let kid;
+            if let Some(h) = hist.as_mut() { h.apply_action_in_place(&Self::to_action(act, a)); }
             match *act {
                 Act::Fold => { kid = Node::Fold { folder: a, inv: st.inv }; }
-                Act::Call => { ni[a] = st.inv[o]; kid = self.end_street(ni, board); }
+                Act::Call => { ni[a] = st.inv[o]; kid = self.end_street(ni, board, hist); }
                 Act::Check => {
-                    if st.n_act >= 1 { kid = self.end_street(ni, board); }
-                    else { kid = self.build(St { inv: ni, actor: o, n_act: 1, raises: st.raises, last_raise: st.last_raise }, board); }
+                    if st.n_act >= 1 { kid = self.end_street(ni, board, hist); }
+                    else { kid = self.build(St { inv: ni, actor: o, n_act: 1, raises: st.raises, last_raise: st.last_raise }, board, hist); }
                 }
                 Act::Bet(t) => {
                     ni[a] = t;
                     let lr = t - st.inv[o];
-                    kid = self.build(St { inv: ni, actor: o, n_act: st.n_act + 1, raises: st.raises + 1, last_raise: lr }, board);
+                    kid = self.build(St { inv: ni, actor: o, n_act: st.n_act + 1, raises: st.raises + 1, last_raise: lr }, board, hist);
                 }
             }
+            if let Some(h) = hist.as_mut() { let _ = h.undo_action(); }
             kids.push(kid);
         }
         let n = acts.len();
-        Node::Act(ActNode { player: a, acts, kids, regret: vec![0.0; n * N], ssum: vec![0.0; n * N] })
+        Node::Act(ActNode { player: a, acts, kids, regret: vec![0.0; n * N], ssum: vec![0.0; n * N], sig, sig_len })
     }
 
-    fn end_street(&self, inv: [f32; 2], board: &mut Vec<u8>) -> Node {
+    fn end_street(&self, inv: [f32; 2], board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> Node {
         if board.len() == 5 { return self.showdown(inv[0], board); }
         let n_deck = (52 - board.len() - 4) as f32;
         let allin = inv[0] >= self.spec.stack - 1e-6 || inv[1] >= self.spec.stack - 1e-6;
@@ -238,8 +285,10 @@ impl<'a> Solver<'a> {
         for c in 0..52u8 {
             if board.contains(&c) { continue; }
             board.push(c);
-            let kid = if allin { self.end_street(inv, board) }
-                      else { self.build(St { inv, actor: 0, n_act: 0, raises: 0, last_raise: 0.0 }, board) };
+            if let Some(h) = hist.as_mut() { h.advance_street_in_place(&[c]); }
+            let kid = if allin { self.end_street(inv, board, hist) }
+                      else { self.build(St { inv, actor: 0, n_act: 0, raises: 0, last_raise: 0.0 }, board, hist) };
+            if let Some(h) = hist.as_mut() { let _ = h.undo_action(); }
             board.pop();
             cards.push(c); kids.push(kid);
         }
@@ -930,6 +979,86 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// MANDATORY byte-match: the signature stored at every ActNode must
+    /// equal what `GameState::infoset_signature_into` produces when
+    /// replaying the same public line. Without this the per-node
+    /// blueprint hashes (and thus the gadget's safety) are garbage.
+    #[test]
+    fn sig_threading_matches_gamestate() {
+        use pkr_core::state::{Action, ActionKind, GameState};
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        // A turn root so the tree spans turn+river and exercises
+        // street-advance signature state.
+        let mut root = GameState::new(200.0, 1.0, 2.0);
+        root.dealer = 1; // seat 0 = OOP = first to act
+        root.set_hole_cards([0, 5], [10, 15]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&[20, 25, 30]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&[35]);
+        assert_eq!(root.street as u8, 2, "turn");
+
+        let board: Vec<u8> = root.board[..root.board_len as usize].to_vec();
+        let mut r = vec![0.0f32; N];
+        for h in 0..N {
+            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+        }
+        let spec = Spec {
+            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            ranges: [r.clone(), r],
+        };
+        let s = Solver::new_with_root_state(spec, &triv, root.clone());
+        assert!(s.root_state_ref().is_some(), "history must be threaded");
+
+        // Walk the tree in lockstep with a fresh GameState.
+        let mut mismatches = 0u32;
+        let mut checked = 0u32;
+        let mut state = root.clone();
+        fn walk(
+            node: &Node,
+            state: &mut GameState,
+            checked: &mut u32,
+            mismatches: &mut u32,
+        ) {
+            match node {
+                Node::Act(an) => {
+                    let mut buf = [0u8; 8];
+                    let l = state.infoset_signature_into(&mut buf);
+                    *checked += 1;
+                    if l as u8 != an.sig_len || buf[..l] != an.sig[..an.sig_len as usize] {
+                        *mismatches += 1;
+                        if *mismatches <= 3 {
+                            eprintln!(
+                                "SIG MISMATCH: tree={:?} (len {}) state={:?} (len {})",
+                                &an.sig[..an.sig_len as usize], an.sig_len, &buf[..l], l
+                            );
+                        }
+                    }
+                    for (act, kid) in an.acts.iter().zip(an.kids.iter()) {
+                        state.apply_action_in_place(&Solver::to_action(act, an.player));
+                        walk(kid, state, checked, mismatches);
+                        let _ = state.undo_action();
+                    }
+                }
+                Node::Chance(cn) => {
+                    for (card, kid) in cn.cards.iter().zip(cn.kids.iter()) {
+                        state.advance_street_in_place(&[*card]);
+                        walk(kid, state, checked, mismatches);
+                        let _ = state.undo_action();
+                    }
+                }
+                Node::Fold { .. } | Node::Show(_) | Node::Const { .. } | Node::TermGadget { .. } => {}
+            }
+        }
+        walk(&s.root, &mut state, &mut checked, &mut mismatches);
+        eprintln!("sig check: checked={checked} mismatches={mismatches}");
+        assert!(checked > 50, "expected many decision nodes, got {checked}");
+        assert_eq!(mismatches, 0, "{mismatches} signature mismatches");
     }
 
     #[test]
