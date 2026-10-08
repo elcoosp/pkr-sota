@@ -244,22 +244,25 @@ impl<'a> RuntimeSession<'a> {
         let r_oop: Vec<f32> = tracker.range(oop as u8).iter().map(|&x| x as f32).collect();
         let r_ip: Vec<f32> = tracker.range((1 - oop) as u8).iter().map(|&x| x as f32).collect();
         // Safety routing: the live bot must use the SAFE solver, not the
-        // raw solve. PKR_VSEARCH_GADGET=1 -> CFR-D gadget (theorem-backed,
-        // verified on-tree); PKR_VSEARCH_BOUND=1 -> heuristic root blend;
-        // else raw. A wall-clock cap keeps a live decision bounded.
+        // raw solve.
+        //
+        // The vector GADGET is UNPROVEN (it scores worse than the blueprint
+        // in the on-tree safety tests - see
+        // docs/experiments/vector-gadget-safety-status.md). So the live
+        // path uses the proven heuristic BOUND. PKR_VSEARCH_BOUND=1 (or the
+        // legacy PKR_VSEARCH_GADGET=1, which now maps to the bound) enables
+        // it; else the raw solve. A wall-clock cap bounds a live decision.
         let mut cfg = crate::vsearch::VSearchCfg::default();
-        cfg.bound = std::env::var("PKR_VSEARCH_BOUND").as_deref() == Ok("1");
-        cfg.gadget = std::env::var("PKR_VSEARCH_GADGET").as_deref() == Ok("1");
+        cfg.bound = std::env::var("PKR_VSEARCH_BOUND").as_deref() == Ok("1")
+            || std::env::var("PKR_VSEARCH_GADGET").as_deref() == Ok("1");
+        // Never enable the unproven vector gadget in the live path.
+        cfg.gadget = false;
         cfg.time_budget_ms = std::env::var("PKR_VSEARCH_BUDGET_MS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(2000);
         let ranges = || [r_oop.clone(), r_ip.clone()];
-        let acts = if cfg.gadget {
-            crate::vsearch::solve_root_gadgetted(st, ranges(), *our_hole, &cfg, self.abs, self.tbl)
-                .or_else(|| crate::vsearch::solve_root_bounded(st, ranges(), *our_hole, &cfg, self.abs, self.tbl))
-                .or_else(|| crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg))?
-        } else if cfg.bound {
+        let acts = if cfg.bound {
             crate::vsearch::solve_root_bounded(st, ranges(), *our_hole, &cfg, self.abs, self.tbl)
                 .or_else(|| crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg))?
         } else {
