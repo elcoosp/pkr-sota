@@ -1,16 +1,23 @@
-# Scoping: make V5 the default signature
+# V5-default flip - VOID (2026-10-08)
 
-**Status:** recommended by the 2026-10-06 A/B; NOT yet executed.
+This doc previously recommended making V5 the default signature, based
+on the V4/V5 LBR A/B (V5 -2.11 vs V4 821.08).
 
-## The evidence
+That recommendation is VOID. The cross-process H2H
+(docs/experiments/v4-vs-v5-h2h.md) shows V4 and V5 are EQUAL:
 
-`docs/experiments/v4-vs-v5-ab-result.md`: V5 beat V4 by 823 mbb LBR
-(|t| ≈ 6.3) and 10.8 bb/100 arena. Three instruments agree.
+- 5000 deals, seed 42: +0.1212 (t=+0.33)
+- 5000 deals, seed 43: -0.2768 (t=-0.71)
 
-## Why it is not a one-line change
+The -823 mbb LBR gap is a measurement artifact (LBR cannot see through
+V5 aliased postflop key). Four instruments: LBR says V5 better;
+in-sample BR, arena, and H2H all say EQUAL.
 
-The default signature is currently **V3**, set by
-`crates/pkr-core/src/state.rs::sig_v3_size_aware()`:
+## Action
 
-```rust
-std::env::var("PKR_SIG_V3").as_deref() != Ok("0")   // true unless PKR_SIG_V3=0
+- DO NOT flip the default to V5 on strength grounds; there is no
+  strength difference.
+- The signature choice should be re-decided only by H2H
+  (examples/v4v5_h2h.rs), never by LBR alone.
+- V5 is not harmful (equal), so keeping either is fine; keep V4 as
+  the default (fewer moving parts), unless another reason emerges.
