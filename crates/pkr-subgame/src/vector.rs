@@ -736,7 +736,7 @@ impl<'a> Solver<'a> {
     /// P1's reach-weighted exploitability of the SOLVED strategy.
     pub fn solved_exploitability_p1(&self) -> f32 {
         let mut board = self.spec.board.clone();
-        let cf = self.solved_br_p1(&self.root, &mut board, &self.spec.ranges[0]);
+        let cf = self.solved_br_p1(self.real_root_node(), &mut board, &self.spec.ranges[0]);
         let mut z = 0.0f64; let mut v = 0.0f64;
         let mut tot_o = 0.0f32; let mut card = [0.0f32; 52];
         compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
@@ -775,6 +775,34 @@ impl<'a> Solver<'a> {
             v += w * cf[h] as f64;
         }
         if z > 0.0 { (v / z) as f32 } else { 0.0 }
+    }
+
+    /// P1's best-response value vs the BLUEPRINT continuation (P0 plays the
+    /// blueprint at every node), per hand, on THIS vector tree. The CFR-D
+    /// terminate value MUST be computed on the same tree the gadget runs in;
+    /// computing it on the sampled tree gives a mismatched floor.
+    pub fn p1_br_vs_blueprint_per_hand(
+        &self,
+        abs: &dyn pkr_contracts::AbstractionBuilder,
+        tbl: &pkr_cfr::table::CompactRegretTable,
+    ) -> Vec<f32> {
+        let mut board = self.spec.board.clone();
+        let mut used = false;
+        self.bp_walk(&self.root, &mut board, 1, &self.spec.ranges[0], abs, tbl, None, &mut used)
+    }
+
+    /// The REAL root node: with a gadget installed this is the Follow
+    /// child (the subgame); otherwise the root itself. Used for the
+    /// safety measure, which must exclude the gadget's Terminate option.
+    fn real_root_node(&self) -> &Node {
+        if self.gadget_player.is_some() {
+            if let Node::Act(an) = &self.root {
+                if an.kids.len() >= 2 {
+                    return &an.kids[1];
+                }
+            }
+        }
+        &self.root
     }
 
     pub fn root_strategy(&self, hand: [u8; 2]) -> Vec<(Act, f32)> {

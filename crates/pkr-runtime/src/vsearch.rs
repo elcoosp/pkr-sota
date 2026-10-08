@@ -211,42 +211,14 @@ pub fn solve_root_gadgetted(
     }
     VSEARCH_SOLVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     VSEARCH_GADGET_SOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let holes = pkr_subgame::vector::hole_table();
-    let to_hp = |r: &[f32]| {
-        let mut hs = Vec::new();
-        let mut ps = Vec::new();
-        for h in 0..r.len() {
-            if r[h] > 0.0 {
-                hs.push(holes[h]);
-                ps.push(r[h] as f64);
-            }
-        }
-        (hs, ps)
-    };
-    let (h0, p0) = to_hp(&ranges_w[0]);
-    let (h1, p1) = to_hp(&ranges_w[1]);
-    if h0.is_empty() || h1.is_empty() {
-        return None;
-    }
-    let ev = pkr_eval::NlheEvaluator;
-    let poc = pkr_subgame::POCConfig {
-        root: work.clone(),
-        p0_range: pkr_subgame::Range::weighted(h0, p0),
-        p1_range: pkr_subgame::Range::weighted(h1, p1),
-        iterations: 1,
-        evaluator: &ev,
-        blueprint: Some((abs, tbl)),
-    };
-    let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc)
-        .iter()
-        .map(|&x| x as f32)
-        .collect();
-    let mut solver = Solver::new(spec, &|h: &[u8; 2], b: &[u8]| {
-        pkr_eval::NlheEvaluator.evaluate_hand(h, b)
-    });
+    let eval = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
+    let mut solver = Solver::new_with_root_state(spec, &eval, work.clone());
     if solver.n_root_actions() == 0 {
         return None;
     }
+    // cbv on the VECTOR tree (P1 BR vs the blueprint), NOT the sampled
+    // tree: the terminate floor must be on the same tree as the gadget.
+    let cbv = solver.p1_br_vs_blueprint_per_hand(abs, tbl);
     solver.install_gadget(cbv, 1);
     solver.iterate(cfg.iters);
     Some(solver.root_strategy(our_hand))
