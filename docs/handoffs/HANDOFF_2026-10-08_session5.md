@@ -1,53 +1,42 @@
-# HANDOFF - 2026-10-08 (search bound + gadget + V4/V5 verdict)
+# HANDOFF - 2026-10-08 session 5 (search bound + gadget + V4/V5)
 
 Continues HANDOFF_2026-10-07_session4.md.
 
-## THE HEADLINE: V5 LBR was an artifact
+## V4 vs V5: reconciled (supersedes the earlier "artifact" framing)
 
-The overnight result "V5 LBR = -2.11 mbb" is REFUTED. A cross-process
-H2H (the first honest V4-vs-V5 comparison) shows V4 == V5:
+At equal (stronger) exploiter strength, samples=2000:
+  V4 LBR = 996.79   V5 LBR = 182.84   gap ~814 mbb
+(At samples=400: V4=821, V5=-2, gap 823.)
 
-- 5000 deals seed 42: +0.1212 (t=+0.33)
-- 5000 deals seed 43: -0.2768 (t=-0.71)
+The V4-vs-V5 LBR gap PERSISTS at a stronger exploiter, so it is NOT a
+weak-exploiter artifact. BUT cross-process H2H (10k x4 seeds, CRN) says
+V4 == V5 (all flat, |t|<1).
 
-Four instruments: LBR says V5 far better (-823 mbb); in-sample BR
-(6147 vs 6117), arena (192 vs 203), and H2H all say EQUAL. LBR is
-fooled by V5 aliased postflop key. Third LBR failure. See
-docs/experiments/v4-vs-v5-h2h.md. The v5-default-flip is VOID.
+HYPOTHESIS (unverified, test running): LBR exploits V4 via OFF-TREE bet
+sizes that neither bot plays in self-play; H2H only uses in-tree sizes,
+so the off-tree exploit is never exercised. If true: V5 is ~800 mbb more
+robust vs OFF-TREE aggression (real), while in-abstraction they are equal.
 
-## What DID hold up: the vector search
+Test in flight: lbr_eval --no-offtree (in-tree-only LBR) for V4 and V5.
+  - If the gap vanishes with --no-offtree -> off-tree hypothesis CONFIRMED.
+  - If it persists -> the gap is in-abstraction, and H2H vs LBR disagree
+    for a different (unexplained) reason.
 
-Bounded river search beats the blueprint H2H on V5, 4 independent
-seeds (CRN + fixed seed spacing): +1.1763 / +0.8211 / +0.9722 /
-+1.1625 (all t>4). docs/experiments/search-h2h-replication.md.
+See docs/experiments/v4-vs-v5-h2h.md and v4-vs-v5-lbr-reconciled.md.
 
-## CFR-D gadget
+## What holds regardless
 
-- Vector gadget safety PROVEN on-tree: blueprint_br=8.4394 vs
-  gadget_br=2.1774; 4-case sweep all gadget-below-blueprint (worst
-  delta -3.33). Required infoset-signature threading (byte-verified,
-  1356 nodes, 0 mismatches).
-- Sampled gadget terminate value fixed from EV to BR (br_per_deal);
-  re-verified bp_br=9.5612 gadget_br=0.6284.
+- Vector search HELPS: H2H on V5, 4 seeds +1.18/+0.82/+0.97/+1.16 (t>4);
+  gadget-bounded seed 42 +1.108 (t=5.68).
+- CFR-D gadget PROVEN on-tree (blueprint_br 8.44 vs gadget_br 2.18;
+  4-case sweep all below). Requires infoset-signature threading
+  (byte-verified, 1356 nodes, 0 mismatches).
 
-## Tooling built
+## Do NOT claim a competitive bot
 
-- SearchHandle trait (sampled + vector); --search-vector/-bound/-gadget
-  on lbr_eval/tournament; arena search wired.
-- examples/v4v5_h2h.rs: cross-process H2H with CRN (A-vs-A == 0.0000).
-- pkr-bot-pipe emits concrete actions + advances the board.
-- tournament seed-spacing fixed (was shifted-by-one overlap).
+V4 LBR floor ~800-1000 mbb. No instrument shows world-class strength.
 
 ## Running at handoff
 
-- /tmp/v4v5c.sh: V4-vs-V5 10k deals x 4 seeds (tightening the verdict).
-- /tmp/lbrhi.sh: V5 LBR samples=2000 (stronger-exploiter robustness).
-
-## Next
-
-1. Read /tmp/v4v5c-result.txt - confirm V4==V5 across 4 seeds.
-2. Read /tmp/lbrhi-result.txt - if the 5x-sample LBR also finds ~0,
-   V5 is genuinely hard for greedy exploiters; if it finds hundreds,
-   even the LBR floor was too weak.
-3. Neither V4 nor V5 is shown competitive - the LBR floor for V4 is
-   ~800 mbb. Do not ship a competitive-bot claim.
+- /tmp/gadh2h.sh: gadget search H2H seed 43.
+- /tmp/nooff.sh: LBR --no-offtree V4 and V5 (tests the off-tree hypothesis).
