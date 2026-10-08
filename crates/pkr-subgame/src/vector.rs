@@ -1283,6 +1283,101 @@ mod tests {
         assert_eq!(mismatches, 0, "{mismatches} signature mismatches");
     }
 
+    /// Sweep the on-tree safety measurement over several river subgames.
+    /// Strengthens the single-subgame result against being a one-off.
+    #[test]
+    #[ignore]
+    fn vector_gadget_safe_sweep() {
+        use pkr_abstraction::{load_centroids, KMeansAbstraction};
+        use pkr_cfr::table::CompactRegretTable;
+        use pkr_core::state::{Action, ActionKind, GameState};
+        use std::sync::Arc;
+        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
+        let tdir = std::env::var("PKR_TEST_TABLES").map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| ws.join("outputs/v42-post-audit"));
+        let ck = std::env::var("PKR_TEST_CKPT").map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| ws.join("outputs/ab-v5/train.ckpt"));
+        if !ck.exists() { eprintln!("SKIP: missing"); return; }
+        std::env::set_var("PKR_SIG_V5", "1");
+        std::env::set_var("PKR_SIG_V4", "0");
+        std::env::set_var("PKR_SIG_V3", "1");
+        let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap()).unwrap();
+        let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+        abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap()).unwrap();
+        abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap()).unwrap();
+        abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap()).unwrap();
+        abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap()).unwrap();
+        let tbl = CompactRegretTable::with_capacity(60_000_000);
+        let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(abs.k() as u32);
+        tbl.load_checkpoint(ck.to_str().unwrap(), &fp).unwrap();
+        let abs_dyn: &dyn pkr_contracts::AbstractionBuilder = &abs;
+        let ev = pkr_eval::NlheEvaluator;
+
+        // (flop3, turn, river, our0, our1, opp0, opp1) — disjoint card sets.
+        let cases: [([u8; 3], u8, u8, u8, u8, u8, u8); 4] = [
+            ([20, 25, 30], 35, 44, 0, 1, 2, 3),
+            ([4, 9, 12], 33, 47, 5, 7, 6, 8),
+            ([14, 19, 22], 27, 40, 10, 11, 13, 15),
+            ([24, 29, 36], 42, 49, 16, 18, 17, 21),
+        ];
+        let mut worst = f32::NEG_INFINITY;
+        for (i, (b3, tn, rv, o0, o1, x0, x1)) in cases.iter().enumerate() {
+            let mut root = GameState::new(200.0, 1.0, 2.0);
+            root.dealer = 1;
+            root.set_hole_cards([*o0, *o1], [*x0, *x1]);
+            root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+            root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+            root.advance_street_in_place(b3);
+            root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+            root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+            root.advance_street_in_place(&[*tn]);
+            root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+            root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+            root.advance_street_in_place(&[*rv]);
+
+            let board: Vec<u8> = root.board[..root.board_len as usize].to_vec();
+            let our = root.hole[root.actor];
+            let mut our_r = vec![0.0f32; N];
+            our_r[index_of(our)] = 1.0;
+            let mut opp_r = vec![0.0f32; N];
+            let mut n = 0usize;
+            for h in 0..N {
+                if hole_table()[h].iter().any(|cc| board.contains(cc)) { continue; }
+                if hole_table()[h].iter().any(|cc| our.contains(cc)) { continue; }
+                opp_r[h] = 1.0; n += 1;
+            }
+            let u = 1.0 / n as f32;
+            for x in opp_r.iter_mut() { if *x > 0.0 { *x = u; } }
+
+            let to_hp = |r: &[f32]| {
+                let mut hs = Vec::new(); let mut ps = Vec::new();
+                for h in 0..N { if r[h] > 0.0 { hs.push(hole_table()[h]); ps.push(r[h] as f64); } }
+                (hs, ps)
+            };
+            let (h0, p0) = to_hp(&our_r);
+            let (h1, p1) = to_hp(&opp_r);
+            let poc = crate::POCConfig {
+                root: root.clone(),
+                p0_range: crate::Range::weighted(h0, p0),
+                p1_range: crate::Range::weighted(h1, p1),
+                iterations: 1, evaluator: &ev, blueprint: Some((abs_dyn, &tbl)),
+            };
+            let cbv: Vec<f32> = crate::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
+            let mk_spec = || spec_from_state(&root, [our_r.clone(), opp_r.clone()], vec![0.5, 1.0], 2);
+            let eval = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
+            let base = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
+            let bp_br = base.blueprint_p1_br(abs_dyn, &tbl, None);
+            let mut g = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
+            g.install_gadget(cbv, 1);
+            g.iterate(80);
+            let gbr = g.solved_exploitability_p1();
+            eprintln!("case {i}: blueprint_br={bp_br:.4} gadget_br={gbr:.4} delta={:.4}", gbr - bp_br);
+            if gbr - bp_br > worst { worst = gbr - bp_br; }
+        }
+        eprintln!("WORST gadget - blueprint = {worst:.4}");
+        assert!(worst <= 0.5, "worst gadget excess {worst:.4} exceeds 0.5");
+    }
+
     /// THE safety measurement, on the vector solver's OWN tree: does the
     /// gadget's resolved P0 root strategy have P1-BR <= the blueprint's?
     /// Needs real artifacts (env PKR_TEST_TABLES / PKR_TEST_CKPT).
