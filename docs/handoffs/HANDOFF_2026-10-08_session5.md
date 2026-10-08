@@ -28,9 +28,11 @@ See docs/experiments/v4-vs-v5-h2h.md and v4-vs-v5-lbr-reconciled.md.
 
 - Vector search HELPS: H2H on V5, 4 seeds +1.18/+0.82/+0.97/+1.16 (t>4);
   gadget-bounded seed 42 +1.108 (t=5.68).
-- CFR-D gadget PROVEN on-tree (blueprint_br 8.44 vs gadget_br 2.18;
-  4-case sweep all below). Requires infoset-signature threading
-  (byte-verified, 1356 nodes, 0 mismatches).
+- SAMPLED CFR-D gadget PROVEN (bp_br 9.56 vs gadget_br 0.63). Ship this.
+- VECTOR gadget NOT proven: after 3 fixes it is still worse than the
+  blueprint (11.2-11.4 vs 8.44). Earlier "8.44 vs 2.18" was a buggy
+  chooser. Use the sampled gadget.
+- Infoset-signature threading byte-verified (1356 nodes, 0 mismatches).
 
 ## Do NOT claim a competitive bot
 

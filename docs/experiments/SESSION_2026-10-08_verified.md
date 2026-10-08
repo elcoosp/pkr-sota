@@ -8,12 +8,16 @@
 - On V4 (earlier): LBR 821->444, H2H +1.254 (t=6.25).
 - Arena (scripted, 300 hands): blueprint 69.25 vs +search 102.27 bb/100.
 
-## CFR-D gadget: PROVEN
+## CFR-D gadget: SAMPLED proven, VECTOR NOT
 
-- Vector gadget safety on-tree: blueprint_br=8.4394 vs gadget_br=2.1774;
-  4-case sweep all gadget-below-blueprint (worst delta -3.33).
-- Sampled gadget: bp_br=9.5612 vs gadget_br=0.6284 (real V5).
-- Requires infoset-signature threading, byte-verified (1356 nodes, 0 mis).
+- SAMPLED gadget (safe_resolve_gadget): bp_br=9.5612 vs gadget_br=0.6284
+  on real V5. Self-consistent tree. THIS is the one to ship.
+- VECTOR gadget: NOT proven. Earlier "blueprint 8.44 vs gadget 2.18" used
+  a BUGGY chooser (1-payee). After 3 fixes (chooser=payee; cbv on the
+  vector tree; follow-only BR measure) it is STILL worse than blueprint
+  (gadget_br 11.2-11.4 vs blueprint_br 8.44). Not a convergence issue
+  (400 iters also fails). See vector-gadget-safety-status.md.
+- Infoset-signature threading: byte-verified (1356 nodes, 0 mismatches).
 
 ## V4 vs V5: EQUAL in-abstraction; LBR gap is real but off-tree (hypothesis)
 
