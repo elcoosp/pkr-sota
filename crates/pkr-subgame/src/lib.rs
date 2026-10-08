@@ -1299,52 +1299,6 @@ impl<'a> Solver<'a> {
         self.fill_blueprint_strat(self.tree.root, &mut state, &mut strat, abs, tbl);
         strat
     }
-
-    /// Expected value to P0 of the subgame at `node_id` for `deal_idx`,
-    /// with BOTH players following the supplied blueprint strategies.
-    /// Used to compute the gadget's terminate value (P1's blueprint
-    /// continuation value). Mirrors `br_walk`'s tree handling but takes
-    /// expectations instead of best responses.
-    fn blueprint_value_p0(
-        &self,
-        node_id: u32,
-        deal_idx: u32,
-        bp: &[Option<[f64; ABSTRACT_BUCKETS]>],
-    ) -> f64 {
-        match &self.tree.nodes[node_id as usize] {
-            PublicNode::Fold { .. } | PublicNode::Showdown { .. } => {
-                self.term_value(node_id, deal_idx)
-            }
-            PublicNode::Chance { children } => {
-                let h0 = self.deals[deal_idx as usize].h0;
-                let h1 = self.deals[deal_idx as usize].h1;
-                let valid: Vec<u32> = children
-                    .iter()
-                    .filter(|(c, _)| *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1])
-                    .map(|(_, id)| *id)
-                    .collect();
-                if valid.is_empty() {
-                    return 0.0;
-                }
-                let w = 1.0 / valid.len() as f64;
-                valid.iter().map(|&ch| w * self.blueprint_value_p0(ch, deal_idx, bp)).sum()
-            }
-            PublicNode::Decision { bucket_child, .. } => {
-                let i = self.idx(node_id, deal_idx);
-                let strat = bp[i].unwrap_or_else(|| uniform_over_legal(bucket_child));
-                let mut v = 0.0f64;
-                for b in 0..ABSTRACT_BUCKETS {
-                    if bucket_child[b] < 0 {
-                        continue;
-                    }
-                    v += strat[b]
-                        * self.blueprint_value_p0(bucket_child[b] as u32, deal_idx, bp);
-                }
-                v
-            }
-        }
-    }
-
     /// One CFR-D root-gadget iteration for `deal_idx`. P1 picks
     /// terminate (value `gadget_v1`) vs enter (the subgame); regret-match
     /// over 2 actions, return the value to P0.
