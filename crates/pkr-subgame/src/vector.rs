@@ -784,12 +784,6 @@ impl<'a> Solver<'a> {
         } else { vec![] }
     }
     pub fn n_root_actions(&self) -> usize { self.p0_root().map(|an| an.acts.len()).unwrap_or(0) }
-
-    /// The root (P0) actions, in order. Pairs with `root_strategy_all`.
-    pub fn root_acts(&self) -> Vec<Act> {
-        self.p0_root().map(|an| an.acts.clone()).unwrap_or_default()
-    }
-
     // -----------------------------------------------------------------
     // Safety-bound primitives (root-level blend toward the blueprint).
     //
@@ -887,12 +881,6 @@ impl<'a> Solver<'a> {
             0.0
         }
     }
-
-    /// Backwards-compatible alias (P1-only). Prefer `opp_br_value`.
-    pub fn p1_br_value(&self) -> f32 {
-        self.opp_br_value()
-    }
-
     /// The blueprint's strategy at the root, per action per hand, mapped
     /// onto the vector tree's root actions. `st` supplies the root
     /// scalars `action_bucket` needs; it must be the same state
