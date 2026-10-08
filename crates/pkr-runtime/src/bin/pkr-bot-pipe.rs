@@ -104,14 +104,15 @@ fn main() {
         let board_cards: Vec<u8> = v.get("board").and_then(|b| b.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as u8).collect())
             .unwrap_or_default();
-        if let Some(h) = v.get("hole").and_then(|h| h.as_array()) {
-            let hole: Vec<u8> = h.iter().filter_map(|x| x.as_u64()).map(|x| x as u8).collect();
-            if hole.len() == 2 {
-                // villain unknown; a deterministic filler is enough because
-                // the decision hashes OUR hole + public board only.
-                st.set_hole_cards([hole[0], hole[1]], [40, 41]);
-            }
-        }
+        // The host passes the ACTING player's hole. It must be assigned to
+        // the ACTING seat (st.actor), not always seat 0 - otherwise a
+        // seat-1 decision hashes a placeholder instead of the real cards.
+        let hero_hole: Option<[u8; 2]> = v.get("hole").and_then(|h| h.as_array())
+            .and_then(|a| {
+                let hv: Vec<u8> = a.iter().filter_map(|x| x.as_u64()).map(|x| x as u8).collect();
+                if hv.len() == 2 { Some([hv[0], hv[1]]) } else { None }
+            });
+        st.set_hole_cards([40, 41], [40, 42]); // deterministic placeholders
         let mut dealt = 0usize;
         if let Some(arr) = v.get("actions").and_then(|a| a.as_array()) {
             for a in arr {
@@ -146,6 +147,10 @@ fn main() {
             let chunk = board_cards[dealt..dealt + need].to_vec();
             dealt += need;
             st.advance_street_in_place(&chunk);
+        }
+        // Assign the real hole to the ACTING seat now that the actor is known.
+        if let Some(hh) = hero_hole {
+            st.hole[st.actor] = hh;
         }
         // Decide: hash the acting player's infoset via the abstraction
         // loaded from the tables dir, then read the blueprint advice.
