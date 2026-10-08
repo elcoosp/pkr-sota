@@ -59,8 +59,19 @@ pub struct TournamentResult {
 }
 
 /// Deal 9 unique cards from a fresh shuffle. Deterministic given `seed`.
+/// splitmix64 finalizer: decorrelate adjacent seeds before they reach
+/// SmallRng (xoshiro), whose streams for adjacent seeds are strongly
+/// correlated.
+#[inline]
+fn mix_seed(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 fn deal_hand(seed: u64) -> ([u8; 2], [u8; 2], [u8; 5]) {
-    let mut rng = SmallRng::seed_from_u64(seed);
+    let mut rng = SmallRng::seed_from_u64(mix_seed(seed));
     let mut deck: [u8; 52] = core::array::from_fn(|i| i as u8);
     for i in 0..9 {
         let k = i + rng.random_range(0..(52 - i));
@@ -126,7 +137,7 @@ fn play_one(
         let decision_seed =
             base_seed.wrapping_add(decision_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         decision_idx += 1;
-        let mut dec_rng = SmallRng::seed_from_u64(decision_seed);
+        let mut dec_rng = SmallRng::seed_from_u64(mix_seed(decision_seed));
 
         let act = if state.actor == 0 {
             let (a, _) = decide_via(&ctx_seat0, &state, &mut dec_rng);
@@ -522,6 +533,20 @@ mod tests {
     }
 
     /// Task 0.2: A vs A must be EXACTLY zero (paired duplicate design).
+    /// Regression: adjacent base seeds must yield DIFFERENT deals after
+    /// the splitmix64 mix. Before the fix, seeds 42-45 produced nearly
+    /// identical tournaments.
+    #[test]
+    fn adjacent_seeds_decorrelate() {
+        let a = deal_hand(mix_seed(42));
+        let b = deal_hand(mix_seed(43));
+        let c = deal_hand(mix_seed(44));
+        assert!(a != b, "seed 42 and 43 produced the same deal");
+        assert!(b != c, "seed 43 and 44 produced the same deal");
+        // and the raw-mix values themselves differ wildly
+        assert!((mix_seed(42) as i128 - mix_seed(43) as i128).abs() > 1_000_000);
+    }
+
     #[test]
     fn self_h2h_is_exactly_zero() {
         // Uniform provider, no search, same instance both sides.
