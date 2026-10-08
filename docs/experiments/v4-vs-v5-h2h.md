@@ -1,34 +1,41 @@
 # V4 vs V5 - cross-process H2H (2026-10-08)
 
-The first HONEST V4-vs-V5 comparison: two pkr-bot-pipe subprocesses,
-one per blueprint (different sig_version, cannot share a process),
-driven by crates/pkr-runtime/examples/v4v5_h2h.rs with common random
-numbers. A-vs-A verified EXACTLY 0.0000.
+First HONEST V4-vs-V5 comparison: two pkr-bot-pipe subprocesses (one
+per blueprint, different sig_version so they cannot share a process),
+driven by examples/v4v5_h2h.rs with common random numbers. A-vs-A
+verified EXACTLY 0.0000.
 
-## Result (500 deals, seed 42)
+## Results (CRN, independent seeds)
 
-diff(A=V4 - B=V5) = +1.2260 chips/deal   SE=1.0092   t=+1.21
+- 500  deals, seed 42: +1.2260  SE=1.0092  t=+1.21
+- 5000 deals, seed 42: +0.1212  SE=0.3716  t=+0.33
+- 5000 deals, seed 43: -0.2768  SE=0.3872  t=-0.71
 
-V4 edges V5, not significant at 500 deals, but the SIGN contradicts LBR.
+## Verdict: V4 and V5 are EQUAL head-to-head.
 
-## The contradiction
+At 5000 deals both seeds are flat (|t| < 1). The sign flips between
+seeds. There is NO real strength difference between V4 and V5.
 
-- LBR (20k): V4=821.08, V5=-2.11 -> V5 far better (Delta -823, t~6.3)
-- in-sample BR: V4=6147, V5=6117 -> roughly equal
-- arena vs scripted: V4=192, V5=203 bb/100 -> V5 slightly better
-- cross-process H2H: V4 +1.23 (n.s.) -> NOT V5
+## The contradiction with LBR
 
-LBR says V5 is 823 mbb less exploitable; H2H says V5 does not beat V4
-head-to-head. In-sample BR and arena also do NOT show an 823 mbb gap.
+- LBR (20k): V4=821.08, V5=-2.11 -> claims V5 is 823 mbb better (t~6.3)
+- in-sample BR: 6147 vs 6117 -> equal
+- arena vs scripted: 192 vs 203 bb/100 -> within noise
+- cross-process H2H (5k x2): flat -> EQUAL
 
-## Interpretation
+Four instruments, only LBR shows a gap; the three independent ones say
+EQUAL. The -2.11 LBR is a MEASUREMENT ARTIFACT.
 
-The -2.11 LBR is very likely a MEASUREMENT ARTIFACT: the V5 postflop key
-(SPR class + 1-bit aggressor) aliases many states, and the greedy LBR
-exploiter fails to find deviations against that aliased strategy - a
-spuriously low exploitability that does NOT translate to real strength.
-This is the third time LBR has misled (sampled search, then V4/V5).
+## Why LBR is fooled by V5
 
-## Pending
+V5 postflop key = SPR class (2 bits) + prev-street-aggressor (1 bit),
+aliasing many states to one strategy. LBR is a single greedy walker;
+against an aliased/smooth strategy it finds no deviation and reports a
+spuriously low exploitability. This is the THIRD LBR failure
+(sampled search, then V4/V5).
 
-A 5000-deal x 2-seed run is in flight to tighten the H2H.
+## Consequence
+
+NEITHER V4 NOR V5 is shown to be competitive. The honest number is the
+H2H (equal) and the LBR floor (~800 mbb for V4). Do not ship a
+"competitive bot" claim on the V5 LBR.
