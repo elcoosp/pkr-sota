@@ -33,7 +33,7 @@ pub struct Spec {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act { Fold, Check, Call, Bet(f32) }
 
-struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<Node>, regret: Vec<f32>, ssum: Vec<f32>, sig: [u8; 8], sig_len: u8 }
+struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<Node>, regret: Vec<f32>, ssum: Vec<f32>, sig: [u8; 8], sig_len: u8, buckets: Vec<u8> }
 struct ShowNode { inv: f32, worst_first: Vec<u16>, rank: Vec<u32> }
 struct ChanceNode { cards: Vec<u8>, kids: Vec<Node>, n_deck: f32 }
 enum Node {
@@ -188,6 +188,7 @@ impl<'a> Solver<'a> {
             ssum: vec![0.0; n * N],
             sig: [0u8; 8],
             sig_len: 0,
+            buckets: Vec::new(),
         });
         self.gadget_player = Some(payee);
     }
@@ -273,8 +274,18 @@ impl<'a> Solver<'a> {
             if let Some(h) = hist.as_mut() { let _ = h.undo_action(); }
             kids.push(kid);
         }
+        let buckets: Vec<u8> = acts.iter().map(|act| {
+            let kind = match act {
+                Act::Fold => pkr_core::state::ActionKind::Fold,
+                Act::Check => pkr_core::state::ActionKind::Check,
+                Act::Call => pkr_core::state::ActionKind::Call,
+                Act::Bet(t) => pkr_core::state::ActionKind::Bet(*t),
+            };
+            let stacks_a = (sp.stack - st.inv[a]).max(0.0);
+            pkr_core::abstraction::action_bucket(&kind, stacks_a, st.inv[a], st.inv[o], pot)
+        }).collect();
         let n = acts.len();
-        Node::Act(ActNode { player: a, acts, kids, regret: vec![0.0; n * N], ssum: vec![0.0; n * N], sig, sig_len })
+        Node::Act(ActNode { player: a, acts, kids, regret: vec![0.0; n * N], ssum: vec![0.0; n * N], sig, sig_len, buckets })
     }
 
     fn end_street(&self, inv: [f32; 2], board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> Node {
@@ -552,6 +563,217 @@ impl<'a> Solver<'a> {
             if z > 0.0 { tot += (v / z) as f32; }
         }
         tot * 0.5
+    }
+
+    /// Street index from board length.
+    fn street_of(board_len: usize) -> u8 {
+        match board_len { 0 => 0, 3 => 1, 4 => 2, _ => 3 }
+    }
+
+    /// Recursive walk where the BR player `p` best-responds and the OTHER
+    /// player follows the blueprint (per-node `get_infoset_hash` via the
+    /// stored signature), except at the root where `root_override` (if
+    /// given) is used. Returns p's per-hand value vector, reach-weighted
+    /// by `r_opp`.
+    fn bp_walk(
+        &self,
+        node: &Node,
+        board: &mut Vec<u8>,
+        p: usize,
+        r_opp: &[f32],
+        abs: &dyn pkr_contracts::AbstractionBuilder,
+        tbl: &pkr_cfr::table::CompactRegretTable,
+        root_override: Option<&[Vec<f32>]>,
+        used: &mut bool,
+    ) -> Vec<f32> {
+        match node {
+            Node::Fold { folder, inv } => {
+                let val = if *folder == p { -(self.spec.dead * 0.5 + inv[p]) } else { self.spec.dead * 0.5 + inv[1 - p] };
+                fold_cfv(&self.holes, r_opp, val, &self.valid_root)
+            }
+            Node::Show(sn) => show_cfv(&self.holes, sn, r_opp, self.spec.dead * 0.5 + sn.inv),
+            Node::Const { vals_p0 } => {
+                let mut v = vals_p0.clone();
+                if p == 1 { for x in v.iter_mut() { *x = -*x; } }
+                let mut tot = 0.0f32; let mut card = [0.0f32; 52];
+                compat_sums(&self.holes, r_opp, &mut tot, &mut card);
+                let mut out = vec![0.0f32; N];
+                for h in 0..N {
+                    if !self.valid_root[h] { continue; }
+                    let comp = tot - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + r_opp[h];
+                    out[h] = v[h] * comp;
+                }
+                out
+            }
+            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root, *payee),
+            Node::Chance(cn) => {
+                let n_deck = cn.n_deck;
+                let mut out = vec![0.0f32; N];
+                for (i, &cc) in cn.cards.iter().enumerate() {
+                    board.push(cc);
+                    let mut ro = r_opp.to_vec();
+                    for h in 0..N { if self.holes[h][0] == cc || self.holes[h][1] == cc { ro[h] = 0.0; } }
+                    let v = self.bp_walk(&cn.kids[i], board, p, &ro, abs, tbl, root_override, used);
+                    board.pop();
+                    for h in 0..N { if !(self.holes[h][0] == cc || self.holes[h][1] == cc) { out[h] += v[h] / n_deck; } }
+                }
+                out
+            }
+            Node::Act(an) => {
+                let n = an.acts.len();
+                if an.player == p {
+                    let mut best = vec![f32::NEG_INFINITY; N];
+                    for a in 0..n {
+                        let v = self.bp_walk(&an.kids[a], board, p, r_opp, abs, tbl, root_override, used);
+                        for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } }
+                    }
+                    for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
+                    best
+                } else {
+                    let strat: Vec<Vec<f32>> = if !*used && an.player == 0 && root_override.is_some() {
+                        *used = true;
+                        root_override.unwrap().to_vec()
+                    } else {
+                        let street = Self::street_of(board.len());
+                        let mut per_act = vec![vec![0.0f32; N]; n];
+                        for h in 0..N {
+                            if !self.valid_root[h] { continue; }
+                            let hash = abs.get_infoset_hash(
+                                &self.holes[h], board, &an.sig[..an.sig_len as usize], street);
+                            let mut s = [0.0f32; 6];
+                            tbl.get_average_strategy_into(hash, &mut s);
+                            for a in 0..n {
+                                let b = an.buckets.get(a).copied().unwrap_or(0) as usize;
+                                per_act[a][h] = if b < 6 { s[b] } else { 0.0 };
+                            }
+                        }
+                        per_act
+                    };
+                    let mut out = vec![0.0f32; N];
+                    for a in 0..n {
+                        let mut ro = r_opp.to_vec();
+                        for h in 0..N { ro[h] *= strat[a][h]; }
+                        let v = self.bp_walk(&an.kids[a], board, p, &ro, abs, tbl, root_override, used);
+                        for h in 0..N { out[h] += v[h]; }
+                    }
+                    out
+                }
+            }
+        }
+    }
+
+    /// P0 plays its SOLVED strategy everywhere; P1 best-responds. This is
+    /// the gadget's true exploitability (its continuation is the solved
+    /// search, not the blueprint). Returns P1's reach-weighted value.
+    fn solved_br_p1(
+        &self,
+        node: &Node,
+        board: &mut Vec<u8>,
+        r_opp: &[f32],
+    ) -> Vec<f32> {
+        match node {
+            Node::Fold { folder, inv } => {
+                let val = if *folder == 1 { -(self.spec.dead * 0.5 + inv[1]) } else { self.spec.dead * 0.5 + inv[0] };
+                fold_cfv(&self.holes, r_opp, val, &self.valid_root)
+            }
+            Node::Show(sn) => show_cfv(&self.holes, sn, r_opp, self.spec.dead * 0.5 + sn.inv),
+            Node::Const { vals_p0 } => {
+                let mut v = vals_p0.clone();
+                for x in v.iter_mut() { *x = -*x; }
+                let mut tot = 0.0f32; let mut card = [0.0f32; 52];
+                compat_sums(&self.holes, r_opp, &mut tot, &mut card);
+                let mut out = vec![0.0f32; N];
+                for h in 0..N {
+                    if !self.valid_root[h] { continue; }
+                    let comp = tot - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + r_opp[h];
+                    out[h] = v[h] * comp;
+                }
+                out
+            }
+            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, r_opp, 1, &self.valid_root, *payee),
+            Node::Chance(cn) => {
+                let n_deck = cn.n_deck;
+                let mut out = vec![0.0f32; N];
+                for (i, &cc) in cn.cards.iter().enumerate() {
+                    board.push(cc);
+                    let mut ro = r_opp.to_vec();
+                    for h in 0..N { if self.holes[h][0] == cc || self.holes[h][1] == cc { ro[h] = 0.0; } }
+                    let v = self.solved_br_p1(&cn.kids[i], board, &ro);
+                    board.pop();
+                    for h in 0..N { if !(self.holes[h][0] == cc || self.holes[h][1] == cc) { out[h] += v[h] / n_deck; } }
+                }
+                out
+            }
+            Node::Act(an) => {
+                let n = an.acts.len();
+                if an.player == 1 {
+                    // P1 best-responds.
+                    let mut best = vec![f32::NEG_INFINITY; N];
+                    for a in 0..n {
+                        let v = self.solved_br_p1(&an.kids[a], board, r_opp);
+                        for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } }
+                    }
+                    for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
+                    best
+                } else {
+                    // P0 plays the solved average strategy.
+                    let mut st = vec![0.0f32; n * N];
+                    avg_strat(&an.ssum, n, &mut st);
+                    let mut out = vec![0.0f32; N];
+                    for a in 0..n {
+                        let mut ro = r_opp.to_vec();
+                        for h in 0..N { ro[h] *= st[a * N + h]; }
+                        let v = self.solved_br_p1(&an.kids[a], board, &ro);
+                        for h in 0..N { out[h] += v[h]; }
+                    }
+                    out
+                }
+            }
+        }
+    }
+
+    /// P1's reach-weighted exploitability of the SOLVED strategy.
+    pub fn solved_exploitability_p1(&self) -> f32 {
+        let mut board = self.spec.board.clone();
+        let cf = self.solved_br_p1(&self.root, &mut board, &self.spec.ranges[0]);
+        let mut z = 0.0f64; let mut v = 0.0f64;
+        let mut tot_o = 0.0f32; let mut card = [0.0f32; 52];
+        compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
+        for h in 0..N {
+            if !self.valid_root[h] { continue; }
+            let w = self.spec.ranges[1][h] as f64;
+            if w == 0.0 { continue; }
+            let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + self.spec.ranges[0][h];
+            z += w * comp as f64;
+            v += w * cf[h] as f64;
+        }
+        if z > 0.0 { (v / z) as f32 } else { 0.0 }
+    }
+
+    /// P1's best-response value (reach-weighted) against P0 following the
+    /// blueprint (or `root_override` at the root). Mirrors `opp_br_value`
+    /// but with the blueprint as P0's strategy.
+    pub fn blueprint_p1_br(
+        &self,
+        abs: &dyn pkr_contracts::AbstractionBuilder,
+        tbl: &pkr_cfr::table::CompactRegretTable,
+        root_override: Option<&[Vec<f32>]>,
+    ) -> f32 {
+        let mut board = self.spec.board.clone();
+        let mut used = false;
+        let cf = self.bp_walk(&self.root, &mut board, 1, &self.spec.ranges[0], abs, tbl, root_override, &mut used);
+        let mut z = 0.0f64; let mut v = 0.0f64;
+        let mut tot_o = 0.0f32; let mut card = [0.0f32; 52];
+        compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
+        for h in 0..N {
+            if !self.valid_root[h] { continue; }
+            let w = self.spec.ranges[1][h] as f64;
+            if w == 0.0 { continue; }
+            let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + self.spec.ranges[0][h];
+            z += w * comp as f64;
+            v += w * cf[h] as f64;
+        }
+        if z > 0.0 { (v / z) as f32 } else { 0.0 }
     }
 
     pub fn root_strategy(&self, hand: [u8; 2]) -> Vec<(Act, f32)> {
@@ -1059,6 +1281,98 @@ mod tests {
         eprintln!("sig check: checked={checked} mismatches={mismatches}");
         assert!(checked > 50, "expected many decision nodes, got {checked}");
         assert_eq!(mismatches, 0, "{mismatches} signature mismatches");
+    }
+
+    /// THE safety measurement, on the vector solver's OWN tree: does the
+    /// gadget's resolved P0 root strategy have P1-BR <= the blueprint's?
+    /// Needs real artifacts (env PKR_TEST_TABLES / PKR_TEST_CKPT).
+    #[test]
+    #[ignore]
+    fn vector_gadget_safe_on_own_tree() {
+        use pkr_abstraction::{load_centroids, KMeansAbstraction};
+        use pkr_cfr::table::CompactRegretTable;
+        use pkr_core::state::{Action, ActionKind, GameState};
+        use std::sync::Arc;
+        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
+        let tdir = std::env::var("PKR_TEST_TABLES").map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| ws.join("outputs/v42-post-audit"));
+        let ck = std::env::var("PKR_TEST_CKPT").map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| ws.join("outputs/ab-v5/train.ckpt"));
+        if !ck.exists() { eprintln!("SKIP: {} missing", ck.display()); return; }
+        std::env::set_var("PKR_SIG_V5", "1");
+        std::env::set_var("PKR_SIG_V4", "0");
+        std::env::set_var("PKR_SIG_V3", "1");
+        let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap()).unwrap();
+        let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+        abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap()).unwrap();
+        abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap()).unwrap();
+        abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap()).unwrap();
+        abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap()).unwrap();
+        let tbl = CompactRegretTable::with_capacity(60_000_000);
+        let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(abs.k() as u32);
+        tbl.load_checkpoint(ck.to_str().unwrap(), &fp).unwrap();
+        let abs_dyn: &dyn pkr_contracts::AbstractionBuilder = &abs;
+        let ev = pkr_eval::NlheEvaluator;
+
+        let mut root = GameState::new(200.0, 1.0, 2.0);
+        root.dealer = 1;
+        root.set_hole_cards([0, 1], [2, 3]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&[20, 25, 30]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&[35]);
+        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.advance_street_in_place(&[44]);
+
+        let our = root.hole[root.actor];
+        let board = &root.board[..root.board_len as usize];
+        let mut our_r = vec![0.0f32; N];
+        our_r[index_of(our)] = 1.0;
+        let mut opp_r = vec![0.0f32; N];
+        let mut n = 0usize;
+        for h in 0..N {
+            if hole_table()[h].iter().any(|cc| board.contains(cc)) { continue; }
+            if hole_table()[h].iter().any(|cc| our.contains(cc)) { continue; }
+            opp_r[h] = 1.0; n += 1;
+        }
+        let u = 1.0 / n as f32;
+        for x in opp_r.iter_mut() { if *x > 0.0 { *x = u; } }
+
+        // cbv via the sampled machinery.
+        let to_hp = |r: &[f32]| {
+            let mut hs = Vec::new(); let mut ps = Vec::new();
+            for h in 0..N { if r[h] > 0.0 { hs.push(hole_table()[h]); ps.push(r[h] as f64); } }
+            (hs, ps)
+        };
+        let (h0, p0) = to_hp(&our_r);
+        let (h1, p1) = to_hp(&opp_r);
+        let poc = crate::POCConfig {
+            root: root.clone(),
+            p0_range: crate::Range::weighted(h0, p0),
+            p1_range: crate::Range::weighted(h1, p1),
+            iterations: 1, evaluator: &ev, blueprint: Some((abs_dyn, &tbl)),
+        };
+        let cbv: Vec<f32> = crate::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
+
+        let mk_spec = || spec_from_state(&root, [our_r.clone(), opp_r.clone()], vec![0.5, 1.0], 2);
+        let eval = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
+
+        // Baseline: P0 plays the BLUEPRINT at every node; P1 best-responds.
+        let base = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
+        let bp_br = base.blueprint_p1_br(abs_dyn, &tbl, None);
+
+        // Gadget: P0 plays the SOLVED search (incl. the gadget node where
+        // P1 chooses Terminate/Follow); P1 best-responds.
+        let mut g = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
+        g.install_gadget(cbv, 1);
+        g.iterate(80);
+        let gadget_br = g.solved_exploitability_p1();
+
+        eprintln!("VECTOR-GADGET SAFETY (own tree): blueprint_br={bp_br:.4} gadget_br={gadget_br:.4}");
+        assert!(gadget_br <= bp_br + 0.25, "vector gadget BR {gadget_br} > blueprint {bp_br} (+0.25 tol)");
     }
 
     #[test]

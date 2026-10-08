@@ -442,11 +442,16 @@ pub fn p1_cbv_per_hand(cfg: &POCConfig) -> Vec<f64> {
     };
     let solver = Solver::new(cfg);
     let bp = solver.build_blueprint_strategy(abs, tbl);
+    // CFR-D Terminate pays P1's COUNTERFACTUAL BEST-RESPONSE value
+    // against the blueprint (not the both-blueprint expected value).
+    // Using the EV was the bug that made the vector gadget score worse
+    // than the blueprint: with too small a terminate value, P1's floor
+    // was below what best-responding to the blueprint achieves.
+    let br_per_deal = solver.br_per_deal(&bp);
     let mut wsum = vec![0.0f64; n];
     for (d, deal) in solver.deals.iter().enumerate() {
         let h1 = crate::range_tracker::index_of_hole(&deal.h1);
-        let v_p1 = -solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
-        out[h1] += deal.prior * v_p1;
+        out[h1] += deal.prior * br_per_deal[d];
         wsum[h1] += deal.prior;
     }
     for h in 0..n {
