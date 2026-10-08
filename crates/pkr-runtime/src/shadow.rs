@@ -5,7 +5,6 @@
 
 use crate::translate_live::translate_bet;
 use pkr_core::state::{Action, ActionKind, GameState};
-use rand::RngExt;
 
 pub struct Shadow {
     pub st: GameState,
