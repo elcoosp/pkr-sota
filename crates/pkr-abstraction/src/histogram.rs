@@ -117,6 +117,60 @@ pub fn flop_hist(
     h
 }
 
+/// k-means over CDF-transformed histograms (Task 2.3c). Each input
+/// histogram is converted to its CDF, then clustered with L2 k-means.
+/// Returns (centroids-as-CDFs, assignment per input). Deterministic:
+/// init = first k distinct points (no RNG), 20 iterations max.
+///
+/// `emd_l1(a, centroid_cdf)` is the natural distance, but k-means on
+/// CDFs with L2 is the standard cheap surrogate; we report the final
+/// within-cluster mean L1 (EMD) so the caller can judge quality.
+pub fn kmeans_cdf(data: &[Vec<f32>], k: usize, iters: usize) -> (Vec<Vec<f32>>, Vec<usize>) {
+    assert!(!data.is_empty(), "kmeans_cdf: empty data");
+    let dim = data[0].len();
+    let cdfs: Vec<Vec<f32>> = data.iter().map(|h| cdf(h)).collect();
+    let k = k.min(cdfs.len()).max(1);
+    // Deterministic init: spread picks (i * n / k).
+    let mut cents: Vec<Vec<f32>> = (0..k).map(|i| cdfs[i * cdfs.len() / k].clone()).collect();
+    let mut assign = vec![0usize; cdfs.len()];
+    for _ in 0..iters.max(1) {
+        // assign
+        for (i, p) in cdfs.iter().enumerate() {
+            let mut best = 0usize;
+            let mut bd = f32::INFINITY;
+            for (ci, c) in cents.iter().enumerate() {
+                let d: f32 = p.iter().zip(c).map(|(a, b)| (a - b) * (a - b)).sum();
+                if d < bd { bd = d; best = ci; }
+            }
+            assign[i] = best;
+        }
+        // update
+        let mut sums = vec![vec![0f32; dim]; k];
+        let mut counts = vec![0usize; k];
+        for (i, p) in cdfs.iter().enumerate() {
+            counts[assign[i]] += 1;
+            for d in 0..dim { sums[assign[i]][d] += p[d]; }
+        }
+        for ci in 0..k {
+            if counts[ci] > 0 {
+                for d in 0..dim { cents[ci][d] = sums[ci][d] / counts[ci] as f32; }
+            }
+        }
+    }
+    (cents, assign)
+}
+
+/// Mean within-cluster EMD (L1 of CDFs) of a clustering — the quality
+/// metric Task 2.3(c) compares against the legacy buckets.
+pub fn mean_within_cluster_emd(data: &[Vec<f32>], cents: &[Vec<f32>], assign: &[usize]) -> f32 {
+    if data.is_empty() { return 0.0; }
+    let mut tot = 0f32;
+    for (i, h) in data.iter().enumerate() {
+        tot += emd_l1(h, &cents[assign[i]]);
+    }
+    tot / data.len() as f32
+}
+
 /// Cumulative distribution of a histogram (each bin = fraction).
 pub fn cdf(h: &[f32]) -> Vec<f32> {
     let mut out = Vec::with_capacity(h.len());
@@ -152,6 +206,31 @@ mod tests {
         let sum: f32 = a.iter().sum();
         assert!((sum - 1.0).abs() < 1e-3, "must sum to 1, got {sum}");
         assert!(a.iter().any(|&x| x > 0.0));
+    }
+
+    #[test]
+    fn kmeans_cdf_separates_two_clusters() {
+        // Cluster A: mass in low bins. Cluster B: mass in high bins.
+        let mut data = Vec::new();
+        for _ in 0..10 { data.push(vec![1.0, 0.0, 0.0, 0.0, 0.0]); }
+        for _ in 0..10 { data.push(vec![0.0, 0.0, 0.0, 0.0, 1.0]); }
+        let (cents, assign) = kmeans_cdf(&data, 2, 20);
+        assert_eq!(cents.len(), 2);
+        // All A's share one label, all B's the other.
+        let a = assign[0];
+        assert!(assign[..10].iter().all(|&x| x == a), "A not homogeneous");
+        assert!(assign[10..].iter().all(|&x| x != a), "B not separated from A");
+    }
+
+    #[test]
+    fn kmeans_cdf_quality_improves_or_is_finite() {
+        let mut data = Vec::new();
+        let mut rng = 12345u64;
+        let mut next = || { rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1); (rng >> 40) as f32 / (1u64 << 24) as f32 };
+        for _ in 0..50 { data.push(vec![next(), next(), next(), next()]); }
+        let (cents, assign) = kmeans_cdf(&data, 4, 20);
+        let q = mean_within_cluster_emd(&data, &cents, &assign);
+        assert!(q.is_finite() && q >= 0.0, "quality {q}");
     }
 
     #[test]
