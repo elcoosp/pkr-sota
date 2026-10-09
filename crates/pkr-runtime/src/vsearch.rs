@@ -216,12 +216,34 @@ pub fn solve_root_gadgetted(
     if solver.n_root_actions() == 0 {
         return None;
     }
-    // cbv on the VECTOR tree (P1 BR vs the blueprint), NOT the sampled
-    // tree: the terminate floor must be on the same tree as the gadget.
-    let cbv = solver.p1_br_vs_blueprint_per_hand(abs, tbl);
-    // The VECTOR gadget is PROVEN safe (gadget_br <= blueprint_br across
-    // 4 river subgames; see docs/experiments/vector-gadget-safety-status.md).
-    // CFR-D Terminate pays the opponent its blueprint-continuation EV.
+    // CFR-D Terminate pays the opponent its BLUEPRINT-CONTINUATION EV
+    // (not its BR value). This is the config the safety sweep proved
+    // (gadget_br <= blueprint_br across 4 subgames); using the BR value
+    // here breaks it (cbv=BR -> 11.23 vs cbv=EV -> 2.09). The EV cbv is
+    // computed by `p1_cbv_per_hand` on a sampled POCConfig built from the
+    // SAME root + ranges.
+    let holes = pkr_subgame::vector::hole_table();
+    let to_hp = |r: &[f32]| {
+        let mut hs = Vec::new();
+        let mut ps = Vec::new();
+        for h in 0..r.len() {
+            if r[h] > 0.0 { hs.push(holes[h]); ps.push(r[h] as f64); }
+        }
+        (hs, ps)
+    };
+    let (h0, p0) = to_hp(&ranges_w[0]);
+    let (h1, p1) = to_hp(&ranges_w[1]);
+    if h0.is_empty() || h1.is_empty() { return None; }
+    let ev = pkr_eval::NlheEvaluator;
+    let poc = pkr_subgame::POCConfig {
+        root: work.clone(),
+        p0_range: pkr_subgame::Range::weighted(h0, p0),
+        p1_range: pkr_subgame::Range::weighted(h1, p1),
+        iterations: 1,
+        evaluator: &ev,
+        blueprint: Some((abs, tbl)),
+    };
+    let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
     solver.install_gadget(cbv, 1);
     solver.iterate(cfg.iters);
     Some(solver.root_strategy(our_hand))
