@@ -154,6 +154,10 @@ fn main() {
         }
         // Decide: hash the acting player's infoset via the abstraction
         // loaded from the tables dir, then read the blueprint advice.
+        if std::env::var("PKR_BOT_DEBUG").is_ok() {
+            eprintln!("DEBUG actor={} hole={:?} board_len={} street={:?} face={}",
+                st.actor, st.hole[st.actor], st.board_len, st.street, st.bet_to_call());
+        }
         let hole = st.hole[st.actor];
         let mut sig = [0u8; 8];
         let sl = st.infoset_signature_into(&mut sig);
