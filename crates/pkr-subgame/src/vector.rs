@@ -776,21 +776,6 @@ impl<'a> Solver<'a> {
         }
         if z > 0.0 { (v / z) as f32 } else { 0.0 }
     }
-
-    /// P1's best-response value vs the BLUEPRINT continuation (P0 plays the
-    /// blueprint at every node), per hand, on THIS vector tree. The CFR-D
-    /// terminate value MUST be computed on the same tree the gadget runs in;
-    /// computing it on the sampled tree gives a mismatched floor.
-    pub fn p1_br_vs_blueprint_per_hand(
-        &self,
-        abs: &dyn pkr_contracts::AbstractionBuilder,
-        tbl: &pkr_cfr::table::CompactRegretTable,
-    ) -> Vec<f32> {
-        let mut board = self.spec.board.clone();
-        let mut used = false;
-        self.bp_walk(&self.root, &mut board, 1, &self.spec.ranges[0], abs, tbl, None, &mut used)
-    }
-
     /// The REAL root node: with a gadget installed this is the Follow
     /// child (the subgame); otherwise the root itself. Used for the
     /// safety measure, which must exclude the gadget's Terminate option.
