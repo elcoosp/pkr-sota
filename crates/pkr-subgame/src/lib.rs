@@ -367,14 +367,13 @@ pub fn safe_resolve_gadget(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
     let bp = solver.build_blueprint_strategy(abs, tbl);
     let t_bp = t0.elapsed() - t_new;
     let t1 = std::time::Instant::now();
-    // CFR-D Terminate value = the opponent's COUNTERFACTUAL BEST-RESPONSE
-    // value against the blueprint (not the both-blueprint EV). A too-low
-    // terminate value leaves the opponent an incentive to enter and
-    // deviate, weakening the safety bound.
-    let br = solver.br_per_deal(&bp); // P1's BR value vs blueprint, per deal
+    // CFR-D Terminate value = the opponent's BLUEPRINT-CONTINUATION value
+    // (EV of both players following the blueprint). This is the
+    // theorem-correct value (Burch-Johanson-Bowling 2014); it matches the
+    // vector gadget. (A BR value is also safe but more conservative.)
     let mut gv = vec![0.0f64; solver.n_deals];
     for d in 0..solver.n_deals {
-        gv[d] = br[d];
+        gv[d] = -solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
     }
     solver.gadget_v1 = gv;
     solver.gadget_reg = (0..solver.n_deals * 2)
