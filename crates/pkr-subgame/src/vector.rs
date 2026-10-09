@@ -4,6 +4,10 @@
 //! Carries the full 1326-hand range through every node (unlike the
 //! sampled-hand solver). Exact river enumeration; turn via chance nodes.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 pub const N: usize = 1326;
 
 pub fn index_of(h: [u8; 2]) -> usize {
@@ -34,7 +38,10 @@ pub struct Spec {
 pub enum Act { Fold, Check, Call, Bet(f32) }
 
 struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<Node>, regret: Vec<f32>, ssum: Vec<f32>, sig: [u8; 8], sig_len: u8, buckets: Vec<u8> }
-struct ShowNode { inv: f32, worst_first: Vec<u16>, rank: Vec<u32> }
+/// Per-board showdown table, shared by every Show node with the
+/// same board. Computing it once instead of per node is the win.
+struct ShowTable { worst_first: Vec<u16>, rank: Vec<u32> }
+struct ShowNode { inv: f32, table: Arc<ShowTable> }
 struct ChanceNode { cards: Vec<u8>, kids: Vec<Node>, n_deck: f32 }
 enum Node {
     Act(ActNode),
@@ -67,12 +74,14 @@ pub struct Solver<'a> {
     /// player `1 - payee` with kids `[Terminate, Follow]`; P0's real
     /// root is the `Follow` child (`kids[1]`).
     gadget_player: Option<u8>,
+    /// Per-board showdown cache (single-threaded; `iterate` is serial).
+    show_cache: RefCell<HashMap<u64, Arc<ShowTable>>>,
 }
 
 impl<'a> Solver<'a> {
     pub fn new(spec: Spec, eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync)) -> Self {
         let holes = hole_table();
-        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None, root_state: None };
+        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None, root_state: None, show_cache: RefCell::new(HashMap::new()) };
         s.valid_root = (0..N).map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c))).collect();
         for p in 0..2 { for h in 0..N { if !s.valid_root[h] { s.spec.ranges[p][h] = 0.0; } } }
         let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
@@ -308,16 +317,37 @@ impl<'a> Solver<'a> {
     }
 
     fn showdown(&self, inv: f32, board: &[u8]) -> Node {
-        let mut rank = vec![0u32; N];
-        let mut ids: Vec<u16> = Vec::new();
-        for h in 0..N {
-            if self.holes[h].iter().any(|c| board.contains(c)) { continue; }
-            rank[h] = (self.eval)(&self.holes[h], board);
-            ids.push(h as u16);
-        }
-        ids.sort_by(|&x, &y| rank[y as usize].cmp(&rank[x as usize]));
-        Node::Show(ShowNode { inv, worst_first: ids, rank })
+        let key = board_key(board);
+        // Scope the immutable borrow so it is dropped before the mutable
+        // one in the else branch (RefCell is not reentrant).
+        let cached = self.show_cache.borrow().get(&key).cloned();
+        let table = if let Some(t) = cached {
+            t
+        } else {
+            let mut rank = vec![0u32; N];
+            let mut ids: Vec<u16> = Vec::new();
+            for h in 0..N {
+                if self.holes[h].iter().any(|c| board.contains(c)) { continue; }
+                rank[h] = (self.eval)(&self.holes[h], board);
+                ids.push(h as u16);
+            }
+            ids.sort_by(|&x, &y| rank[y as usize].cmp(&rank[x as usize]));
+            let t = Arc::new(ShowTable { worst_first: ids, rank });
+            self.show_cache.borrow_mut().insert(key, t.clone());
+            t
+        };
+        Node::Show(ShowNode { inv, table })
     }
+}
+
+fn board_key(board: &[u8]) -> u64 {
+    let mut b: Vec<u8> = board.to_vec();
+    b.sort_unstable();
+    let mut k = 0u64;
+    for (i, &x) in b.iter().enumerate().take(5) {
+        k |= (x as u64) << (6 * i);
+    }
+    k
 }
 
 fn compat_sums(holes: &[[u8; 2]], r: &[f32], out_total: &mut f32, card: &mut [f32; 52]) {
@@ -339,11 +369,11 @@ fn show_cfv(holes: &[[u8; 2]], sn: &ShowNode, r_opp: &[f32], v: f32) -> Vec<f32>
     let mut below = vec![0.0f32; N]; let mut above = vec![0.0f32; N];
     for pass in 0..2 {
         let mut tot = 0.0f32; let mut card = [0.0f32; 52];
-        let ids: Vec<u16> = if pass == 0 { sn.worst_first.clone() } else { sn.worst_first.iter().rev().cloned().collect() };
+        let ids: Vec<u16> = if pass == 0 { sn.table.worst_first.clone() } else { sn.table.worst_first.iter().rev().cloned().collect() };
         let mut i = 0;
         while i < ids.len() {
-            let rk = sn.rank[ids[i] as usize]; let mut j = i;
-            while j < ids.len() && sn.rank[ids[j] as usize] == rk { j += 1; }
+            let rk = sn.table.rank[ids[i] as usize]; let mut j = i;
+            while j < ids.len() && sn.table.rank[ids[j] as usize] == rk { j += 1; }
             for k in i..j { let h = ids[k] as usize;
                 let s = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize];
                 if pass == 0 { below[h] = s } else { above[h] = s } }
@@ -353,7 +383,7 @@ fn show_cfv(holes: &[[u8; 2]], sn: &ShowNode, r_opp: &[f32], v: f32) -> Vec<f32>
         }
     }
     let mut out = vec![0.0; N];
-    for &h in &sn.worst_first { let h = h as usize; out[h] = v * (below[h] - above[h]); }
+    for &h in &sn.table.worst_first { let h = h as usize; out[h] = v * (below[h] - above[h]); }
     out
 }
 
