@@ -1472,10 +1472,17 @@ mod tests {
             let mut raw = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
             raw.iterate(80);
             let raw_br = raw.solved_exploitability_p1();
-            eprintln!("case {i}: blueprint_br={bp_br:.4} raw_search_br={raw_br:.4} delta={:.4}", raw_br - bp_br);
-            if raw_br - bp_br > worst { worst = raw_br - bp_br; }
+            let mut gg = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
+            gg.install_gadget(cbv.clone(), 1);
+            gg.iterate(80);
+            let g_br = gg.solved_exploitability_p1();
+            eprintln!(
+                "case {i}: blueprint_br={bp_br:.4} raw_br={raw_br:.4} gadget_br={g_br:.4} (gadget-bp={:.4})",
+                g_br - bp_br
+            );
+            if g_br - bp_br > worst { worst = g_br - bp_br; }
         }
-        eprintln!("WORST raw_search - blueprint = {worst:.4}");
+        eprintln!("WORST gadget - blueprint = {worst:.4}");
         assert!(worst <= 0.5, "worst gadget excess {worst:.4} exceeds 0.5");
     }
 
@@ -1572,6 +1579,12 @@ mod tests {
         let raw_br = raw.solved_exploitability_p1();
         eprintln!("RAW search BR (no gadget) = {raw_br:.4}");
 
+        // GADGET-CBV-TEST: does the gadget's cbv matter, or is it structural?
+        let mut g0 = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
+        g0.install_gadget(vec![0.0f32; N], 1);
+        g0.iterate(80);
+        let gadget0_br = g0.solved_exploitability_p1();
+        eprintln!("GADGET-CBV-TEST: cbv=real -> {gadget_br:.4}   cbv=0 -> {gadget0_br:.4}   raw -> {raw_br:.4}");
         eprintln!(
             "VECTOR search: blueprint_br={bp_br:.4} raw_search_br={raw_br:.4} gadget_br={gadget_br:.4}"
         );

@@ -401,16 +401,16 @@ pub fn p1_cbv_per_hand(cfg: &POCConfig) -> Vec<f64> {
     };
     let solver = Solver::new(cfg);
     let bp = solver.build_blueprint_strategy(abs, tbl);
-    // CFR-D Terminate pays P1's COUNTERFACTUAL BEST-RESPONSE value
-    // against the blueprint (not the both-blueprint expected value).
-    // Using the EV was the bug that made the vector gadget score worse
-    // than the blueprint: with too small a terminate value, P1's floor
-    // was below what best-responding to the blueprint achieves.
-    let br_per_deal = solver.br_per_deal(&bp);
+    // CFR-D Terminate pays P1 its BLUEPRINT-CONTINUATION value (the EV of
+    // both players following the blueprint), NOT P1's best-response value.
+    // Paying BR gives P1 too good a floor and the re-solved strategy is
+    // worse (vector gadget: cbv=BR -> 11.23, cbv=0 -> 2.09, raw -> 2.16).
+    // Matches the PROVEN sampled gadget, which uses this EV.
     let mut wsum = vec![0.0f64; n];
     for (d, deal) in solver.deals.iter().enumerate() {
         let h1 = crate::range_tracker::index_of_hole(&deal.h1);
-        out[h1] += deal.prior * br_per_deal[d];
+        let v_p1 = -solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
+        out[h1] += deal.prior * v_p1;
         wsum[h1] += deal.prior;
     }
     for h in 0..n {
@@ -1178,6 +1178,41 @@ impl<'a> Solver<'a> {
     /// hole is fixed across deals (as in a subgame solve for one hand).
     /// Averaging per-deal regret-matched strategies (what
     /// `root_p0_strategies` does) gives a different, incorrect result.
+    /// Expected value to P0 of the subgame at `node_id` for `deal_idx`,
+    /// with BOTH players following the blueprint. CFR-D's Terminate value.
+    fn blueprint_value_p0(
+        &self,
+        node_id: u32,
+        deal_idx: u32,
+        bp: &[Option<[f64; ABSTRACT_BUCKETS]>],
+    ) -> f64 {
+        match &self.tree.nodes[node_id as usize] {
+            PublicNode::Fold { .. } | PublicNode::Showdown { .. } => {
+                self.term_value(node_id, deal_idx)
+            }
+            PublicNode::Chance { children } => {
+                let h0 = self.deals[deal_idx as usize].h0;
+                let h1 = self.deals[deal_idx as usize].h1;
+                let valid: Vec<u32> = children.iter()
+                    .filter(|(c, _)| *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1])
+                    .map(|(_, id)| *id).collect();
+                if valid.is_empty() { return 0.0; }
+                let w = 1.0 / valid.len() as f64;
+                valid.iter().map(|&ch| w * self.blueprint_value_p0(ch, deal_idx, bp)).sum()
+            }
+            PublicNode::Decision { bucket_child, .. } => {
+                let i = self.idx(node_id, deal_idx);
+                let strat = bp[i].unwrap_or_else(|| uniform_over_legal(bucket_child));
+                let mut v = 0.0f64;
+                for b in 0..ABSTRACT_BUCKETS {
+                    if bucket_child[b] < 0 { continue; }
+                    v += strat[b] * self.blueprint_value_p0(bucket_child[b] as u32, deal_idx, bp);
+                }
+                v
+            }
+        }
+    }
+
     pub fn root_p0_strategy_aggregated(&self) -> Option<[f64; ABSTRACT_BUCKETS]> {
         let root = self.tree.root as usize;
         let i_root = root * self.n_deals;
