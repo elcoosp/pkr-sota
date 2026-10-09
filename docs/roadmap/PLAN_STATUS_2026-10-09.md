@@ -44,7 +44,10 @@ for the shipping path. It would matter if turn/flop search is enabled.
 
 - river decision (bound): 2.14s (at the 2s budget; the budget caps
   iterate, not the bound BR walks)
-- turn decision (bound): 52s  -> turn DISABLED by default in the live path
+- turn decision (bound): 44.6s EVEN WITH the budget fix (the pre-loop
+  opp_br_value calls and the turn-tree build are not budget-guarded;
+  only the binary-search loop is). -> turn is OFFLINE-ONLY; the live path
+  defaults to river-only. PKR_VSEARCH_STREETS=tr overrides for offline use.
 
 ## Verdict
 
