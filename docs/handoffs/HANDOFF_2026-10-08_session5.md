@@ -1,4 +1,10 @@
-# HANDOFF - 2026-10-08 session 5 (search bound + gadget + V4/V5)
+# HANDOFF - 2026-10-08 session 5
+
+> **SUPERSEDED (2026-10-09):** the vector gadget was subsequently PROVEN
+> safe (the failure was a BR-vs-EV cbv bug) and V4/V5 were resolved
+> (off-tree explains 76% of the LBR gap; H2H equal). See
+> HANDOFF_2026-10-09_session6.md and vector-gadget-safety-status.md.
+ (search bound + gadget + V4/V5)
 
 Continues HANDOFF_2026-10-07_session4.md.
 
