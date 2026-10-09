@@ -156,10 +156,18 @@ pub fn solve_root_bounded(
         search_root.clone()
     } else {
         VSEARCH_BOUND_BLENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The binary search's BR walks are NOT covered by time_budget_ms
+        // (which only caps `iterate`). Check the clock here too so a live
+        // decision honours the budget; once over, keep the best safe blend
+        // found so far (bp_root is always safe).
+        let t0 = std::time::Instant::now();
+        let budget = std::time::Duration::from_millis(cfg.time_budget_ms);
+        let timed = cfg.time_budget_ms > 0;
         let mut lo = 0.0f32;
         let mut hi = 1.0f32;
         let mut best = bp_root.clone();
         for _ in 0..12 {
+            if timed && t0.elapsed() >= budget { break; }
             let mid = 0.5 * (lo + hi);
             let mixed = Solver::blend_root(&search_root, &bp_root, mid);
             solver.set_root_strategy(&mixed);
