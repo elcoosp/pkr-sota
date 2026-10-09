@@ -63,6 +63,7 @@ impl LocalMetrics {
         self.regret_pushed += other.regret_pushed;
         self.depth_overflows += other.depth_overflows;
         self.deck_overflows += other.deck_overflows;
+        self.pruned_actions += other.pruned_actions;
         for i in 0..32 {
             self.depth_hist[i] = self.depth_hist[i].saturating_add(other.depth_hist[i]);
         }
@@ -82,6 +83,7 @@ pub struct GlobalMetrics {
     pub regret_pushed: AtomicU64,
     pub depth_overflows: AtomicU64,
     pub deck_overflows: AtomicU64,
+    pub pruned_actions: AtomicU64,
     pub strategy_applied: AtomicU64,
     pub regret_input: AtomicU64,
     pub regret_unique: AtomicU64,
@@ -107,6 +109,7 @@ impl GlobalMetrics {
             regret_pushed: AtomicU64::new(0),
             depth_overflows: AtomicU64::new(0),
             deck_overflows: AtomicU64::new(0),
+            pruned_actions: AtomicU64::new(0),
             strategy_applied: AtomicU64::new(0),
             regret_input: AtomicU64::new(0),
             regret_unique: AtomicU64::new(0),
@@ -152,6 +155,8 @@ impl GlobalMetrics {
             .fetch_add(m.depth_overflows, Ordering::Relaxed);
         self.deck_overflows
             .fetch_add(m.deck_overflows, Ordering::Relaxed);
+        self.pruned_actions
+            .fetch_add(m.pruned_actions, Ordering::Relaxed);
         self.strategy_applied
             .fetch_add(strategy_in, Ordering::Relaxed);
         self.regret_input.fetch_add(regret_in, Ordering::Relaxed);
@@ -179,6 +184,7 @@ impl GlobalMetrics {
             regret_pushed: self.regret_pushed.load(Ordering::Relaxed),
             depth_overflows: self.depth_overflows.load(Ordering::Relaxed),
             deck_overflows: self.deck_overflows.load(Ordering::Relaxed),
+            pruned_actions: self.pruned_actions.load(Ordering::Relaxed),
             strategy_applied: self.strategy_applied.load(Ordering::Relaxed),
             regret_input: self.regret_input.load(Ordering::Relaxed),
             regret_unique: self.regret_unique.load(Ordering::Relaxed),
@@ -205,6 +211,7 @@ pub struct Snapshot {
     pub regret_pushed: u64,
     pub depth_overflows: u64,
     pub deck_overflows: u64,
+    pub pruned_actions: u64,
     pub strategy_applied: u64,
     pub regret_input: u64,
     pub regret_unique: u64,
@@ -232,6 +239,7 @@ impl Snapshot {
             regret_pushed: self.regret_pushed.saturating_sub(prev.regret_pushed),
             depth_overflows: self.depth_overflows.saturating_sub(prev.depth_overflows),
             deck_overflows: self.deck_overflows.saturating_sub(prev.deck_overflows),
+            pruned_actions: self.pruned_actions.saturating_sub(prev.pruned_actions),
             strategy_applied: self.strategy_applied.saturating_sub(prev.strategy_applied),
             regret_input: self.regret_input.saturating_sub(prev.regret_input),
             regret_unique: self.regret_unique.saturating_sub(prev.regret_unique),

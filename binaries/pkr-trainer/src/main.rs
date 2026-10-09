@@ -590,7 +590,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "iter,wall_s,it_per_s,infosets,cap_pct,max_abs_regret,\
                      mean_abs_regret,nonfinite,strat_mass,\
                      nodes,nodes_per_iter,avg_depth,max_depth,cache_hit_rate,\
-                     regret_in,regret_out,regret_dedup,strategy_applied,\
+                     regret_in,regret_out,regret_dedup,strategy_applied,pruned_actions,\
                      traverse_ms,merge_ms,flush_ms,wall_ms"
                 )?;
             }
@@ -1168,7 +1168,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     w,
                     "{},{:.3},{:.1},{},{:.3},{:.6e},{:.6e},{},{:.6e},\
                      {},{:.1},{:.3},{},{:.4},\
-                     {},{},{:.4},{},\
+                     {},{},{:.4},{},{},\
                      {:.3},{:.3},{:.3},{:.3}",
                     done,
                     elapsed,
@@ -1188,6 +1188,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     delta.regret_unique,
                     regret_dedup,
                     delta.strategy_applied,
+                    delta.pruned_actions,
                     traverse_ms,
                     merge_ms,
                     flush_ms,

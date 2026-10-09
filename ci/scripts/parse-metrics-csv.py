@@ -9,7 +9,7 @@ Column list matches the frozen CSV header in
 binaries/pkr-trainer/src/main.rs:
 iter,wall_s,it_per_s,infosets,cap_pct,max_abs_regret,mean_abs_regret,
 nonfinite,strat_mass,nodes,nodes_per_iter,avg_depth,max_depth,
-cache_hit_rate,regret_in,regret_out,regret_dedup,strategy_applied,
+cache_hit_rate,regret_in,regret_out,regret_dedup,strategy_applied,pruned_actions,
 traverse_ms,merge_ms,flush_ms,wall_ms
 """
 import csv
@@ -47,6 +47,7 @@ COLUMNS = [
     ("regret_out",      "count",    None),
     ("regret_dedup",    "ratio",    True),
     ("strategy_applied","count",    None),
+    ("pruned_actions",  "count",    None),
     ("traverse_ms",     "ms",       False),
     ("merge_ms",        "ms",       False),
     ("flush_ms",        "ms",       False),
