@@ -14,3 +14,10 @@ The SHIPPED safe search config is the heuristic BOUND:
   +1.1763 / +0.8211 / +0.9722 / +1.1625 (all t>4).
 
 So: ship --search-bound (safe + wins). The vector gadget stays parked.
+
+
+## Live default (2026-10-09)
+
+`PKR_VSEARCH=1` alone now selects the PROVEN heuristic bound (was raw).
+Opt-outs: `PKR_VSEARCH_GADGET=1` (proven CFR-D gadget), `PKR_VSEARCH_RAW=1`
+(raw solve, no bound). So the live search path is safe by default.
