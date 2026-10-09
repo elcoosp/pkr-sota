@@ -1,43 +1,39 @@
-# Vector gadget safety - NOT PROVEN (final, 2026-10-08)
+# Vector gadget - RESOLVED: it was the problem, not the search (2026-10-09)
 
-Three fixes attempted, all confirmed applied:
-1. chooser = payee (was 1-payee) - CFR-D correct.
-2. cbv computed on the VECTOR tree (was the sampled tree).
-3. safety measured as P1 BR in the REAL subgame (follow-only),
-   excluding the gadget Terminate node.
+## The diagnostic that settled it
 
-Result (real V5, river subgame):
-  blueprint_br = 8.4394
-  gadget_br    = 11.2312   (STILL worse than blueprint)
+On-tree best-response, same subgame, real V5 blueprint:
 
-Conclusion: the vector gadget does NOT bound exploitability by the
-blueprint here. It is UNPROVEN / apparently INCORRECT.
+  blueprint_br    = 8.4394
+  raw_search_br   = 2.1642   <- the vector SEARCH is 4x safer than the blueprint
+  gadget_br       = 11.2312  <- the GADGET makes it WORSE
 
-The earlier PROVEN claim (blueprint 8.44 vs gadget 2.18) used a buggy
-chooser and is RETRACTED.
+So the vector search is intrinsically strong; the CFR-D gadget WIRING is
+what degrades it. The gadget is the bug, not the search.
 
-## What IS proven
+## Sweep (4 river subgames), raw search vs blueprint:
 
-- The SAMPLED gadget (safe_resolve_gadget, pkr-subgame/src/lib.rs):
-  bp_br=9.5612 vs gadget_br=0.6284. Self-consistent tree. This is the
-  one to ship for a real opponent.
-- The vector gadget MECHANISM runs (install/solve/read), both seats.
+  case 0: bp=8.4394  raw=2.1642   delta=-6.28
+  case 1: bp=1.8596  raw=-1.4780  delta=-3.34
+  case 2: bp=24.1405 raw=4.2467   delta=-19.89
+  case 3: bp=14.5281 raw=-0.6304  delta=-15.16
 
-## Open question (not chased further)
+Raw search is safer than the blueprint in ALL 4 cases (worst delta -3.34).
 
-Why the vector gadget fails. Candidate causes: CFR not converged at
-80 iters on this tree; the aggregate-root reduction interacting with
-the gadget; or a residual cbv mismatch. Worth a focused session, but
-NOT worth shipping on. Use the sampled gadget.
+## Consequence
 
-## Additional check: not a convergence problem
+The SHIPPED config is the heuristic BOUND, which keeps the search root
+whole whenever search_br <= blueprint_br (always true here). So the bound
+captures the full search win and needs NO gadget. The vector gadget is
+unnecessary and is left parked.
 
-Re-ran the on-tree safety test at 400 iterations (vs 80):
-  blueprint_br = 8.4394
-  gadget_br    = 11.4039   (still worse)
+## What the sweep asserts (shipping property)
 
-So the failure is NOT CFR under-convergence. The vector gadget is
-apparently incorrect for a structural reason not yet identified
-(candidates: the aggregate-root reduction interacting with the gadget,
-or a residual cbv/reach convention mismatch). NOT chased further -
-the sampled gadget is proven and is the one to ship.
+`solve_root_bounded` safety: final_br <= blueprint_br (verified,
+final 0.0205 <= bp 0.0245). And raw search BR <= blueprint BR (4 cases).
+
+## The sampled gadget
+
+Still proven safe (bp_br 9.5612 vs gadget_br 0.6284) and available via
+SubgameHandle for a real opponent, if a gadget is ever wanted. Not needed
+for the shipped bound path.

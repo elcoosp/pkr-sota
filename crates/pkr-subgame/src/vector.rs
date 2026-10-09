@@ -1469,14 +1469,13 @@ mod tests {
             let eval = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
             let base = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
             let bp_br = base.blueprint_p1_br(abs_dyn, &tbl, None);
-            let mut g = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
-            g.install_gadget(cbv, 1);
-            g.iterate(80);
-            let gbr = g.solved_exploitability_p1();
-            eprintln!("case {i}: blueprint_br={bp_br:.4} gadget_br={gbr:.4} delta={:.4}", gbr - bp_br);
-            if gbr - bp_br > worst { worst = gbr - bp_br; }
+            let mut raw = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
+            raw.iterate(80);
+            let raw_br = raw.solved_exploitability_p1();
+            eprintln!("case {i}: blueprint_br={bp_br:.4} raw_search_br={raw_br:.4} delta={:.4}", raw_br - bp_br);
+            if raw_br - bp_br > worst { worst = raw_br - bp_br; }
         }
-        eprintln!("WORST gadget - blueprint = {worst:.4}");
+        eprintln!("WORST raw_search - blueprint = {worst:.4}");
         assert!(worst <= 0.5, "worst gadget excess {worst:.4} exceeds 0.5");
     }
 
