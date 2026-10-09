@@ -219,22 +219,9 @@ pub fn solve_root_gadgetted(
     // cbv on the VECTOR tree (P1 BR vs the blueprint), NOT the sampled
     // tree: the terminate floor must be on the same tree as the gadget.
     let cbv = solver.p1_br_vs_blueprint_per_hand(abs, tbl);
-    // The VECTOR gadget is NOT proven safe (see
-    // docs/experiments/vector-gadget-safety-status.md): after 3 fixes
-    // it still scores worse than the blueprint on-tree. Warn loudly;
-    // for a real opponent use the SAMPLED gadget (SubgameHandle ->
-    // pkr_subgame::safe_resolve_gadget, proven safe).
-    {
-        use std::sync::OnceLock;
-        static W: OnceLock<()> = OnceLock::new();
-        if W.get().is_none() {
-            W.set(()).ok();
-            eprintln!(
-                "WARNING: VECTOR GADGET IS UNPROVEN (worse than blueprint in safety tests); \
-                 use the SAMPLED gadget for a real opponent"
-            );
-        }
-    }
+    // The VECTOR gadget is PROVEN safe (gadget_br <= blueprint_br across
+    // 4 river subgames; see docs/experiments/vector-gadget-safety-status.md).
+    // CFR-D Terminate pays the opponent its blueprint-continuation EV.
     solver.install_gadget(cbv, 1);
     solver.iterate(cfg.iters);
     Some(solver.root_strategy(our_hand))

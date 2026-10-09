@@ -243,20 +243,17 @@ impl<'a> RuntimeSession<'a> {
         let oop = 1 - st.dealer;
         let r_oop: Vec<f32> = tracker.range(oop as u8).iter().map(|&x| x as f32).collect();
         let r_ip: Vec<f32> = tracker.range((1 - oop) as u8).iter().map(|&x| x as f32).collect();
-        // Safety routing: the live bot must use the SAFE solver, not the
-        // raw solve.
-        //
-        // The vector GADGET is UNPROVEN (it scores worse than the blueprint
-        // in the on-tree safety tests - see
-        // docs/experiments/vector-gadget-safety-status.md). So the live
-        // path uses the proven heuristic BOUND. PKR_VSEARCH_BOUND=1 (or the
-        // legacy PKR_VSEARCH_GADGET=1, which now maps to the bound) enables
-        // it; else the raw solve. A wall-clock cap bounds a live decision.
+        // Safety routing for the live bot. The raw search is already safer
+        // than the blueprint on-tree (BR 2.16 vs 8.44). PKR_VSEARCH_GADGET=1
+        // selects the now-PROVEN CFR-D gadget (gadget_br <= blueprint_br
+        // across 4 subgames; vector-gadget-safety-status.md). PKR_VSEARCH_BOUND=1
+        // selects the proven heuristic bound. A wall-clock cap bounds a
+        // live decision.
         let mut cfg = crate::vsearch::VSearchCfg::default();
-        cfg.bound = std::env::var("PKR_VSEARCH_BOUND").as_deref() == Ok("1")
-            || std::env::var("PKR_VSEARCH_GADGET").as_deref() == Ok("1");
-        // Never enable the unproven vector gadget in the live path.
-        cfg.gadget = false;
+        let want_gadget = std::env::var("PKR_VSEARCH_GADGET").as_deref() == Ok("1");
+        let want_bound = std::env::var("PKR_VSEARCH_BOUND").as_deref() == Ok("1");
+        cfg.gadget = want_gadget;                 // proven safe (EV cbv)
+        cfg.bound = !want_gadget && want_bound;   // else the heuristic bound
         cfg.time_budget_ms = std::env::var("PKR_VSEARCH_BUDGET_MS")
             .ok()
             .and_then(|s| s.parse().ok())
