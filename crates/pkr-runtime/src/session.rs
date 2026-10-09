@@ -255,6 +255,18 @@ impl<'a> RuntimeSession<'a> {
         let want_raw = std::env::var("PKR_VSEARCH_RAW").as_deref() == Ok("1");
         cfg.gadget = want_gadget;                       // proven safe (EV cbv)
         cfg.bound = !want_gadget && !want_raw;          // default: proven bound
+        // Streets to search. DEFAULT RIVER-ONLY: a turn bound decision costs
+        // ~52s (the bound's BR walks are not covered by time_budget_ms, and
+        // each turn-tree walk is seconds), so turn is unaffordable live.
+        // Override with PKR_VSEARCH_STREETS=tr etc.
+        cfg.enabled_streets = [false, false, false, true];
+        if let Ok(s) = std::env::var("PKR_VSEARCH_STREETS") {
+            let mut e = [false; 4];
+            for ch in s.chars() {
+                match ch { 'p' => e[0] = true, 'f' => e[1] = true, 't' => e[2] = true, 'r' => e[3] = true, _ => {} }
+            }
+            cfg.enabled_streets = e;
+        }
         cfg.time_budget_ms = std::env::var("PKR_VSEARCH_BUDGET_MS")
             .ok()
             .and_then(|s| s.parse().ok())

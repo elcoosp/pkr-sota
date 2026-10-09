@@ -76,3 +76,50 @@ fn bound_live_path_returns_distribution() {
         eprintln!("live bound decision: None (fell through)");
     }
 }
+
+#[test]
+#[ignore]
+fn bound_live_turn_latency() {
+    std::env::set_var("PKR_SIG_V5", "1");
+    std::env::set_var("PKR_VSEARCH", "1");
+    std::env::set_var("PKR_VSEARCH_BOUND", "1");
+    let tdir = std::env::var("PKR_TEST_TABLES").map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| ws().join("outputs/v42-post-audit"));
+    let ck = std::env::var("PKR_TEST_CKPT").map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| ws().join("outputs/ab-v5/train.ckpt"));
+    if !ck.exists() { eprintln!("SKIP"); return; }
+    let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap()).unwrap();
+    let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
+    abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap()).unwrap();
+    abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap()).unwrap();
+    abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap()).unwrap();
+    abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap()).unwrap();
+    let abs_arc: Arc<dyn AbstractionBuilder> = Arc::new(abs);
+    let fp = AbstractionFingerprint::from_constants(200);
+    let t1 = CompactRegretTable::with_capacity(60_000_000);
+    t1.load_checkpoint(ck.to_str().unwrap(), &fp).unwrap();
+    let handle = SubgameHandle::new(SubgameConfig {
+        evaluator: Arc::new(pkr_eval::NlheEvaluator), abstraction: abs_arc.clone(),
+        table: Arc::new(t1), iters: 3, hands_per_range: 4,
+        enabled_streets: [false, false, false, false],
+    });
+    let t2 = CompactRegretTable::with_capacity(60_000_000);
+    t2.load_checkpoint(ck.to_str().unwrap(), &fp).unwrap();
+
+    // TURN root (4 board cards), seat 0 to act facing a bet.
+    let mut st = GameState::new(200.0, 1.0, 2.0);
+    st.set_hole_cards([0, 5], [10, 15]);
+    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    st.advance_street_in_place(&[20, 25, 30]);
+    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
+    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    st.advance_street_in_place(&[35]);
+    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(30.0) });
+    assert_eq!(st.actor, 0);
+    let mut sess = RuntimeSession::new(handle, 0, abs_arc.as_ref(), &t2, &pkr_eval::NlheEvaluator);
+    sess.deal_start(st.clone());
+    let t0 = std::time::Instant::now();
+    let out = sess.advise(&st, &[0, 5]);
+    eprintln!("TURN bound latency: {:.2}s (got={})", t0.elapsed().as_secs_f64(), out.is_some());
+}
