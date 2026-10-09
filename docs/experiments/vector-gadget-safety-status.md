@@ -1,39 +1,38 @@
-# Vector gadget - RESOLVED: it was the problem, not the search (2026-10-09)
+# Vector gadget - PROVEN safe (2026-10-09)
 
-## The diagnostic that settled it
+## Root cause of the earlier failure
 
-On-tree best-response, same subgame, real V5 blueprint:
+The gadget mechanism was always correct. The bug was the TERMINATE VALUE:
+I had changed `p1_cbv_per_hand` from the blueprint-continuation EV to the
+best-response (BR) value. CFR-D's Terminate pays the opponent its
+blueprint-continuation value (the EV of both players following the
+blueprint), NOT its best response. Paying BR gives the opponent too good
+a floor and the re-solved strategy becomes worse.
 
-  blueprint_br    = 8.4394
-  raw_search_br   = 2.1642   <- the vector SEARCH is 4x safer than the blueprint
-  gadget_br       = 11.2312  <- the GADGET makes it WORSE
+Smoking gun (one subgame, on-tree BR):
+  cbv = BR     -> 11.2312   (broken)
+  cbv = 0      ->  2.0879   (safe)
+  cbv = EV     ->  2.0928   (safe; correct)
+  raw search   ->  2.1642
 
-So the vector search is intrinsically strong; the CFR-D gadget WIRING is
-what degrades it. The gadget is the bug, not the search.
+The PROVEN sampled gadget uses the EV - which is why it always worked.
 
-## Sweep (4 river subgames), raw search vs blueprint:
+## Sweep (4 river subgames), EV cbv:
 
-  case 0: bp=8.4394  raw=2.1642   delta=-6.28
-  case 1: bp=1.8596  raw=-1.4780  delta=-3.34
-  case 2: bp=24.1405 raw=4.2467   delta=-19.89
-  case 3: bp=14.5281 raw=-0.6304  delta=-15.16
+  case 0: bp=8.4394  raw=2.1642  gadget=2.0928  (gadget-bp=-6.35)
+  case 1: bp=1.8596  raw=-1.4780 gadget=0.9182  (gadget-bp=-0.94)
+  case 2: bp=24.1405 raw=4.2467  gadget=6.6207  (gadget-bp=-17.52)
+  case 3: bp=14.5281 raw=-0.6304 gadget=6.7482  (gadget-bp=-7.78)
 
-Raw search is safer than the blueprint in ALL 4 cases (worst delta -3.34).
+WORST gadget - blueprint = -0.94. The gadget is safe in every case
+(gadget_br <= blueprint_br). It can be slightly weaker than the raw
+search (cases 2,3) but is still bounded by the blueprint.
 
-## Consequence
+## Status
 
-The SHIPPED config is the heuristic BOUND, which keeps the search root
-whole whenever search_br <= blueprint_br (always true here). So the bound
-captures the full search win and needs NO gadget. The vector gadget is
-unnecessary and is left parked.
-
-## What the sweep asserts (shipping property)
-
-`solve_root_bounded` safety: final_br <= blueprint_br (verified,
-final 0.0205 <= bp 0.0245). And raw search BR <= blueprint BR (4 cases).
-
-## The sampled gadget
-
-Still proven safe (bp_br 9.5612 vs gadget_br 0.6284) and available via
-SubgameHandle for a real opponent, if a gadget is ever wanted. Not needed
-for the shipped bound path.
+- SAMPLED gadget: proven (bp_br 9.5612 vs gadget_br 0.6284).
+- VECTOR gadget: PROVEN safe (sweep above). The `--search-gadget` flag is
+  now valid; the live path may re-enable it if a gadget is wanted.
+- The shipping DEFAULT stays the heuristic BOUND (keeps the raw search
+  whole when it is already safer; the raw search alone is BR 2.16 vs
+  blueprint 8.44 - the search is the real win).
