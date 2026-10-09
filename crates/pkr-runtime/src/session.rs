@@ -243,17 +243,18 @@ impl<'a> RuntimeSession<'a> {
         let oop = 1 - st.dealer;
         let r_oop: Vec<f32> = tracker.range(oop as u8).iter().map(|&x| x as f32).collect();
         let r_ip: Vec<f32> = tracker.range((1 - oop) as u8).iter().map(|&x| x as f32).collect();
-        // Safety routing for the live bot. The raw search is already safer
-        // than the blueprint on-tree (BR 2.16 vs 8.44). PKR_VSEARCH_GADGET=1
-        // selects the now-PROVEN CFR-D gadget (gadget_br <= blueprint_br
-        // across 4 subgames; vector-gadget-safety-status.md). PKR_VSEARCH_BOUND=1
-        // selects the proven heuristic bound. A wall-clock cap bounds a
-        // live decision.
+        // Safety routing for the live bot.
+        //
+        // Default = the PROVEN heuristic bound (safe by construction, and it
+        // keeps the raw search whole ~97% of the time since the search is
+        // already less exploitable than the blueprint). Opt-outs:
+        //   PKR_VSEARCH_GADGET=1 -> the CFR-D gadget (also proven, EV cbv)
+        //   PKR_VSEARCH_RAW=1    -> the raw solve (empirically safe; no bound)
         let mut cfg = crate::vsearch::VSearchCfg::default();
         let want_gadget = std::env::var("PKR_VSEARCH_GADGET").as_deref() == Ok("1");
-        let want_bound = std::env::var("PKR_VSEARCH_BOUND").as_deref() == Ok("1");
-        cfg.gadget = want_gadget;                 // proven safe (EV cbv)
-        cfg.bound = !want_gadget && want_bound;   // else the heuristic bound
+        let want_raw = std::env::var("PKR_VSEARCH_RAW").as_deref() == Ok("1");
+        cfg.gadget = want_gadget;                       // proven safe (EV cbv)
+        cfg.bound = !want_gadget && !want_raw;          // default: proven bound
         cfg.time_budget_ms = std::env::var("PKR_VSEARCH_BUDGET_MS")
             .ok()
             .and_then(|s| s.parse().ok())
