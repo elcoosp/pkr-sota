@@ -12,11 +12,7 @@
 
 - SAMPLED gadget (safe_resolve_gadget): bp_br=9.5612 vs gadget_br=0.6284
   on real V5. Self-consistent tree. THIS is the one to ship.
-- VECTOR gadget: NOT proven. Earlier "blueprint 8.44 vs gadget 2.18" used
-  a BUGGY chooser (1-payee). After 3 fixes (chooser=payee; cbv on the
-  vector tree; follow-only BR measure) it is STILL worse than blueprint
-  (gadget_br 11.2-11.4 vs blueprint_br 8.44). Not a convergence issue
-  (400 iters also fails). See vector-gadget-safety-status.md.
+- VECTOR gadget: PROVEN safe (2026-10-09). Earlier 'NOT proven' was a BR-vs-EV cbv bug; with the EV cbv it is safe (worst delta -0.94 over 4 subgames). See vector-gadget-safety-status.md.
 - Infoset-signature threading: byte-verified (1356 nodes, 0 mismatches).
 
 ## V4 vs V5: EQUAL in-abstraction; LBR gap is real but off-tree (hypothesis)

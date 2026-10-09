@@ -34,7 +34,7 @@ in self-play (see below). Not competitive.
   live gate `PKR_VSEARCH=1 PKR_VSEARCH_BOUND=1`). Bound safety PROVEN
   (final_br <= blueprint_br).
 - **CFR-D gadget: SAMPLED proven** (bp_br 9.56 vs gadget_br 0.63);
-  **VECTOR gadget NOT proven** (worse than blueprint on-tree) - parked.
+  **VECTOR gadget PROVEN safe** (2026-10-09; EV cbv; worst delta -0.94 over 4 subgames).
   For a real opponent use the sampled gadget (SubgameHandle).
 
 ## What works

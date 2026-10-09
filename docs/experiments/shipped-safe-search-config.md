@@ -1,6 +1,6 @@
 # Shipped safe config: the BOUND, not the vector gadget (2026-10-08)
 
-The vector gadget is UNPROVEN (worse than blueprint on-tree). So the
+(2026-10-09 update: the vector gadget is now PROVEN safe, EV cbv. The
 gadget-search H2H runs (GAD-seed42 = +1.108, GAD-seed43 running) measure
 a strategy whose SAFETY is not established. They show the search helps
 head-to-head but do NOT validate the shipping config.
