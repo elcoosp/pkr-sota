@@ -9,7 +9,9 @@ V5, 20k deals:
 For comparison the BROKEN (BR cbv, unsafe) gadget gave +1.1080 (t=5.68)
 on the same seed. The safe gadget wins by less - it is more conservative
 (blends toward the blueprint more) - but it is PROVABLY safe and still
-clearly positive. seed 43 running.
+clearly positive. seed 43: +0.4751 chips/deal (SE 0.1257, t=+3.78).
+
+Both seeds positive and significant. Mean ~ +0.55 chips/deal.
 
 Shipping read: with the bound (which keeps the raw search whole ~97% of
 the time), search H2H is +0.82..+1.18 over 4 seeds; with the (safe)
