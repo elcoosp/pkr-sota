@@ -225,6 +225,25 @@ mod tests {
     }
 
     #[test]
+    fn turn_hist_discriminates_strength() {
+        // On a dry turn board, a premium hand must have a visibly
+        // different equity histogram from trash.
+        let ev = NlheEvaluator;
+        let board4 = [12u8, 11, 9, 1]; // A K Q-ish dry-ish
+        let strong = [0u8, 13];        // pair-ish w/ ace kicker region
+        let trash = [44u8, 46];        // low offsuit junk
+        let hs = turn_hist(&strong, &board4, &ev, 10);
+        let ht = turn_hist(&trash, &board4, &ev, 10);
+        // Mean equity proxy = sum(bin_index * mass).
+        let mean = |h: &[f32]| h.iter().enumerate().map(|(i, &m)| i as f32 * m).sum::<f32>();
+        assert!(
+            mean(&hs) > mean(&ht),
+            "strong mean {} should exceed trash mean {}",
+            mean(&hs), mean(&ht)
+        );
+    }
+
+    #[test]
     fn end_to_end_cluster_then_lookup() {
         // Build tiny turn hists, cluster, look one up, expect its own label.
         let ev = NlheEvaluator;
