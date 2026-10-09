@@ -61,6 +61,62 @@ pub fn turn_hist(hole: &[u8; 2], board4: &[u8], ev: &dyn Evaluator, bins: usize)
     h
 }
 
+/// Flop feature: histogram (len `bins`) over the 47 turn cards, where
+/// each turn's equity is estimated from `samples_per_turn` random rivers
+/// (the full 46-river enumeration per turn is too costly at the flop).
+/// Deterministic given `seed`. Each bin is a fraction in [0,1].
+pub fn flop_hist(
+    hole: &[u8; 2],
+    board3: &[u8],
+    ev: &dyn Evaluator,
+    bins: usize,
+    samples_per_turn: usize,
+    seed: u64,
+) -> Vec<f32> {
+    debug_assert_eq!(board3.len(), 3, "flop_hist needs a 3-card board");
+    let mut h = vec![0f32; bins];
+    let mut n = 0f32;
+    let mut rng = seed | 1; // nonzero LCG state
+    let mut next = || {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (rng >> 33) as u32
+    };
+    for turn in 0..52u8 {
+        if hole.contains(&turn) || board3.contains(&turn) {
+            continue;
+        }
+        let mut b4 = [0u8; 4];
+        b4[..3].copy_from_slice(board3);
+        b4[3] = turn;
+        // Estimate this turn's equity by sampling rivers.
+        let mut eq = 0f32;
+        let mut used = 0u32;
+        let mut tries = 0u32;
+        while used < samples_per_turn as u32 && tries < 1000 {
+            tries += 1;
+            let r = (next() % 52) as u8;
+            if hole.contains(&r) || b4.contains(&r) {
+                continue;
+            }
+            let mut b5 = [0u8; 5];
+            b5[..4].copy_from_slice(&b4);
+            b5[4] = r;
+            eq += river_equity(hole, &b5, ev);
+            used += 1;
+        }
+        if used > 0 {
+            eq /= used as f32;
+            let idx = ((eq * bins as f32) as usize).min(bins - 1);
+            h[idx] += 1.0;
+            n += 1.0;
+        }
+    }
+    for x in &mut h {
+        *x /= n;
+    }
+    h
+}
+
 /// Cumulative distribution of a histogram (each bin = fraction).
 pub fn cdf(h: &[f32]) -> Vec<f32> {
     let mut out = Vec::with_capacity(h.len());
@@ -84,6 +140,19 @@ pub fn emd_l1(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use pkr_eval::NlheEvaluator;
+
+    #[test]
+    fn flop_hist_sums_to_one_and_deterministic() {
+        let ev = NlheEvaluator;
+        let board3 = [12u8, 24, 36];
+        let hole = [0u8, 5];
+        let a = flop_hist(&hole, &board3, &ev, 8, 4, 42);
+        let b = flop_hist(&hole, &board3, &ev, 8, 4, 42);
+        assert_eq!(a, b, "flop_hist must be deterministic for a fixed seed");
+        let sum: f32 = a.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-3, "must sum to 1, got {sum}");
+        assert!(a.iter().any(|&x| x > 0.0));
+    }
 
     #[test]
     fn emd_zero_for_identical() {
