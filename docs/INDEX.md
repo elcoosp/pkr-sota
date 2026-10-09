@@ -22,7 +22,11 @@ One doc per training run or investigation. Every exploitaibility number
 in these predates the 2026-10-02 in-sample-BR caveat; see the banner at
 the top of each and `experiments/turn-up-investigation.md`.
 
-Start with:
+Start with (newest findings first):
+- `experiments/v4-vs-v5-offtree-resolution.md` — V4 vs V5: off-tree 76% of the LBR gap; H2H equal
+- `experiments/search-h2h-replication.md` — vector search beats blueprint, 4 seeds (t>4)
+- `experiments/shipped-safe-search-config.md` — what to ship (`--search-bound`)
+- `experiments/vector-gadget-safety-status.md` — vector gadget NOT proven; sampled gadget is
 - `experiments/turn-up-investigation.md` — the ~3-6M turn-up, resolved as an estimator artifact
 - `experiments/f5-grid.md` — regret floor / averaging site / averaging weight
 - `experiments/f4-abstraction-rebuild-plan.md` — potential-feature rebuild (equivalent; keep legacy)
