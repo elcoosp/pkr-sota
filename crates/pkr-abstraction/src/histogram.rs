@@ -61,10 +61,54 @@ pub fn turn_hist(hole: &[u8; 2], board4: &[u8], ev: &dyn Evaluator, bins: usize)
     h
 }
 
+/// Cumulative distribution of a histogram (each bin = fraction).
+pub fn cdf(h: &[f32]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(h.len());
+    let mut acc = 0.0f32;
+    for &x in h {
+        acc += x;
+        out.push(acc);
+    }
+    out
+}
+
+/// Earth-mover's distance between two 1-D histograms. For 1-D
+/// distributions EMD == L1 distance of the CDFs (Task 2.3c).
+pub fn emd_l1(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "emd_l1: histogram lengths differ");
+    let (ca, cb) = (cdf(a), cdf(b));
+    ca.iter().zip(cb.iter()).map(|(x, y)| (x - y).abs()).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pkr_eval::NlheEvaluator;
+
+    #[test]
+    fn emd_zero_for_identical() {
+        let h = [0.1, 0.2, 0.4, 0.3];
+        assert!(emd_l1(&h, &h).abs() < 1e-6);
+    }
+
+    #[test]
+    fn emd_positive_and_symmetric_for_shifted() {
+        let a = [1.0, 0.0, 0.0, 0.0];
+        let b = [0.0, 0.0, 0.0, 1.0];
+        let d = emd_l1(&a, &b);
+        assert!(d > 0.0);
+        assert!((d - emd_l1(&b, &a)).abs() < 1e-6, "EMD must be symmetric");
+    }
+
+    #[test]
+    fn cdf_is_monotone_and_ends_at_one() {
+        let h = [0.25, 0.25, 0.25, 0.25];
+        let c = cdf(&h);
+        assert!((c.last().unwrap() - 1.0).abs() < 1e-6);
+        for w in c.windows(2) {
+            assert!(w[1] >= w[0] - 1e-6, "CDF must be monotone");
+        }
+    }
 
     #[test]
     fn river_equity_extremes() {
