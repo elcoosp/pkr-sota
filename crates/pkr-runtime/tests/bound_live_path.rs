@@ -68,7 +68,9 @@ fn bound_live_path_returns_distribution() {
 
     let mut sess = RuntimeSession::new(handle, 0, abs_arc.as_ref(), &t2, &pkr_eval::NlheEvaluator);
     sess.deal_start(st.clone());
+    let _t = std::time::Instant::now();
     if let Some(dist) = sess.advise(&st, &[0, 5]) {
+        eprintln!("RIVER bound decision time: {:.2}s", _t.elapsed().as_secs_f64());
         let sum: f64 = dist.iter().sum();
         eprintln!("live bound decision: sum={sum:.4} dist={dist:?}");
         assert!((sum - 1.0).abs() < 5e-2, "distribution must sum ~1, got {sum}");
