@@ -1,20 +1,41 @@
 # pkr-sota: Current Status
 
-**Last updated:** 2026-09-30
+**Last updated:** 2026-10-09
 
-This is the source of truth for what is actually implemented. For the
-current session's work see `docs/HANDOFF_2026-09-30_audit.md`.
+This is the source of truth for what is actually implemented.
 
 ## Where the bot stands
 
-**Tier: weak-bot.** Best pre-audit reading was ~2170 mbb on a
-30M-iteration run (v38 seed 202), measured with an estimator that was
-subsequently found to have a bug (see F1 below). For scale:
-superhuman HUNL bots sit near 50 mbb, competent bots under 500 mbb.
-The post-audit reading is not yet known — v41 is training.
+**Tier: weak-bot.** LBR (local best response) lower bound on the
+100M-iteration checkpoints:
 
-Not competitive. May be useful as a sparring partner or as an
-infrastructure base.
+| checkpoint | LBR mbb/hand | exploiter |
+|---|---|---|
+| v4 (V4 sig) | 821 (default) / 997 (samples=2000) / 227 (in-tree only) | LBR |
+| v5 (V5 sig) | -2 (default) / 183 (samples=2000) / 29 (in-tree only) | LBR |
+
+Scale: superhuman HUNL bots ~50 mbb; competent < 500 mbb. So v4 is
+weak; v5 is HARDER to exploit by greedy LBR but only marginally ahead
+in self-play (see below). Not competitive.
+
+**Caveats that matter:**
+- LBR is ONE greedy exploiter and has misled three times. The honest
+  cross-process H2H (examples/v4v5_h2h.rs, CRN) shows V4 vs V5 are
+  EQUAL in self-play (10k x 4 seeds, all |t|<1; V4 marginally ahead).
+- In-sample BR (the trainer's own number, ~6100 mbb) is NOT a strength
+  measure.
+
+## Search (runtime)
+
+- **Vector river search HELPS.** H2H vs blueprint on V5, 4 independent
+  seeds: +1.18/+0.82/+0.97/+1.16 chips/deal (all t>4). On V4: LBR
+  821->444, H2H +1.25.
+- **Shipped safe config = the heuristic BOUND** (`--search-bound`;
+  live gate `PKR_VSEARCH=1 PKR_VSEARCH_BOUND=1`). Bound safety PROVEN
+  (final_br <= blueprint_br).
+- **CFR-D gadget: SAMPLED proven** (bp_br 9.56 vs gadget_br 0.63);
+  **VECTOR gadget NOT proven** (worse than blueprint on-tree) - parked.
+  For a real opponent use the sampled gadget (SubgameHandle).
 
 ## What works
 
