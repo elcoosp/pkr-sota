@@ -71,7 +71,7 @@ Nine findings from an external audit. Status:
 | F6 | jam illegal + raise clamp | **fixed** — `e73e39c` |
 | F7 | eager zero allocation | **fixed** — `839ed47` |
 | F8 | purify + fallback bug | **fixed** — `4564848` |
-| F9 | no tournament harness | scaffold — `4f01dfe` |
+| F9 | no tournament harness | **done** — tournament + LBR + cross-process H2H (`examples/v4v5_h2h.rs`, CRN) |
 
 The F1 fix changed the 1-deal reading from 8981 to 1748 mbb. Every
 number published before 2026-09-30 was measured with that estimator.
@@ -87,7 +87,7 @@ See `docs/experiments/post-audit-invalidation.md`.
 - No real-game evaluation. Nothing has ever played a full game
   against a scripted opponent suite. `pkr-fuzz::tournament` exists
   but the scripted-bot wiring is untested end to end.
-- No LBR lower bound. The audit's F9 item 3.
+- LBR lower bound: `lbr_eval` (JSON line). NOTE: one greedy exploiter; it has misled 3x. Use `--samples 2000` for a stronger reading and cross-check with H2H.
 - No suit isomorphism for flop/turn rebuilds. Blocks F4's turn half.
 - No bot binary. `RuntimeSession` is the API a bot would use.
 
