@@ -160,6 +160,22 @@ pub fn kmeans_cdf(data: &[Vec<f32>], k: usize, iters: usize) -> (Vec<Vec<f32>>, 
     (cents, assign)
 }
 
+/// Nearest centroid (index) for a histogram, comparing CDFs by L1
+/// (EMD). The lookup used to bucket a new (hole, board) into the
+/// histogram abstraction at runtime.
+pub fn nearest_centroid_cdf(hist: &[f32], centroids: &[Vec<f32>]) -> usize {
+    assert!(!centroids.is_empty(), "nearest_centroid_cdf: no centroids");
+    let ch = cdf(hist);
+    let mut best = 0usize;
+    let mut bd = f32::INFINITY;
+    for (i, c) in centroids.iter().enumerate() {
+        // centroids are stored as CDFs already (kmeans_cdf output).
+        let d: f32 = ch.iter().zip(c).map(|(a, b)| (a - b).abs()).sum();
+        if d < bd { bd = d; best = i; }
+    }
+    best
+}
+
 /// Mean within-cluster EMD (L1 of CDFs) of a clustering — the quality
 /// metric Task 2.3(c) compares against the legacy buckets.
 pub fn mean_within_cluster_emd(data: &[Vec<f32>], cents: &[Vec<f32>], assign: &[usize]) -> f32 {
@@ -206,6 +222,26 @@ mod tests {
         let sum: f32 = a.iter().sum();
         assert!((sum - 1.0).abs() < 1e-3, "must sum to 1, got {sum}");
         assert!(a.iter().any(|&x| x > 0.0));
+    }
+
+    #[test]
+    fn end_to_end_cluster_then_lookup() {
+        // Build tiny turn hists, cluster, look one up, expect its own label.
+        let ev = NlheEvaluator;
+        let boards: [[u8; 4]; 3] = [[12, 24, 36, 1], [12, 24, 36, 5], [2, 3, 4, 6]];
+        let holes: [[u8; 2]; 2] = [[0, 7], [10, 11]];
+        let mut hists: Vec<Vec<f32>> = Vec::new();
+        for b in &boards {
+            for h in &holes {
+                hists.push(turn_hist(h, b, &ev, 4));
+            }
+        }
+        let (cents, assign) = kmeans_cdf(&hists, 2, 10);
+        // Re-looking-up an existing point must reproduce its assignment.
+        for (i, h) in hists.iter().enumerate() {
+            let got = nearest_centroid_cdf(h, &cents);
+            assert_eq!(got, assign[i], "lookup {i} differs from assignment");
+        }
     }
 
     #[test]
