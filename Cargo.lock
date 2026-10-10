@@ -1150,10 +1150,8 @@ dependencies = [
  "pkr-eval",
  "postcard",
  "rand",
- "rand_xoshiro",
  "rayon",
  "serde",
- "tracing",
 ]
 
 [[package]]
