@@ -1,6 +1,6 @@
 # pkr-sota — Instrumentation, Benchmarking & CI Integration Plan
 
-> **Status:** ready to execute · **Audience:** an autonomous coding agent ("dumb agent") that executes tasks one at a time, in order · **Format:** self-contained task cards in the same style as `docs/tasks/done/W*-T*.md` and `docs/SOTA_UPGRADE_GUIDE_pkr-sota.md`
+> **Status:** ready to execute · **Audience:** an autonomous coding agent ("dumb agent") that executes tasks one at a time, in order · **Format:** self-contained task cards in the same style as `docs/tasks/done/W*-T*.md` and (SOTA upgrade guide was never committed; see `docs/roadmap/`)
 >
 > **Source for this audit:** full read of `dump.txt` (15934 lines, 50 files, 11 crates + 1 binary).
 >
@@ -52,11 +52,11 @@
 | **No CI workflow file.** Zero `.github/workflows/*.yml`, no `GitLab CI`, no `Drone`, no `Woodpecker`. | Every "did this break something?" question is answered by a human running `./fast.sh` locally. Regressions ship to `main` and are discovered weeks later when a smoke fails or throughput dips. | everywhere |
 | **No `criterion` micro-bench suite.** `bench.sh` only measures full-trainer throughput; nothing isolates the hot inner functions (`fnv1a`, `evaluate_hand`, `get_advice_fast`, `get_infoset_hash`, `record_node`, regret apply). | A 30% regression in `get_advice_fast` is invisible because the dominant cost in `bench.sh` is traversal, not lookup. Runtime p99 target (`< 1 ms`) is unverifiable. | runtime, hash path |
 | **No baseline storage.** `bench.sh` prints to stdout; nothing compares against last week's number. | "Is 27,700 it/s good or bad?" is unanswerable without history. Cannot tell signal from noise. | every bench run |
-| **No memory/heap instrumentation.** `dhat`, `heaptrack`, `valgrind` not invoked anywhere. The 50M-capacity `~600 MB` working set is a number from `docs/README.md`, not a measured value. | Out-of-memory on the M1 will be diagnosed by guessing. Per-infoset memory cost (claim: 12 bytes) is unverified. | large training runs |
+| **No memory/heap instrumentation.** `dhat`, `heaptrack`, `valgrind` not invoked anywhere. The 50M-capacity `~600 MB` working set is a number from (see `README.md` at the repo root), not a measured value. | Out-of-memory on the M1 will be diagnosed by guessing. Per-infoset memory cost (claim: 12 bytes) is unverified. | large training runs |
 | **No binary-size tracking.** `release` profile uses `lto="fat"`, `codegen-units=1`, `strip="symbols"`. Output size is unmeasured. | Adding a dep that bloats `blueprint.bin` consumer binaries goes unnoticed. Runtime "small enough for VPS" claim is unverifiable. | release, runtime |
 | **No compile-time tracking.** `lto="fat"` + `codegen-units=1` is notoriously slow. No measurement of how slow. | A 2-minute cold compile becomes 4 minutes and no one notices until dev loops die. | every developer |
 | **No coverage report.** `cargo tarpaulin` / `cargo llvm-cov` not configured. | Tests pass but coverage could be 60% or 90%; no one knows. The "98 tests pass" stat is the only signal. | quality |
-| **No fuzzing in CI.** `crates/pkr-fuzz` exists but is "unwired" per `docs/README.md`. No `cargo fuzz` targets run automatically. | Edge-case inputs (illegal action sequences, malformed blueprints, off-by-one board states) are uncovered until they hit production. | pkr-fuzz, pkr-runtime, pkr-export |
+| **No fuzzing in CI.** `crates/pkr-fuzz` exists but is "unwired" per (see `README.md` at the repo root). No `cargo fuzz` targets run automatically. | Edge-case inputs (illegal action sequences, malformed blueprints, off-by-one board states) are uncovered until they hit production. | pkr-fuzz, pkr-runtime, pkr-export |
 | **No `cargo audit` / `cargo deny` / `cargo outdated` / `cargo udeps`.** | A vulnerable `rand 0.10` or `dashmap 6` bump ships silently. Unused deps pile up. | supply chain |
 | **No clippy trend.** Warnings-as-errors gates today's count but doesn't track new warnings added over time. | Code quality drifts; "fix this warning" becomes "fix these 47 warnings". | every PR |
 | **No exploitability tracking over time.** Kuhn harness emits a table; nothing stores it or diffs against `main`. | A change that breaks convergence (see `docs/status.md` §"RatioPower → NaN at t=3000") ships green because exploitability is not a CI signal. | pkr-cfr, pkr-testgames, pkr-exploit |
@@ -2641,7 +2641,7 @@ The task cards in §5 are written to support both. The default is Bencher.
 
 ## B18 — Memory profile with `dhat` in `weekly.yml`
 
-**Objective.** The 50M-capacity training run claims a ~600 MB working set (per `docs/README.md`). `dhat` gives us a real number, plus a per-allocation-site breakdown. We add this to weekly CI.
+**Objective.** The 50M-capacity training run claims a ~600 MB working set (per (see `README.md` at the repo root)). `dhat` gives us a real number, plus a per-allocation-site breakdown. We add this to weekly CI.
 
 **Exclusive File Paths**
 - `ci/scripts/run-dhat.sh` (new)
@@ -2765,7 +2765,7 @@ The task cards in §5 are written to support both. The default is Bencher.
 
 ## B19 — Fuzz run wired into `weekly.yml`
 
-**Objective.** `crates/pkr-fuzz` is defined but "unwired" per `docs/README.md`. We add a `cargo fuzz` target that runs for 10 minutes weekly.
+**Objective.** `crates/pkr-fuzz` is defined but "unwired" per (see `README.md` at the repo root). We add a `cargo fuzz` target that runs for 10 minutes weekly.
 
 **Exclusive File Paths**
 - `crates/pkr-fuzz/Cargo.toml` (modified — enable cargo-fuzz)
@@ -3333,9 +3333,9 @@ The worklog is append-only. Never overwrite. New entries go to the bottom.
 - **Swatinem/rust-cache** — https://github.com/Swatinem/rust-cache
 - **dtolnay/rust-toolchain** — https://github.com/dtolnay/rust-toolchain
 - **taiki-e/install-action** — https://github.com/taiki-e/install-action
-- **External CFR literature** (for context, not this plan): Lanctot 2009, Tammelin 2014, Brown & Sandholm 2019, Farina et al. 2021 — see `docs/SOTA_UPGRADE_GUIDE_pkr-sota.md` §1.
+- **External CFR literature** (for context, not this plan): Lanctot 2009, Tammelin 2014, Brown & Sandholm 2019, Farina et al. 2021 — see (SOTA upgrade guide was never committed; see `docs/roadmap/`) §1.
 
-### Appendix E — Mapping Back to Existing `docs/SOTA_UPGRADE_GUIDE_pkr-sota.md`
+### Appendix E — Mapping Back to Existing (SOTA upgrade guide was never committed; see `docs/roadmap/`)
 
 This instrumentation plan is **orthogonal** to the algorithmic upgrade tasks (T1-T15) in the SOTA guide. They compose:
 
@@ -3377,7 +3377,7 @@ If you are executing both guides simultaneously, **do T1-T3 before B14/B15** (ot
 - **Every metric is a number on a dashboard.** No more "feels slower" or "I think the bug is in the flush path." Look at Bencher; look at the PR comment; look at the flamegraph.
 - **The dumb agent instructions are the task cards.** They are self-contained, name exact file paths, give exact code, and name the acceptance criteria. No card depends on the agent inferring context from anywhere except `worklog.md` and the real source files (rule 7).
 - **Nothing here changes the algorithm.** The CFR code, the DCFR math, the regret table layout — all untouched. This plan adds observability, not behavior. The only behavior changes are: (a) `proftest.sh` runs the eval loop by default (B15), (b) `binaries/pkr-trainer` gains an opt-in `dhat-profiling` feature (B18). Both are additive.
-- **The instrumented codebase is the prerequisite for the algorithmic upgrades in `docs/SOTA_UPGRADE_GUIDE_pkr-sota.md`.** Without B14/B15, T1/T2/T5/T8 ship unverified. Without B7, T12 (Eytzinger lookup) is unverifiable. Without B12, T14 (river re-solve) is unverifiable. **Do this plan first, then execute the SOTA guide.**
+- **The instrumented codebase is the prerequisite for the algorithmic upgrades in (SOTA upgrade guide was never committed; see `docs/roadmap/`).** Without B14/B15, T1/T2/T5/T8 ship unverified. Without B7, T12 (Eytzinger lookup) is unverifiable. Without B12, T14 (river re-solve) is unverifiable. **Do this plan first, then execute the SOTA guide.**
 
 ---
 

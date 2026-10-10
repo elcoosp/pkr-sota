@@ -104,7 +104,7 @@ NOT DONE: 2.3(d/e) bucket scaling, 5 (depth-limited flop), 6 (200bb +
 Slumbot - needs network + sample_api.py).
 STOP LIST (0.5): GPU, public_br, PCFR+ momentum, plateau-stop, more CI.
 
-Files: `docs/roadmap/PLAN_STATUS_2026-10-09.md` (may be slightly stale
+Files: `docs/roadmap/archive/PLAN_STATUS_2026-10-09.md` (may be slightly stale
 after the K=7 work), `docs/experiments/VERIFIED_FINDINGS.md` (authoritative).
 
 ---

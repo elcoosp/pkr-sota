@@ -241,7 +241,7 @@ rustflags = ["-C", "target-cpu=native"]
 
 ### Task T0-d — Baseline data sheet `[manual, 10 min]`
 
-Before touching anything else, run and record (append to `docs/baseline.md`):
+Before touching anything else, run and record (append to (no `docs/baseline.md`; see `docs/status.md`)):
 
 ```bash
 ./smoke.sh                      # artifact sanity
@@ -1538,7 +1538,7 @@ and after the parallel loop:
 **Protocol.**
 1. After P1-a, time `EHS_SAMPLES=10 ... turn` on a 10-minute bounded run, extrapolate: `(entries_done / elapsed) × total_entries`.
 2. Decision rule: full table ≤ 4 h wall → run it and cache the artifact. Otherwise drop `EHS_SAMPLES` to 5 for the turn (bucket **quality** impact is second-order because k-means quantizes to ≤255 centroids anyway) and record the choice in the manifest.
-3. Record numbers in `docs/baseline.md`. This task is "done" when `run.sh` step 7 completes in bounded, documented time.
+3. Record numbers in (no `docs/baseline.md`; see `docs/status.md`). This task is "done" when `run.sh` step 7 completes in bounded, documented time.
 
 > Structural fix (Q5 in Part VI) replaces the C(52,6)×15 enumeration with a two-level texture abstraction; do not attempt it before the R-bundle and P1-a land.
 

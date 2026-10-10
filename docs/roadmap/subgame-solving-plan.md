@@ -96,7 +96,7 @@ against `pkr-exploit::sampled_exploitability` on the same
 
 - `docs/experiments/archive/river-subgame-poc-positive.md` — the POC
 - `docs/experiments/archive/v34-long-run-confirmed.md` — the blueprint baseline
-- `docs/handoff/HANDOFF_2026-09-25.md` §4 — original recommendation
+- (see `docs/handoffs/archive/` for the Oct-01+ handoffs; the Sept-25 one was never committed) §4 — original recommendation
 
 
 ## Turn adversarial safety — DONE 2026-09-27

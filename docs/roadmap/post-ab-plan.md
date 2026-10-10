@@ -91,10 +91,10 @@ than make the strategy stronger.
 ### P5 — Documentation
 - [ ] `README.md` claim audit: verify every number is reproducible
       from a clean checkout. Delete claims that can't be reproduced.
-- [ ] `docs/HANDOFF.md` — this session's handoff doc is stale; write
+- [ ] (see `docs/handoffs/` -- a per-session handoff directory, not a single file) — this session's handoff doc is stale; write
       a fresh one. (The overnight-v2 script will leave a good log;
       that plus the codebase state is the new handoff.)
-- [ ] `docs/CHANGELOG.md` — I've been appending but the changelog
+- [ ] (see `CHANGELOG.md` at the repo root) — I've been appending but the changelog
       is now a running log, not a release log. Restructure into
       releases (v0.1, v0.2, ...) with a "what changed" summary per
       release.
