@@ -341,7 +341,14 @@ impl GameState {
                 let already_offered = (0..n).any(|i| {
                     matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
                 });
-                if !already_offered {
+                // M-1 (audit 2026-10-10): a jam whose chip amount is <= the
+                // current call obligation is NOT a raise -- it moves the same
+                // chips as Call but maps to JAM_BUCKET instead of bucket 1,
+                // splitting one physical decision across two abstract actions.
+                // Only offer it when it is a genuine raise.
+                let is_genuine_raise = all_in_amount
+                    > self.street_bets[1 - self.actor] + 1e-9;
+                if is_genuine_raise && !already_offered {
                     out[n] = Action {
                         player: self.actor,
                         kind: ActionKind::Bet(all_in_amount),
@@ -678,12 +685,17 @@ impl GameState {
                 self.board_len += 1;
             }
         }
-        self.street = match self.street {
+        // M-6 (audit 2026-10-10): advancing past the river is a caller
+        // error, not a panic. Return early so a hostile input cannot
+        // abort the process (release uses panic="abort"). The undo state
+        // pushed above is rolled back by the caller's usual undo path.
+        let next = match self.street {
             Street::Preflop => Street::Flop,
             Street::Flop => Street::Turn,
             Street::Turn => Street::River,
-            Street::River => unreachable!(),
+            Street::River => return,
         };
+        self.street = next;
         self.street_bets = [0.0; 2];
         self.actor = 1 - self.dealer;
         self.actions_this_street = 0;
@@ -897,8 +909,11 @@ impl GameState {
             | (SIG_V4_VERSION << 60)
     }
 
-    /// V5 signature: V4's fields plus a 2-bit previous-street-aggressor
-    /// class (0/1 = seat, 2 = none/prior street not bet).
+    /// V5 signature: V4's fields plus a 1-bit previous-street-aggressor
+    /// class (0 = seat 0, 1 = seat 1 or none). The docstring above this
+    /// used to claim 2 bits; the encoding below is `agg = (prev == 1)`,
+    /// so "no prior aggressor" collapses into bit 0. Fix the doc rather
+    /// than the encoding: changing the width changes every V5 key.
     pub fn history_signature_v5(&self) -> u64 {
         // Plan Task 2.2 layout:
         //   bits 0..10  V3-minimal (n_actions|raises|last_was_bet|faced)
