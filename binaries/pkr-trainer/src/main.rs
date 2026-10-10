@@ -161,11 +161,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     fresh: bool,
 
-    /// Tolerance (in mbb/hand) for the promotion gate: a new checkpoint
-    /// is allowed to be worse than the current best by up to this much
-    /// before it is rejected. Larger = more permissive. Zero means
-    /// strict monotone improvement is required (usually too tight given
-    /// BR sampling noise). Ignored when --eval-every == 0.
+    /// Tolerance (in mbb/hand) for the promotion gate. The gate rejects
+    /// a new checkpoint when `new >= best - promote_gate`; **larger
+    /// values make the gate STRICTER** (the new reading must beat the
+    /// best by more than `promote_gate`). Zero means any improvement
+    /// promotes. M-41 (audit 2026-10-10): the old help text said the
+    /// opposite ("larger = more permissive").
+    ///
+    /// Ignored when --eval-every == 0.
     #[arg(long, default_value_t = 3.0)]
     promote_gate: f64,
 
