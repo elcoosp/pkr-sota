@@ -104,7 +104,11 @@ fn main() {
             std::process::exit(1);
         }
     } else {
-        eprintln!("NOTE: --preflop-k not given; skipping fingerprint check.                    If the blueprint was trained with a different abstraction                    every lookup will miss.");
+        eprintln!(
+            "NOTE: --preflop-k not given; skipping fingerprint check. \
+             If the blueprint was trained with a different abstraction \
+             every lookup will miss."
+        );
     }
     eprintln!("pkr-bot-pipe ready: {bp} (tables {})", args[2]);
 
