@@ -179,34 +179,26 @@ fn main() {
             }
         }
         let actor = st.actor;
-        let mut b2a: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
-        for (i, act) in buf.iter().take(n).enumerate() {
-            let b = pkr_core::abstraction::action_bucket(
-                &act.kind, st.stacks[actor], st.street_bets[actor],
-                st.street_bets[1 - actor], st.pot) as usize;
-            if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && b2a[b].is_none() { b2a[b] = Some(i); }
-        }
-        let total: f32 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).filter(|&b| b2a[b].is_some()).map(|b| probs[b]).sum();
+        let b2a = pkr_core::abstraction::first_legal_by_bucket(
+            &buf[..n],
+            st.stacks[actor],
+            st.street_bets[actor],
+            st.street_bets[1 - actor],
+            st.pot,
+        );
         let chosen: Option<Action> = if n == 0 {
             None
-        } else if total > 1e-9 {
+        } else {
             // Common random numbers: if the host passes a per-decision
             // "seed", use a deterministic RNG so paired runs draw the
             // same sample (A-vs-A must be exactly 0).
-            let r: f32 = match v.get("seed").and_then(|s| s.as_u64()) {
-                Some(sd) => SmallRng::seed_from_u64(sd).random_range(0.0..total),
-                None => rand::rng().random_range(0.0..total),
+            let r: f64 = match v.get("seed").and_then(|s| s.as_u64()) {
+                Some(sd) => SmallRng::seed_from_u64(sd).random::<f64>(),
+                None => rand::rng().random::<f64>(),
             };
-            let mut acc = 0.0f32;
-            let mut pick = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find(|&b| b2a[b].is_some()).unwrap_or(0);
-            for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
-                if b2a[b].is_none() { continue; }
-                acc += probs[b];
-                if r <= acc { pick = b; break; }
-            }
-            b2a[pick].map(|i| buf[i])
-        } else {
-            (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find_map(|b| b2a[b].map(|i| buf[i]))
+            pkr_core::abstraction::sample_legal_index(&probs, &b2a, r)
+                .map(|i| buf[i as usize])
+                .or_else(|| (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find_map(|b| b2a[b].map(|i| buf[i as usize])))
         };
         let token = match chosen.map(|a| a.kind) {
             Some(ActionKind::Fold) => "f".to_string(),

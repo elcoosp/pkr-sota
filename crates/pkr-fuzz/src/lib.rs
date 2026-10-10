@@ -460,25 +460,18 @@ fn decide_from_blueprint(
             for x in uniform.iter_mut() { if *x > 0.0 { *x = u; } }
             let hole = state.hole[state.actor];
             if let Some(strat) = sh.decide(state, &hole, &uniform) {
-                // map buckets -> representative legal actions
-                let mut b2a: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
-                for (i, a) in buf.iter().take(n_legal).enumerate() {
-                    let b = pkr_core::abstraction::action_bucket(
-                        &a.kind, state.stacks[state.actor], state.street_bets[state.actor],
-                        state.street_bets[1 - state.actor], state.pot) as usize;
-                    if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && b2a[b].is_none() { b2a[b] = Some(i); }
-                }
-                let total: f64 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).filter(|&b| b2a[b].is_some()).map(|b| strat[b]).sum();
-                if total > 1e-9 {
-                    let r: f64 = rng.random::<f64>() * total;
-                    let mut acc = 0.0;
-                    let mut pick = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find(|&b| b2a[b].is_some()).unwrap_or(0);
-                    for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
-                        if b2a[b].is_none() { continue; }
-                        acc += strat[b];
-                        if r <= acc { pick = b; break; }
-                    }
-                    if let Some(i) = b2a[pick] { return (buf[i], true); }
+                // map buckets -> representative legal actions via the
+                // shared helper (single source of truth for K).
+                let b2a = pkr_core::abstraction::first_legal_by_bucket(
+                    &buf[..n_legal],
+                    state.stacks[state.actor],
+                    state.street_bets[state.actor],
+                    state.street_bets[1 - state.actor],
+                    state.pot,
+                );
+                let r: f64 = rng.random::<f64>();
+                if let Some(i) = pkr_core::abstraction::sample_legal_index(&strat, &b2a, r) {
+                    return (buf[i as usize], true);
                 }
             }
         }

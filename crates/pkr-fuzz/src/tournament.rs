@@ -221,24 +221,18 @@ fn decide_via(
         }
         let hole = &state.hole[state.actor];
         if let Some(strat) = sh.decide(state, hole, &uniform) {
-            // strat is bucket-indexed (6); sample a legal bucket.
-            let mut b2f: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
-            for (i, a) in buf.iter().take(n).enumerate() {
-                let b = pkr_core::abstraction::action_bucket(
-                    &a.kind, state.stacks[state.actor], state.street_bets[state.actor],
-                    state.street_bets[1 - state.actor], state.pot) as usize;
-                if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && b2f[b].is_none() { b2f[b] = Some(i); }
-            }
-            let total: f64 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).filter(|&b| b2f[b].is_some()).map(|b| strat[b]).sum();
-            if total > 1e-9 {
-                let r = rng.random_range(0.0..total);
-                let mut acc = 0.0; let mut pick = b2f.iter().position(|x| x.is_some()).unwrap_or(0);
-                for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
-                    if b2f[b].is_none() { continue; }
-                    acc += strat[b];
-                    if r <= acc { pick = b; break; }
-                }
-                if let Some(i) = b2f[pick] { return (buf[i], true); }
+            // strat is bucket-indexed; sample a legal bucket via the
+            // shared helper so this loop cannot drift from the K value.
+            let b2f = pkr_core::abstraction::first_legal_by_bucket(
+                &buf[..n],
+                state.stacks[state.actor],
+                state.street_bets[state.actor],
+                state.street_bets[1 - state.actor],
+                state.pot,
+            );
+            let r = rng.random::<f64>();
+            if let Some(i) = pkr_core::abstraction::sample_legal_index(&strat, &b2f, r) {
+                return (buf[i as usize], true);
             }
         }
     }
@@ -307,48 +301,20 @@ fn decide_via(
     }
 
     // Bucket each legal action.
-    let mut bucket_to_first: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
-    for (i, a) in buf.iter().take(n).enumerate() {
-        let b = pkr_core::abstraction::action_bucket(
-            &a.kind,
-            state.stacks[actor],
-            state.street_bets[actor],
-            state.street_bets[1 - actor],
-            state.pot,
-        ) as usize;
-        if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && bucket_to_first[b].is_none() {
-            bucket_to_first[b] = Some(i);
-        }
-    }
+    let bucket_to_first = pkr_core::abstraction::first_legal_by_bucket(
+        &buf[..n],
+        state.stacks[actor],
+        state.street_bets[actor],
+        state.street_bets[1 - actor],
+        state.pot,
+    );
 
     // Sample a bucket from the blueprint's distribution, restricted to
     // legal ones.
-    let total: f32 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS)
-        .filter(|&b| bucket_to_first[b].is_some())
-        .map(|b| probs[b])
-        .sum();
-    let chosen_bucket = if total > 1e-9 {
-        let mut r = rng.random_range(0.0..total);
-        let mut pick = 0usize;
-        for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
-            if bucket_to_first[b].is_none() {
-                continue;
-            }
-            r -= probs[b];
-            if r <= 0.0 {
-                pick = b;
-                break;
-            }
-            pick = b;
-        }
-        pick
-    } else {
-        // No blueprint mass on legal buckets: pick the first legal.
-        (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find(|&b| bucket_to_first[b].is_some()).unwrap_or(0)
-    };
-
-    let idx = bucket_to_first[chosen_bucket].unwrap_or(0);
-    (buf[idx], true)
+    let r = rng.random::<f64>();
+    let idx = pkr_core::abstraction::sample_legal_index(&probs, &bucket_to_first, r)
+        .unwrap_or_else(|| bucket_to_first.iter().find_map(|x| *x).unwrap_or(0));
+    (buf[idx as usize], true)
 }
 
 /// Where the abstraction tables for a tournament come from.
