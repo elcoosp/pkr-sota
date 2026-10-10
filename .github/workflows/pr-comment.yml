@@ -67,9 +67,15 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `${{ steps.cmp.outputs.body }}`,
-            });
+              // M-43 (audit 2026-10-10): the body was interpolated
+              // via an expression inside a JS template literal -- a
+              // malicious benchmark name in diff.md could break out
+              // and execute arbitrary JS. Read diff.md from disk.
+              const fs = require('fs');
+              const body = fs.readFileSync('diff.md', 'utf8');
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
