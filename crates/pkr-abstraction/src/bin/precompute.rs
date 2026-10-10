@@ -1131,7 +1131,6 @@ fn kmeans_2d(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)>
     let mut centroids: Vec<(f32, f32)> = (0..k)
         .map(|_| data[rng.random_range(0..n)])
         .collect();
-    let mut assignments = vec![0usize; n];
 
     for _ in 0..max_iters {
         let mut counts = vec![0usize; k];
@@ -1146,7 +1145,6 @@ fn kmeans_2d(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)>
                     best_idx = c_idx;
                 }
             }
-            assignments[i] = best_idx;
             counts[best_idx] += 1;
             sums[best_idx].0 += x;
             sums[best_idx].1 += y;
@@ -1395,7 +1393,6 @@ fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> 
     let mut centroids: Vec<[f32; 10]> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
-        let mut assignments: Vec<usize> = vec![0; n];
         let mut counts: Vec<usize> = vec![0; k];
         let mut sums: Vec<[f32; 10]> = vec![[0f32; 10]; k];
 
@@ -1413,7 +1410,6 @@ fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> 
                     best_idx = c_idx;
                 }
             }
-            assignments[i] = best_idx;
             counts[best_idx] += 1;
             for j in 0..10 {
                 sums[best_idx][j] += point[j];
@@ -1451,7 +1447,6 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
     let mut centroids: Vec<(f32, f32)> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
-        let mut assignments: Vec<usize> = vec![0; n];
         let mut counts: Vec<usize> = vec![0; k];
         let mut sums: Vec<(f32, f32)> = vec![(0f32, 0f32); k];
 
@@ -1465,7 +1460,6 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
                     best_idx = c_idx;
                 }
             }
-            assignments[i] = best_idx;
             counts[best_idx] += 1;
             sums[best_idx].0 += x;
             sums[best_idx].1 += y;
@@ -1590,7 +1584,6 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
     let mut centroids: Vec<[f32; 6]> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
-        let mut assignments: Vec<usize> = vec![0; n];
         let mut counts: Vec<usize> = vec![0; k];
         let mut sums: Vec<[f32; 6]> = vec![[0f32; 6]; k];
 
@@ -1608,7 +1601,6 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
                     best_idx = c_idx;
                 }
             }
-            assignments[i] = best_idx;
             counts[best_idx] += 1;
             for j in 0..point.len() {
                 sums[best_idx][j] += point[j];

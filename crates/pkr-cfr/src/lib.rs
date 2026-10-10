@@ -137,8 +137,8 @@ impl Trainer {
                 let base_iter = start_iter + start as u32;
                 let mut rng = SmallRng::seed_from_u64(
                     run_seed
+                      // M-17 (audit 2026-10-10): seed on base_iter alone.
                         ^ (base_iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                        ^ ((chunk_idx as u64) << 32),
                 );
                 let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
 
