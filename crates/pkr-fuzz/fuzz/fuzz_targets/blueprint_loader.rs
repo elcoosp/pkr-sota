@@ -7,9 +7,17 @@ use pkr_runtime::mmap::MmapError;
 
 fuzz_target!(|data: &[u8]| {
     // Write to a temp file because MmapReader takes a path.
+    // m42 (audit 2026-10-10): pid alone collides when two fuzz workers
+    // for the SAME process are running (libfuzzer -jobs=N); a monotone
+    // per-process counter keeps each iteration's file unique, and the
+    // os-assigned path under temp_dir() is process-private.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "fuzz-blueprint-{}.bin",
+        "fuzz-blueprint-{}-{}.bin",
         std::process::id(),
+        n,
     ));
     if std::fs::write(&path, data).is_err() {
         return;
