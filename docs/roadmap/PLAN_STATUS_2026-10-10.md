@@ -110,3 +110,41 @@ precompute-only canonicaliser is added alongside this note in
 `crates/pkr-abstraction/src/histogram.rs::canonicalize`, with tests.
 It is NOT wired into the precompute path yet; measure its precompute
 time on a 100k-entry sample before adopting, per plan §3.
+
+## Task 2.3a attempt REVERTED (2026-10-10)
+
+A suit canonicaliser was added to `histogram.rs` and tested. The
+permutation-invariance property held for 200 random (hole, board) pairs
+under all 24 suit permutations, but exhaustive enumeration of the flop
+space over-identified orbits:
+
+  raw 5-card sets enumerated: 2,598,960
+  distinct canonical outputs:   543,101
+  expected (see below):       1,082,900
+
+Expected count: the correct S_4 action is on the (hole, board) pair
+space, not on 5-card sets. |X| = C(52,2) * C(50,3) = 25,989,600.
+The action is free (no nonzero-fix: a 5-card set with 2-hole/3-board
+split cannot be invariant under any nontrivial suit permutation
+because 5 is not divisible by 4), so |X/S_4| = 25,989,600 / 24 =
+1,082,900. Observed 543,101 is ~half that: the canonicaliser maps
+different orbits to the same output.
+
+Root cause: the sort key `(hole_rank_mask, board_rank_mask)` per suit,
+with stable sort on ties, uses the ORIGINAL suit index to break ties.
+Two suits with identical (hole_mask, board_mask) are assigned their
+canonical positions based on which original suit label was smaller,
+which is NOT orbit-invariant. Two (hole, board) pairs in different
+orbits but with the same per-suit rank-mask multiset, differing only
+in how the two tied suits were cross-assigned, collapse to the same
+canonical output.
+
+Reverted: the function and its tests are removed. The session-7 note
+("2.3(a) suit-iso measured 1.21x -> declined") still stands; this
+attempt does not change that verdict. A correct quotienting would
+either (a) key on per-rank cross-suit structure across the whole
+5-card set (which suits share which rank), or (b) take the
+lexicographically minimal image over all 24 permutations (trivially
+correct, O(24) per input, still gives the ~24x precompute-space
+reduction). Worth doing only if the Phase 2.3 turn/flop precompute
+budget proves to need that reduction -- unproven.
