@@ -3,7 +3,7 @@
 **Date:** 2026-09-27
 **Status:** wiring LANDED (commits 461e67c, 0b06058); e2e outcome UNRESOLVED
 **Motivation:** The uniform-range subgame hook regresses e2e by +4836 mbb
-(see `docs/experiments/river-subgame-poc-positive.md`). Fixing it requires
+(see `docs/experiments/archive/river-subgame-poc-positive.md`). Fixing it requires
 threading the opponent posterior through the BR walk.
 
 ## Outcome (2026-09-28)
@@ -245,7 +245,7 @@ differ enough to matter, their hashes differ.
 
 ## Related
 
-- `docs/experiments/river-subgame-poc-positive.md` — the regression
+- `docs/experiments/archive/river-subgame-poc-positive.md` — the regression
   that motivated this
 - `docs/roadmap/subgame-solving-plan.md` — the 2-week build plan
 - Commit d6eede6 — RangeTracker::undo_last_action (prerequisite)

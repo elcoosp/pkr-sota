@@ -1,7 +1,7 @@
 # Subgame solving — 2-week build plan
 
 **Date:** 2026-09-26
-**Prerequisites:** `docs/experiments/river-subgame-poc-positive.md` (positive POC)
+**Prerequisites:** `docs/experiments/archive/river-subgame-poc-positive.md` (positive POC)
 **Status:** Ready to start
 
 ## Objective
@@ -94,8 +94,8 @@ against `pkr-exploit::sampled_exploitability` on the same
 
 ## Related
 
-- `docs/experiments/river-subgame-poc-positive.md` — the POC
-- `docs/experiments/v34-long-run-confirmed.md` — the blueprint baseline
+- `docs/experiments/archive/river-subgame-poc-positive.md` — the POC
+- `docs/experiments/archive/v34-long-run-confirmed.md` — the blueprint baseline
 - `docs/handoff/HANDOFF_2026-09-25.md` §4 — original recommendation
 
 

@@ -14,7 +14,7 @@ bottom of this document. Quote ~325 mbb when citing, not ~425.
 
 **Date:** 2026-09-25
 **Status:** Confirmed win, 2 seeds, 7/7 sign-consistent matched readings
-**Supersedes:** `docs/experiments/v33-rich-preflop-suggestive-positive.md`
+**Supersedes:** `docs/experiments/archive/v33-rich-preflop-suggestive-positive.md`
 **Continues:** `docs/handoff/HANDOFF_2026-09-25.md` §3
 
 ## TL;DR

@@ -2,7 +2,7 @@
 
 **Repo:** `github.com/elcoosp/pkr-sota` @ `cce1339` (main)
 **Scope:** 105 Rust files / ~31,700 LOC across 11 crates + `pkr-trainer` binary, 8 shell scripts, CI workflows, and docs.
-**Method:** Manual line-by-line review of every non-test source file, cross-checked against the project's own audit trail (`docs/handoffs/*`, `docs/experiments/training-nondeterminism.md`, the F1–F9 audit table in `docs/status.md`, and the B1–B23 worklog). Every finding below was verified against the actual code; previously-fixed items are *not* re-reported as live bugs (see §6 for their verification status).
+**Method:** Manual line-by-line review of every non-test source file, cross-checked against the project's own audit trail (`docs/handoffs/*`, `docs/experiments/archive/training-nondeterminism.md`, the F1–F9 audit table in `docs/status.md`, and the B1–B23 worklog). Every finding below was verified against the actual code; previously-fixed items are *not* re-reported as live bugs (see §6 for their verification status).
 
 > **Note:** this report was produced by static review. The review environment has no Rust toolchain, so run `cargo clippy --workspace --all-targets -- -D warnings` and `cargo nextest run` after applying fixes. Each fix below is written to compile against the current code.
 
@@ -382,7 +382,7 @@ Blueprint fold probabilities carry information (junk hands fold more), so the co
 | D2 | `crates/pkr-cfr/src/traversal.rs:350–353` | "reach_prob at a traverser node is the *opponent's* reach" — false. Tracing the recursion (root 1.0, ×strategy at traverser nodes, unchanged at opponent nodes), `reach_prob` is the **traverser's own** reach; that's exactly why the average-strategy weight `strategy[a] * reach_prob * t^p` is correct. The code is right; the comment will mislead the next auditor. |
 | D3 | `crates/pkr-abstraction/src/lib.rs:754–766` | River-quantization comment says "`>> 13` is a monotone quantization … ~1152 tiers … T2.2 uses >> 13 … (4x finer than >> 13)" while the code uses `RIVER_TIER_SHIFT = 15` (~288 tiers). Self-contradictory on three lines. State the shift once via the constant and delete the history. |
 | D4 | `crates/pkr-core/src/state.rs:44–52` vs `abstraction.rs` fingerprint test | `sig_version` mapping includes v3 (`SIG_V3_SIZE_AWARE → 3`), but `fingerprint_tests::from_constants_captures_current_compile_time_values` still computes `expected_sig = if SIG_V2 {2} else {1}` — the test would fail the day v3 is switched on. Mirror the 3-way match. |
-| D5 | `docs/experiments/training-nondeterminism.md` | The "FOURTH SOURCE (2026-10-02): alloc_idx race" and "OBSERVED: race fires in the seed-43 A/B" sections appear **twice each** (the heredoc-duplication hazard from the handoff, fossilized into a doc). Deduplicate. |
+| D5 | `docs/experiments/archive/training-nondeterminism.md` | The "FOURTH SOURCE (2026-10-02): alloc_idx race" and "OBSERVED: race fires in the seed-43 A/B" sections appear **twice each** (the heredoc-duplication hazard from the handoff, fossilized into a doc). Deduplicate. |
 | D6 | `crates/pkr-contracts/src/lib.rs:73` | Typo "bluepints" in the FNV doc; harmless but it's the hash everything depends on — worth a tidy pass. |
 
 ---
@@ -475,5 +475,5 @@ for k in &keys {
 | `crates/pkr-runtime/src/subgame.rs` | S10 |
 | `crates/pkr-runtime/src/session.rs` | (known-open; fix in §6 table) |
 | `run.sh` | M4 |
-| `docs/experiments/training-nondeterminism.md` | D5, §6.1 |
+| `docs/experiments/archive/training-nondeterminism.md` | D5, §6.1 |
 | `.github/workflows`, `ci/scripts` | S13, S14, §7.4, §7.6 |

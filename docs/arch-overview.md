@@ -1,6 +1,13 @@
 # pkr-sota: Architecture Overview
 
-**Last updated:** 2026-09-22
+> **2026-10-10 note.** This architecture doc predates the K=7 action
+> abstraction (2026-10-10), the stack-depth parameter (`PKR_STACK_BB`),
+> the shadow state (`crates/pkr-runtime/src/shadow.rs`), the vector
+> river search (`crates/pkr-subgame/src/vector.rs`), and the live bot
+> binary (`pkr-bot-pipe`). For current state see `status.md`.
+
+
+**Last updated:** 2026-09-22 (banner added 2026-10-10)
 
 This document describes the architecture as implemented. For current
 implementation status see `status.md`. For aspirational design see
