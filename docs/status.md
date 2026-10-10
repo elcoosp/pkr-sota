@@ -93,7 +93,6 @@ See `docs/experiments/post-audit-invalidation.md`.
 
 ## Reference
 
-- `docs/HANDOFF_2026-09-30_audit.md` — what this session changed.
 - `docs/experiments/post-audit-invalidation.md` — what F6 invalidated.
 - `docs/experiments/range-aware-solving-poc.md` — the subgame work.
 - `docs/roadmap/post-ab-plan.md` — the production-grade checklist.
