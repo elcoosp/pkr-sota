@@ -373,3 +373,122 @@ mod tests {
         assert!((e - want).abs() < 1e-6);
     }
 }
+
+/// Canonical suit relabelling for `(hole, board)`.
+///
+/// NLHE is invariant under permutation of the four suits (the only
+/// suit-dependent relation is equality-of-suit). Mapping every
+/// configuration to a single representative collapses the flop
+/// (hole, board) space by ~24x, which is what makes distribution-aware
+/// flop/turn bucketing affordable at precompute time (Task 2.3a).
+///
+/// Canonical form: the suit with the largest (hole-rank-mask,
+/// board-rank-mask) tuple, compared lexicographically, is relabelled to
+/// suit 0; the next to 1; etc. Ties (identical rank masks) are truly
+/// equivalent, so any stable ordering is canonical.
+///
+/// Returned `hole` and `board` are each sorted ascending by canonical
+/// card id.
+///
+/// NOTE (2026-10-10): this is the precompute-side canonicaliser. Do not
+/// wire it into any runtime lookup path without measuring its effect on
+/// precompute time on a 100k sample first; the session-7 "1.21x" was a
+/// runtime measurement and is not the same quantity.
+pub fn canonicalize(hole: [u8; 2], board: &[u8]) -> ([u8; 2], Vec<u8>) {
+    let mut key = [(0u16, 0u16); 4];
+    for &c in &hole {
+        key[(c / 13) as usize].0 |= 1u16 << (c % 13);
+    }
+    for &c in board {
+        key[(c / 13) as usize].1 |= 1u16 << (c % 13);
+    }
+    let mut order = [0usize, 1, 2, 3];
+    order.sort_by(|&a, &b| key[b].cmp(&key[a]));
+    let mut map = [0u8; 4];
+    for (new, &old) in order.iter().enumerate() {
+        map[old] = new as u8;
+    }
+    let f = |c: u8| -> u8 { map[(c / 13) as usize] * 13 + (c % 13) };
+    let mut h = [f(hole[0]), f(hole[1])];
+    h.sort_unstable();
+    let mut b: Vec<u8> = board.iter().map(|&c| f(c)).collect();
+    b.sort_unstable();
+    (h, b)
+}
+
+#[cfg(test)]
+mod canonicalize_tests {
+    use super::canonicalize;
+
+    fn all_perms() -> Vec<[u8; 4]> {
+        let mut p = Vec::with_capacity(24);
+        for a in 0..4u8 {
+            for b in 0..4u8 {
+                if b == a { continue; }
+                for c in 0..4u8 {
+                    if c == a || c == b { continue; }
+                    for d in 0..4u8 {
+                        if d == a || d == b || d == c { continue; }
+                        p.push([a, b, c, d]);
+                    }
+                }
+            }
+        }
+        p
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u32 {
+            self.0 = self.0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) as u32
+        }
+    }
+
+    #[test]
+    fn suit_permutation_invariance() {
+        let perms = all_perms();
+        assert_eq!(perms.len(), 24);
+
+        let mut rng = Lcg(0x1234_5678_90AB_CDEF);
+        for _ in 0..200 {
+            let mut cards = [0u8; 7];
+            let mut n = 0usize;
+            while n < 7 {
+                let c = (rng.next() % 52) as u8;
+                if !cards[..n].contains(&c) {
+                    cards[n] = c;
+                    n += 1;
+                }
+            }
+            let hole = [cards[0], cards[1]];
+            let board = &cards[2..7];
+            let (h0, b0) = canonicalize(hole, board);
+
+            for perm in &perms {
+                let pc = |c: u8| -> u8 {
+                    let s = (c / 13) as usize;
+                    let r = c % 13;
+                    perm[s] * 13 + r
+                };
+                let hp = [pc(hole[0]), pc(hole[1])];
+                let bp: Vec<u8> = board.iter().map(|&c| pc(c)).collect();
+                let (h1, b1) = canonicalize(hp, &bp);
+                assert_eq!(h0, h1, "hole mismatch under {:?}", perm);
+                assert_eq!(b0, b1, "board mismatch under {:?}", perm);
+            }
+        }
+    }
+
+    #[test]
+    fn different_kicker_differs() {
+        // As Ks vs As Qs on the same board 2c 7d 9s.
+        // Card encoding: suit = c/13, rank = c%13 (0=2, 11=K, 12=A).
+        //   As=12, Ks=11, Qs=10, 2c=3*13+0=39, 7d=2*13+5=31, 9s=0*13+7=7.
+        let (h_a, b_a) = canonicalize([12, 11], &[39, 31, 7]);
+        let (h_b, b_b) = canonicalize([12, 10], &[39, 31, 7]);
+        assert_ne!((h_a, b_a), (h_b, b_b));
+    }
+}

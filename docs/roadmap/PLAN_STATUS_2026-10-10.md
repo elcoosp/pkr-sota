@@ -61,3 +61,52 @@ k7base PID 59819 still training; k7h2h queued behind it.
 
 Ship only if `Δ_LBR <= -2*SE_combined` OR `Δ_duplicate-H2H >= +2*SE`,
 with >=2 seeds when |Δ| < 300 mbb.
+
+## Corrections after deeper recon (2026-10-10, k7base still running)
+
+Three items earlier marked "still open" are already implemented under
+different names:
+
+- Task 0.2 (checkpoint-dir): implemented as `--ckpt-per-eval`
+  (`binaries/pkr-trainer/src/main.rs:241`); writes
+  `<checkpoint-stem>.<iter>.ckpt` at each eval point. Functionally the
+  same deliverable the plan asked for.
+- Task 3.2 (iters-per-sync): `--iters-per-sync` exists at
+  `main.rs:139`, default 2048. Its docstring records a v36 sweep
+  (512 vs 2048: 2048 gives ~20% more throughput at 5M iters with no
+  measurable convergence cost). Pre-dates K=7; a re-run is optional.
+- Task 3.3 (wall-clock training cap): `--bench-seconds` at
+  `main.rs:114`, default 0 (off).
+
+Revised plan status:
+
+- Phase 0: 5/5 done.
+- Phase 3: 3.1 (pruning wired), 3.2 (flag + sweep done), 3.3 (flag),
+  3.4 (profile flag) done.
+- Phase 4.3 (our-range update after a search decision): `RangeTracker::
+  set_range` exists (`range_tracker.rs:297`) but has no callsite. The
+  `observe_action` path updates our own range using the BLUEPRINT
+  probability, not the SEARCH probability. Live default is RIVER-ONLY
+  so this is MOOT for the shipping path; it becomes a bug only if
+  turn or flop search is enabled.
+- Phase 4.5 (turn budget): `session.rs:259` note — a turn decision
+  costs ~52 s because the bound's BR walks fall outside
+  `time_budget_ms`.
+- Phase 5 depth-limited flop: `crates/pkr-cfr/src/riversolve.rs` is
+  river-only (`state.street == Street::River` at :268, :326).
+- Phase 6 200 bb + Slumbot: client + `PKR_STACK_BB` exist; no 200 bb
+  checkpoint yet; no live Slumbot number.
+- Leduc 8-config grid: only baseline finished; harness at
+  `target/release/pkr-leduc-check`.
+
+### Note on Task 2.3a (suit canonicalisation)
+
+The session-7 handoff recorded "2.3(a) suit-iso measured 1.21x ->
+declined." That measurement covered RUNTIME lookup cost, which is
+dominated by table misses and cannot approach the theoretical 24x.
+The plan's ~20x claim is about PRECOMPUTE time: the (hole, board)
+space collapses by 24x. The two are different measurements. A
+precompute-only canonicaliser is added alongside this note in
+`crates/pkr-abstraction/src/histogram.rs::canonicalize`, with tests.
+It is NOT wired into the precompute path yet; measure its precompute
+time on a 100k-entry sample before adopting, per plan §3.
