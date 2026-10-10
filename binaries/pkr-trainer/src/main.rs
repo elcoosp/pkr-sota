@@ -503,6 +503,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let t_init = Instant::now();
     let abstraction_for_eval = Arc::clone(&abstraction);
     let evaluator_for_eval = Arc::clone(&evaluator);
+    // M-12 (audit 2026-10-10): `PKR_HS_DCFR_TOTAL` is documented as "set
+    // by the trainer from --iterations", but nothing set it. The DCFR
+    // anneal horizon stayed at its 200M default even on a 30M run.
+    // Set it before the first `TrainConfig::global()` (OnceLock) call.
+    if std::env::var("PKR_HS_DCFR_TOTAL").is_err() {
+        std::env::set_var("PKR_HS_DCFR_TOTAL", format!("{}", cli.iterations));
+    }
     let mut trainer = Trainer::with_capacity(abstraction, evaluator, cli.capacity);
     trainer.set_run_seed(cli.seed);
     eprintln!(

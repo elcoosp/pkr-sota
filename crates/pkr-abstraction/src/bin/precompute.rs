@@ -1395,7 +1395,7 @@ fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> 
                 for j in 0..10 {
                     new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
                 }
-                if (new_c[0] - centroids[c_idx][0]).abs() > 1e-6 {
+                if new_c.iter().zip(centroids[c_idx].iter()).any(|(a, b)| (a - b).abs() > 1e-6) {
                     moved = true;
                 }
                 centroids[c_idx] = new_c;
@@ -1590,7 +1590,7 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
                 for j in 0..new_c.len() {
                     new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
                 }
-                if (new_c[0] - centroids[c_idx][0]).abs() > 1e-6 {
+                if new_c.iter().zip(centroids[c_idx].iter()).any(|(a, b)| (a - b).abs() > 1e-6) {
                     moved = true;
                 }
                 centroids[c_idx] = new_c;
@@ -1698,7 +1698,7 @@ fn kmeans_10d_seeded(
                 for j in 0..10 {
                     new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
                 }
-                if (new_c[0] - centroids[c_idx][0]).abs() > 1e-6 {
+                if new_c.iter().zip(centroids[c_idx].iter()).any(|(a, b)| (a - b).abs() > 1e-6) {
                     moved = true;
                 }
                 centroids[c_idx] = new_c;

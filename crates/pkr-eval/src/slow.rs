@@ -192,7 +192,9 @@ pub struct NlheEvaluator;
 
 impl Evaluator for NlheEvaluator {
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
-        debug_assert!(
+        // M-22 (audit 2026-10-10): debug_assert was release-noop, so
+        // >7 distinct cards would silently truncate in release. Promote.
+        assert!(
             hole.len() + board.len() <= 7,
             "evaluate_hand: {} cards exceeds the 7-card buffer",
             hole.len() + board.len()

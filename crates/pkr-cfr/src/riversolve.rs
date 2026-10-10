@@ -296,7 +296,9 @@ mod tests {
 
     #[test]
     fn test_compute_strategy_uniform_on_zero_regret() {
-        let state = GameState::new(100.0, 0.0, 0.0);
+        // Blinds are irrelevant to this test (fixed regret vector); use a
+        // real config so the state constructor's invariants hold.
+        let state = GameState::new(100.0, 1.0, 2.0);
         let resolver = RiverResolver::new(&state, [0, 1], [2, 3], &[]);
         let strat = resolver.compute_strategy(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         for p in &strat {
@@ -306,7 +308,8 @@ mod tests {
 
     #[test]
     fn test_compute_strategy_positive_regret() {
-        let state = GameState::new(100.0, 0.0, 0.0);
+        // Blinds are irrelevant to this test (fixed regret vector).
+        let state = GameState::new(100.0, 1.0, 2.0);
         let resolver = RiverResolver::new(&state, [0, 1], [2, 3], &[]);
         let strat = resolver.compute_strategy(&[0.0, 10.0, 0.0, 5.0, 0.0, 0.0, 0.0]);
         // Action 1 has regret 10, action 3 has regret 5

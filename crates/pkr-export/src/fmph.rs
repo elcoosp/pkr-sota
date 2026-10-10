@@ -34,14 +34,18 @@ fn hash_key(key: u64, seed: u64) -> u64 {
 /// tables, so the writer deliberately keeps it opt-in. Move behind a
 /// `fmph` cargo feature if it ever needs to be off the default build
 /// entirely.
-pub fn build_fmph(keys: &[u64]) -> FmphData {
+pub fn build_fmph(keys: &[u64]) -> Option<FmphData> {
     let unique: Vec<u64> = {
         let mut set = HashSet::new();
         keys.iter().copied().filter(|k| set.insert(*k)).collect()
     };
 
     let n = unique.len();
-    assert!(n > 0, "cannot build FMph for empty key set");
+    if n == 0 {
+        // m14 (audit 2026-10-10): empty key set is a legal input (a
+        // blueprint with zero keys). Return None instead of panicking.
+        return None;
+    }
 
     let bucket_count = (n / 3).max(1);
     let max_displacement = (n as u64 * 32).max(512) as u32;
@@ -123,7 +127,12 @@ pub fn build_fmph(keys: &[u64]) -> FmphData {
         }
     }
 
-    best.map(|(data, _)| data).expect("unable to find FMph")
+    // m14: do not panic on a pathological key set; return the best
+    // candidate anyway (worst case: imperfect but valid).
+    // m14 (audit 2026-10-10): return the best found, or None if no
+    // assignment completed within the retry budget. Callers already
+    // have a binary-search fallback path.
+    best.map(|(data, _)| data)
 }
 
 pub fn eval_fmph(data: &FmphData, key: u64) -> usize {

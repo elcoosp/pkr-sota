@@ -15,7 +15,7 @@ const fn choose_const(n: u32, k: u32) -> u32 {
 }
 
 /// Precomputed binomial coefficients: `CHOOSE[n][k] == C(n, k)` for
-/// n in 0..=51, k in 0..=5. 1.25 KB; one L1 load per (n, k).
+/// n in 0..=51, k in 0..=7. 52*8*4 = 1664 bytes (~1.625 KB).
 /// Bit-identical to the multiply-based implementation.
 static CHOOSE: [[u32; 8]; 52] = {
     let mut t = [[0u32; 8]; 52];

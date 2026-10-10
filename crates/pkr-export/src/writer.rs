@@ -72,6 +72,13 @@ pub(crate) fn quantize_cdf(strat: &[f32; K]) -> [u8; K] {
     }
     // Close on the last action that actually has probability.
     let last = (0..K).rev().find(|&a| strat[a] > 0.0).unwrap_or(K - 1);
+    // m6 (audit 2026-10-10): a non-final action could round to 255 before
+    // `last` because `cum * 255.0` can hit 255 at cum < 1. That would make
+    // CDF decode zero-mass for the actions between it and `last`, which the
+    // consumers treat as "probability 0". Cap non-final entries at 254.
+    for a in 0..last {
+        if out[a] >= 255 { out[a] = 254; }
+    }
     for a in last..K {
         out[a] = 255;
     }
@@ -163,7 +170,11 @@ pub fn write_blueprint(
         let emit_fmph = std::env::var("PKR_EMIT_FMPH").as_deref() == Ok("1");
         if emit_fmph {
             use std::panic::{catch_unwind, AssertUnwindSafe};
-            if let Ok(fmph) = catch_unwind(AssertUnwindSafe(|| build_fmph(keys))) {
+            // m14 (audit 2026-10-10): build_fmph now returns Option, no
+            // panic to catch. Keep the catch_unwind wrapper anyway as a
+            // belt-and-suspenders against future internal panics.
+            let build_result = catch_unwind(AssertUnwindSafe(|| build_fmph(keys)));
+            if let Ok(Some(fmph)) = build_result {
                 let hdr = fmph.to_header();
                 file.write_all(bytemuck::bytes_of(&hdr))?;
                 for d in &fmph.displacements {

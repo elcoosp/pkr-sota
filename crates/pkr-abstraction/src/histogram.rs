@@ -179,10 +179,14 @@ pub fn nearest_centroid_cdf(hist: &[f32], centroids: &[Vec<f32>]) -> usize {
 /// Mean within-cluster EMD (L1 of CDFs) of a clustering — the quality
 /// metric Task 2.3(c) compares against the legacy buckets.
 pub fn mean_within_cluster_emd(data: &[Vec<f32>], cents: &[Vec<f32>], assign: &[usize]) -> f32 {
+    // M-26 (audit 2026-10-10): emd_l1 expects CDFs and integrates them
+    // again. Passing raw histograms here meant emd_l1 built a second CDF
+    // inside, so the mean was over CDF-of-CDF, not the EMD the metric
+    // advertises. CDF both args before calling.
     if data.is_empty() { return 0.0; }
     let mut tot = 0f32;
     for (i, h) in data.iter().enumerate() {
-        tot += emd_l1(h, &cents[assign[i]]);
+        tot += emd_l1(&cdf(h), &cdf(&cents[assign[i]]));
     }
     tot / data.len() as f32
 }

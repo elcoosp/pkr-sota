@@ -74,6 +74,15 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
     let fp_size = if fh.version >= FORMAT_VERSION_V4 { 40 } else { 0 };
     let after_header = fh_size + anchors_size + fp_size;
 
+    // M-27 (audit 2026-10-10): the initial gate only guarantees
+    // `fh_size + 8` bytes; the fingerprint and key/cdf count reads below
+    // need `after_header + 8`. Without this a truncated v3/v4 file
+    // panicked on `bytes[fp_off..fp_off + 40]` (from_bytes needs exactly
+    // 40). Reject cleanly.
+    if bytes.len() < after_header + 8 {
+        return Err(ReadError::TooSmall);
+    }
+
     // v4 carries a 40-byte AbstractionFingerprint. Read it and warn (do
     // not fail) if it disagrees with the current compile-time constants:
     // the blueprint is still loadable, but its infosets were hashed

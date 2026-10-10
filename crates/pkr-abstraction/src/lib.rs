@@ -1039,7 +1039,7 @@ mod c6_unit_tests {
     // River tier coverage (audit F6)
     //
     // evaluate_hand returns the inverted-bit encoding !raw, whose value
-    // range is ~[2^32 - 9*2^20, 2^32]. `>> 13` quantizes that range into
+    // range is ~[2^32 - 9*2^20, 2^32]. RIVER_TIER_SHIFT quantizes that range into
     // ~1152 monotone tiers (T2.2). If the shift changes, bump the blueprint
     // format version — that is the contract.
     // ------------------------------------------------------------------
@@ -1048,9 +1048,9 @@ mod c6_unit_tests {
         // Stronger hand must map to a <= bucket (monotone) and the tier count
         // must be small (bounded infoset space).
         // Direct check of the quantization math used in the river branch
-        // (T2.2: >> 13, ~1152 tiers).
-        let strong = (u32::MAX - 9_437_184) as u64 >> 13; // best hand in range
-        let weak = (u32::MAX) as u64 >> 13;
+        // (T2.2: RIVER_TIER_SHIFT=15, ~512 tiers).
+        let strong = ((u32::MAX - 9_437_184) as u64) >> pkr_core::abstraction::RIVER_TIER_SHIFT; // best hand in range
+        let weak = ((u32::MAX) as u64) >> pkr_core::abstraction::RIVER_TIER_SHIFT;
         assert!(strong <= weak);
         assert!(
             weak - strong < 2048,
@@ -1160,7 +1160,7 @@ mod audit_f6_tests {
     /// The `!raw` encoding produced by both evaluators has its usable
     /// range bounded above by `u32::MAX` and below by
     /// `u32::MAX - 9 * 2^20 + 1` (9 hand categories, each with 2^20
-    /// rank-bit combinations). `hand_rank >> 13` quantizes that range
+    /// rank-bit combinations). `hand_rank >> RIVER_TIER_SHIFT` quantizes that range
     /// into a bounded number of ordered tiers.
     ///
     /// The audit F6 concern: the pre-fix `>> 6` produced ~147k tiers,
@@ -1169,7 +1169,7 @@ mod audit_f6_tests {
     /// explodes or collapses the tier count will fail the test.
     #[test]
     fn river_shift_13_yields_bounded_tier_count() {
-        // T2.2: the shift is >> 13, giving ~1152 tiers over the ~9.4M
+        // T2.2: the shift is RIVER_TIER_SHIFT=15, giving ~512 tiers over the ~9.4M
         // raw-rank band. Bounds kept loose (±50%) so incidental raw
         // range tweaks do not spuriously fail, but any change that
         // silently collapses or explodes the tier count will.

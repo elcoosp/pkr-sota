@@ -1031,7 +1031,10 @@ impl CompactRegretTable {
         // loader rebuilds a fresh map so on-disk order is invisible
         // to correctness. But it does show up in the file's bytes,
         // making the checkpoint nondeterministic. Sort by hash so two
-        // runs of identical training produce byte-identical files.
+        // runs of identical training produce byte-identical files
+        // AT 1 THREAD. At 4+ threads the strategy-sum accumulation has
+        // a small residual divergence (see
+        // docs/experiments/archive/training-nondeterminism.md).
         let mut entries: Vec<(u64, usize)> = guard
             .iter()
             .map(|(k, v)| (*k, *v))

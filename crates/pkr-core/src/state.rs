@@ -219,6 +219,12 @@ pub struct GameState {
 
 impl GameState {
     pub fn new(start_stack: f32, sb: f32, bb: f32) -> Self {
+        // M-7 (audit 2026-10-10): zero input validation. A negative stack
+        // would corrupt the betting math silently.
+        debug_assert!(start_stack >= 0.0, "start_stack must be >= 0");
+        debug_assert!(sb >= 0.0, "sb must be >= 0");
+        debug_assert!(bb > 0.0, "bb must be > 0");
+        debug_assert!(sb <= bb, "sb must be <= bb");
         Self {
             hole: [[0; 2]; 2],
             board: [0u8; 5],
@@ -269,6 +275,18 @@ impl GameState {
     }
 
     pub fn set_hole_cards(&mut self, hero: [u8; 2], villain: [u8; 2]) {
+        // M-7 (audit 2026-10-10): reject impossible cards (out of range,
+        // duplicates, or board collisions) before they poison hashing.
+        for c in [hero[0], hero[1], villain[0], villain[1]] {
+            debug_assert!(c < 52, "card out of range: {c}");
+        }
+        debug_assert_ne!(hero[0], hero[1], "hero hole duplicate");
+        debug_assert_ne!(villain[0], villain[1], "villain hole duplicate");
+        debug_assert!(
+            hero[0] != villain[0] && hero[0] != villain[1]
+                && hero[1] != villain[0] && hero[1] != villain[1],
+            "hole cards collide"
+        );
         self.hole[0] = hero;
         self.hole[1] = villain;
     }

@@ -101,7 +101,10 @@ pub fn solve_root(
     if solver.n_root_actions() == 0 {
         return None;
     }
-    solver.iterate(cfg.iters);
+    // M-29 (audit 2026-10-10): the raw solve did not honour
+    // time_budget_ms; only solve_root_bounded did. A turn raw solve
+    // could blow the budget by tens of seconds.
+    iterate_budgeted(&mut solver, cfg);
     Some(solver.root_strategy(our_hand))
 }
 
@@ -193,7 +196,7 @@ pub fn solve_root_bounded(
         let mut lo = 0.0f32;
         let mut hi = 1.0f32;
         let mut best = bp_root.clone();
-        for _ in 0..12 {
+        for _ in 0..cfg.bound_max_steps.max(1) {
             if timed && t0.elapsed() >= budget { break; }
             let mid = 0.5 * (lo + hi);
             let mixed = Solver::blend_root(&search_root, &bp_root, mid);
@@ -288,7 +291,8 @@ pub fn solve_root_gadgetted(
     };
     let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
     solver.install_gadget(cbv, 1);
-    solver.iterate(cfg.iters);
+    // M-29: budget the gadget solve too.
+    iterate_budgeted(&mut solver, cfg);
     Some(solver.root_strategy(our_hand))
 }
 

@@ -465,7 +465,7 @@ fn p95(v: &[f64]) -> f64 { p95_of(v) }
 fn p95_of(v: &[f64]) -> f64 {
     if v.is_empty() { return 0.0; }
     let mut s = v.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    s.sort_by(|a, b| a.total_cmp(b));  // M-37: NaN-safe
     let idx = ((s.len() as f64) * 0.95) as usize;
     s[idx.min(s.len() - 1)]
 }
@@ -1412,11 +1412,23 @@ impl<'a> Solver<'a> {
                     }
                     total
                 } else {
+                    // M-36 (audit 2026-10-10): the seed depends only on
+                    // (seed, deal_idx, node_id) -- but the same (deal,
+                    // node) pair is visited at every iteration, so the BR
+                    // resampled the SAME river every visit. Mix in a
+                    // monotone counter so subsequent visits draw fresh
+                    // cards.
+                    let visit = {
+                        use std::sync::atomic::{AtomicU64, Ordering};
+                        static VISITS: AtomicU64 = AtomicU64::new(0);
+                        VISITS.fetch_add(1, Ordering::Relaxed)
+                    };
                     let mut rng = SmallRng::seed_from_u64(
                         self.seed
                             .wrapping_add(deal_idx as u64)
                             .wrapping_mul(0x9E3779B97F4A7C15)
-                            .wrapping_add(node_id as u64),
+                            .wrapping_add(node_id as u64)
+                            .wrapping_add(visit.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
                     );
                     let pick = valid[rng.random_range(0..valid.len())];
                     self.br_walk(pick, deal_idx, p0_strategy)

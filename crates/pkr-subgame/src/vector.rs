@@ -271,7 +271,7 @@ impl<'a> Solver<'a> {
                 if t > st.inv[o] + 1e-6 { tos.push(t); }
             }
             tos.push(sp.stack);
-            tos.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            tos.sort_by(|x, y| x.total_cmp(y));  // M-37: NaN-safe
             tos.dedup_by(|x, y| (*x - *y).abs() < 1e-4);
             for t in tos { acts.push(Act::Bet(t)); }
         }
@@ -681,17 +681,52 @@ impl<'a> Solver<'a> {
                         *used = true;
                         root_override.unwrap().to_vec()
                     } else {
+                        // M-32 (audit 2026-10-10): the previous mapping set
+                        // `per_act[a][h] = s[bucket(a)]` directly. When two
+                        // tree actions map to the SAME bucket (a legal case
+                        // for near-identical sizings), the total probability
+                        // across `a` exceeded 1 -- the walk leaked mass. And
+                        // when the tree had actions in MORE buckets than the
+                        // blueprint had prob on, the sum fell below 1.
+                        // Mirror the renormalization used by
+                        // `blueprint_root_strategy`: distribute the blueprint
+                        // prob equally within each bucket, and renormalize to
+                        // 1 over the tree's actions.
                         let street = Self::street_of(board.len());
                         let mut per_act = vec![vec![0.0f32; N]; n];
+                        // How many tree actions map to each bucket.
+                        let mut bucket_count = [0u32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
+                        for a in 0..n {
+                            let b = an.buckets.get(a).copied().unwrap_or(0) as usize;
+                            if b < pkr_core::abstraction::NUM_ACTION_BUCKETS {
+                                bucket_count[b] += 1;
+                            }
+                        }
                         for h in 0..N {
                             if !self.valid_root[h] { continue; }
                             let hash = abs.get_infoset_hash(
                                 &self.holes[h], board, &an.sig[..an.sig_len as usize], street);
                             let mut s = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
                             tbl.get_average_strategy_into(hash, &mut s);
+                            let mut row_sum = 0.0f32;
                             for a in 0..n {
                                 let b = an.buckets.get(a).copied().unwrap_or(0) as usize;
-                                per_act[a][h] = if b < pkr_core::abstraction::NUM_ACTION_BUCKETS { s[b] } else { 0.0 };
+                                if b < pkr_core::abstraction::NUM_ACTION_BUCKETS
+                                    && bucket_count[b] > 0
+                                {
+                                    let p = s[b] / bucket_count[b] as f32;
+                                    per_act[a][h] = p;
+                                    row_sum += p;
+                                }
+                            }
+                            if row_sum > 1e-9 {
+                                let inv = 1.0 / row_sum;
+                                for a in 0..n { per_act[a][h] *= inv; }
+                            } else {
+                                // Degenerate (all-zero blueprint mass):
+                                // uniform over the tree's actions.
+                                let u = 1.0 / n as f32;
+                                for a in 0..n { per_act[a][h] = u; }
                             }
                         }
                         per_act

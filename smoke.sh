@@ -21,12 +21,21 @@ echo ""
 # ensure TARGET CMD... — runs CMD unless TARGET exists and is non-empty.
 # set -e propagates CMD's failure.
 ensure() {
+    # m46 (audit 2026-10-10): `-s` trusts a truncated file. A half-written
+    # 305 MB turn table was cached forever. Write to `.tmp`, then mv.
     local target="$1"; shift
     if [ -s "$target" ]; then
         echo "  [cached] $(basename "$target")"
         return 0
     fi
-    "$@"
+    # The generators take the output path as their last argument.
+    # Reroute it through a `.tmp` file so a partial write is not cached.
+    local tmp="${target}.tmp"
+    rm -f "$tmp"
+    local args=("$@")
+    args[${#args[@]}-1]="$tmp"
+    "${args[@]}"
+    mv "$tmp" "$target"
 }
 
 PRE_BIN="cargo run --release --quiet -p pkr-abstraction --bin pkr-abstraction-precompute --"

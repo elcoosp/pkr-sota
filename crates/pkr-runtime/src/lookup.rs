@@ -195,7 +195,17 @@ impl SolverHandle {
         // prime offset both work; use (n/2 + 1) which is coprime with
         // n whenever n is not twice an odd number, and even when it
         // isn't, we wrap around enough to hit everything anyway.
-        let stride = key_count / 2 + 1;
+        // m8 (audit 2026-10-10): `key_count/2 + 1` is not guaranteed
+        // coprime with key_count. For key_count=6, stride=4, gcd=2 -> only
+        // 3 of 6 slots are visited, silently. Pick the smallest stride
+        // > key_count/2 that is coprime with key_count.
+        let mut stride = key_count / 2 + 1;
+        if stride < 1 { stride = 1; }
+        fn gcd(mut a: usize, mut b: usize) -> usize {
+            while b != 0 { let t = b; b = a % b; a = t; }
+            a
+        }
+        while gcd(stride, key_count) != 1 { stride += 1; }
 
         // Warm the page cache: one pass over the keys the measurement
         // will actually touch, ignoring latency. Otherwise the first

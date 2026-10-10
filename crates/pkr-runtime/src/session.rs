@@ -43,6 +43,9 @@ pub struct RuntimeSession<'a> {
     abs: &'a dyn AbstractionBuilder,
     tbl: &'a CompactRegretTable,
     ev: &'a dyn Evaluator,
+    /// m10: per-session RNG so translation is deterministic within a deal
+    /// and replayable across paired runs (CRN). Seeded from the deal root.
+    rng: rand::rngs::SmallRng,
 }
 
 /// §B: enable live action translation (env `PKR_TRANSLATE=1`). Off by
@@ -91,11 +94,26 @@ impl<'a> RuntimeSession<'a> {
             abs,
             tbl,
             ev,
+            rng: {
+                use rand::SeedableRng;
+                rand::rngs::SmallRng::seed_from_u64(0xC0FFEE_u64)
+            },
         }
     }
 
     /// Start a new deal. Resets the tracker to uniform-over-board.
     pub fn deal_start(&mut self, root: GameState) {
+        // m10: reseed the session RNG from the deal so translation draws
+        // are reproducible and paired runs (CRN) agree.
+        {
+            use rand::SeedableRng;
+            let seed = 0xC0FFEE_u64
+                ^ (root.hole[0][0] as u64) << 24
+                ^ (root.hole[0][1] as u64) << 16
+                ^ (root.hole[1][0] as u64) << 8
+                ^ (root.hole[1][1] as u64);
+            self.rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        }
         if shadow_enabled() {
             self.shadow = Some(Shadow::new(root.clone()));
         }
@@ -147,7 +165,7 @@ impl<'a> RuntimeSession<'a> {
             if let Some(rb) = real_before {
                 let applied = {
                     let sh = self.shadow.as_mut().unwrap();
-                    sh.observe_opp(&rb, &action, &mut rand::rng())
+                    sh.observe_opp(&rb, &action, &mut self.rng)
                 };
                 if let Some(t) = self.tracker.as_mut() {
                     let _ = t.apply_action(applied);
@@ -165,7 +183,7 @@ impl<'a> RuntimeSession<'a> {
                 if let Some(bucket) = crate::translate_live::observed_bet_bucket(
                     t.state(),
                     &action,
-                    &mut rand::rng(),
+                    &mut self.rng,
                 ) {
                     let _ = t.apply_action_with_bucket(action, bucket as usize);
                     return;
@@ -346,7 +364,13 @@ impl<'a> RuntimeSession<'a> {
         self.handle_blueprint_strategy(blueprint_hash, &mut raw);
         let sum: f32 = raw.iter().sum();
         if sum <= 1e-12 {
-            // Blueprint has no data at this infoset — fall back to uniform.
+            // m11 (audit 2026-10-10): this is the runtime-session fallback
+            // and it differs from `SolverHandle::fallback_advice` in the
+            // bot binary (which returns a mild ~10% fold policy). The two
+            // sit on different types and do not share constants; unifying
+            // them is a design change, not a mechanical fix. Leave uniform
+            // and note the discrepancy so a future PR can pick one policy
+            // for both callers.
             let n = crate::subgame::SUBGAME_BUCKETS as f64;
             let mut u = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
             for x in u.iter_mut() {
