@@ -54,7 +54,7 @@ pub const BUCKET_THRESHOLD_MEDIUM: f32 = 1.5;
 /// Bucket 5: >= LARGE (3.0-pot size). Bucket 6: jam.
 pub const BUCKET_THRESHOLD_LARGE: f32 = 2.5;
 
-/// Map a concrete action to its abstract bucket (0..=5).
+/// Map a concrete action to its abstract bucket (0..=6).
 ///
 /// `stacks`, `street_bets`, `opp_street_bets`, and `pot` are the actor's
 /// (and opponent's) state **before** the action is applied.
@@ -72,7 +72,7 @@ pub const BUCKET_THRESHOLD_LARGE: f32 = 2.5;
 /// (`pkr_runtime::translate_live::translate_bet`) must use these same
 /// units or off-tree bets map to the wrong window.
 ///
-/// All 6 return values are legal for every input; callers that need to
+/// All 7 return values are legal for every input; callers that need to
 /// know which buckets have a concrete representative should enumerate
 /// `legal_actions*` and map each action through this function.
 #[inline]
@@ -787,5 +787,177 @@ mod fingerprint_sensitivity_tests {
             1
         };
         assert_eq!(fp.sig_version, expected);
+    }
+}
+
+// ============================================================
+// Bucket-decode helpers (2026-10-10).
+//
+// The "map a bucket vector to a legal concrete action" loop is
+// duplicated in pkr-fuzz/src/tournament.rs (two places),
+// pkr-fuzz/src/lib.rs (search hook), and
+// pkr-runtime/src/bin/pkr-bot-pipe.rs. That duplication is exactly
+// how the K=6->7 jam-drop bug (bug 1b) hid: three sites each had
+// their own `[Option<usize>; 6]` and only some were updated.
+//
+// Centralise. Any future action-abstraction change touches ONE place.
+// ============================================================
+
+/// For each abstract bucket, the index into `legal` of the first
+/// concrete action that maps to that bucket. `None` when no legal
+/// action maps there.
+///
+/// `stacks`, `street_bets`, `opp_street_bets`, `pot` are the acting
+/// player's PRE-action state (same convention as `action_bucket`).
+pub fn first_legal_by_bucket(
+    legal: &[crate::state::Action],
+    stacks: f32,
+    street_bets: f32,
+    opp_street_bets: f32,
+    pot: f32,
+) -> [Option<u8>; NUM_ACTION_BUCKETS] {
+    let mut out: [Option<u8>; NUM_ACTION_BUCKETS] = [None; NUM_ACTION_BUCKETS];
+    for (i, a) in legal.iter().enumerate() {
+        let b = action_bucket(
+            &a.kind,
+            stacks,
+            street_bets,
+            opp_street_bets,
+            pot,
+        ) as usize;
+        if b < NUM_ACTION_BUCKETS && out[b].is_none() {
+            out[b] = Some(i as u8);
+        }
+    }
+    out
+}
+
+/// Shared bound for `sample_legal_index`: f32 callers (blueprint CDF
+/// decode) and f64 callers (search distribution) both use it.
+pub trait Prob: Copy + Into<f64> {}
+impl Prob for f32 {}
+impl Prob for f64 {}
+
+/// Sample one legal-action index from a bucket -> probability vector.
+///
+/// Renormalizes over the buckets present in `b2a` (the caller's
+/// `first_legal_by_bucket` map), so probability mass on illegal
+/// buckets is dropped and the rest renormalized. `r` must be uniform
+/// in `[0, 1)`.
+///
+/// Returns `None` if the total present probability is zero, or if
+/// `b2a` has no legal entry.
+///
+/// The final fallback returns the LAST present bucket (not the
+/// first). That matters for the jam: if floating-point accumulation
+/// puts `target` just past the last bucket's cumulative weight, we
+/// still land on a legal action, and the tie is broken in favour of
+/// the top-of-range action (which is where a discrete CDF's final
+/// mass conventionally sits).
+pub fn sample_legal_index<P: Prob>(
+    probs: &[P; NUM_ACTION_BUCKETS],
+    b2a: &[Option<u8>; NUM_ACTION_BUCKETS],
+    r: f64,
+) -> Option<u8> {
+    let total: f64 = (0..NUM_ACTION_BUCKETS)
+        .filter(|&b| b2a[b].is_some())
+        .map(|b| probs[b].into())
+        .sum();
+    if !(total > 1e-12) {
+        return None;
+    }
+    let target = r * total;
+    let mut acc = 0.0f64;
+    for b in 0..NUM_ACTION_BUCKETS {
+        if b2a[b].is_none() {
+            continue;
+        }
+        acc += probs[b].into();
+        // STRICT inequality: bucket b's sampling interval is
+        // [acc_before, acc_after); target == acc_before must not
+        // pick a zero-probability bucket. With `<=`, a target of
+        // 0.0 picks the first bucket even when its probability is
+        // 0.0 (this repo's pre-existing sites also use `<=`, but
+        // r=0.0 has measure zero under rand::random::<f64>(), so
+        // the difference is only observable in tests).
+        if target < acc {
+            return b2a[b];
+        }
+    }
+    // Floating-point fallback: return the last present bucket.
+    (0..NUM_ACTION_BUCKETS).rev().find_map(|b| b2a[b])
+}
+
+#[cfg(test)]
+mod bucket_decode_helper_tests {
+    use super::*;
+    use crate::state::{Action, ActionKind};
+
+    #[test]
+    fn first_legal_by_bucket_preserves_jam() {
+        // Regression for bug 1b: the jam bucket 6 must survive the
+        // bucket -> legal-index mapping. A hardcoded 6-bucket loop
+        // silently dropped it at K=7.
+        let stacks = 100.0_f32;
+        let street_bets = 0.0_f32;
+        let opp_street_bets = 0.0_f32;
+        let pot = 3.0_f32;
+        let legal = [
+            Action { player: 0, kind: ActionKind::Fold },
+            Action { player: 0, kind: ActionKind::Check },
+            Action { player: 0, kind: ActionKind::Bet(1.5) },
+            Action { player: 0, kind: ActionKind::Bet(3.0) },
+            Action { player: 0, kind: ActionKind::Bet(6.0) },
+            Action { player: 0, kind: ActionKind::Bet(stacks) },
+        ];
+        let b2a = first_legal_by_bucket(&legal, stacks, street_bets, opp_street_bets, pot);
+        assert!(b2a[0].is_some(), "fold bucket must be present");
+        assert!(b2a[1].is_some(), "check bucket must be present");
+        assert_eq!(
+            b2a[JAM_BUCKET as usize],
+            Some(5),
+            "JAM bucket must map to the all-in action"
+        );
+    }
+
+    #[test]
+    fn sample_legal_index_picks_jam_when_mass_is_on_jam() {
+        let mut b2a: [Option<u8>; NUM_ACTION_BUCKETS] = [None; NUM_ACTION_BUCKETS];
+        b2a[0] = Some(0);
+        b2a[JAM_BUCKET as usize] = Some(5);
+        let mut probs = [0.0_f64; NUM_ACTION_BUCKETS];
+        probs[JAM_BUCKET as usize] = 1.0;
+        for r in [0.0_f64, 0.1, 0.5, 0.99, 0.999999] {
+            assert_eq!(
+                sample_legal_index(&probs, &b2a, r),
+                Some(5),
+                "r={r}: mass on JAM must always pick JAM"
+            );
+        }
+    }
+
+    #[test]
+    fn sample_legal_index_returns_none_when_present_mass_is_zero() {
+        let mut b2a: [Option<u8>; NUM_ACTION_BUCKETS] = [None; NUM_ACTION_BUCKETS];
+        b2a[0] = Some(0);
+        let probs = [0.0_f32; NUM_ACTION_BUCKETS];
+        assert_eq!(sample_legal_index(&probs, &b2a, 0.5), None);
+    }
+
+    #[test]
+    fn sample_legal_index_renormalizes_over_present_buckets() {
+        // Half the bucket mass sits on illegal buckets; the present
+        // two buckets must be renormalized so r=0.9 still lands.
+        let mut b2a: [Option<u8>; NUM_ACTION_BUCKETS] = [None; NUM_ACTION_BUCKETS];
+        b2a[2] = Some(2);
+        b2a[3] = Some(3);
+        let mut probs = [0.0_f32; NUM_ACTION_BUCKETS];
+        probs[0] = 100.0;   // illegal: no legal action maps to bucket 0
+        probs[2] = 0.25;
+        probs[3] = 0.25;
+        // Total present mass is 0.5; r=0.9 -> target=0.45 -> second bucket.
+        assert_eq!(sample_legal_index(&probs, &b2a, 0.9), Some(3));
+        // r=0.1 -> target=0.05 -> first present bucket.
+        assert_eq!(sample_legal_index(&probs, &b2a, 0.1), Some(2));
     }
 }
