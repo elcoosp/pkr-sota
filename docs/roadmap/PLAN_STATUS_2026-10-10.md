@@ -148,3 +148,17 @@ lexicographically minimal image over all 24 permutations (trivially
 correct, O(24) per input, still gives the ~24x precompute-space
 reduction). Worth doing only if the Phase 2.3 turn/flop precompute
 budget proves to need that reduction -- unproven.
+
+## Leduc CFR grid results (2026-10-10)
+
+Full write-up: `docs/experiments/leduc-cfr-grid-2026-10-10.md`.
+
+Headline:
+
+- `PKR_EXPLORE_EPSILON=0.002` gives ~12.4 mchips vs default (0.01) ~19.8,
+  a ~37% exploitability reduction. Leduc-only signal. Queue an NLHE A/B
+  at 50-100M iters, 2 seeds.
+- `PKR_LINEAR_CFR=1` is worse on Leduc (~23.8 vs 19.8); keep off.
+- `PKR_AVG_POWER=2`, `PKR_RM_PLUS=0` are noise-level at 3M iters.
+
+No defaults changed.
