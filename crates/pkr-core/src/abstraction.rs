@@ -1,4 +1,4 @@
-//! Single source of truth for the 6-bucket action abstraction.
+//! Single source of truth for the 7-bucket action abstraction.
 //!
 //! Before this module there were three independent copies of the
 //! bucket mapping with two different threshold sets. Any fix to one

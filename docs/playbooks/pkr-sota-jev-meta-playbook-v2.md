@@ -181,7 +181,7 @@ never arithmetic ("never ask: what is 3/4 of the pot").
 **Why this wins tournaments specifically.** A blueprint approximates the *Nash equilibrium of
 your abstraction*; tournament equity comes from (a) playing the right **blueprint variant** for
 the right tournament state (stage, stack depth, ICM pressure), (b) **deviating from it** against
-the actual population, and (c) handling the **long tail of off-tree spots** your 6-bucket action
+the actual population, and (c) handling the **long tail of off-tree spots** your 7-bucket action
 abstraction can't represent. Those three are judgment problems with small states and typed
 answers — exactly Jev's shape, and exactly where pure GTO engines leave EV on the table.
 
