@@ -652,12 +652,20 @@ fn build_tree(state: &mut GameState, nodes: &mut Vec<PublicNode>, depth: u32) ->
         // Optional river subsample (see max_rivers).
         let cap = max_rivers();
         if cap > 0 && remaining.len() > cap {
+            // C9 (audit 2026-10-10): the previous deterministic-even-spacing
+            // pick was skewed by suit because card ids are suit-major
+            // (`suit = c / 13`). For n=46, cap=6 it hit suits 0/1 twice
+            // and 2/3 once -- every deal saw the same biased subset.
+            // Seeded partial Fisher-Yates gives a uniform sample that is
+            // still reproducible.
             let n = remaining.len();
-            let mut sub = Vec::with_capacity(cap);
+            let mut rng = SmallRng::seed_from_u64(
+                0x5EED_2026 ^ (n as u64) ^ (cap as u64));
             for i in 0..cap {
-                sub.push(remaining[i * n / cap]);
+                let j = i + rng.random_range(0..(n - i));
+                remaining.swap(i, j);
             }
-            remaining = sub;
+            remaining.truncate(cap);
         }
         let mut children = Vec::with_capacity(remaining.len());
         for card in remaining {

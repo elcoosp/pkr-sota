@@ -256,9 +256,16 @@ pub fn lookup_from_table<'a>(
         let card1 = r1 as u8;
         let card2 = if suited { r2 as u8 } else { 13 + r2 as u8 };
         let hole: [u8; 2] = [card1, card2];
-        // history_signature at preflop start is 0.
-        let history: [u8; 4] = 0u32.to_le_bytes();
-        let hash = abstraction.get_infoset_hash(&hole, &[], &history, 0);
+            // C5 (audit 2026-10-10): training hashes an 8-byte v3+
+            // signature carrying a nonzero version tag (V5 default ON).
+            // The old 4-byte zero history missed every key -> uniform
+            // strategy returned -> "open freq ~ 0.857" passed thresholds
+            // spuriously. Build the same state the trainer starts from.
+            let mut state = pkr_core::state::GameState::new(
+                pkr_core::state::stack_chips(), 1.0, 2.0);
+            let mut sig = [0u8; 8];
+            let sig_len = state.infoset_signature_into(&mut sig);
+            let hash = abstraction.get_infoset_hash(&hole, &[], &sig[..sig_len], 0);
         let mut strat = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
         table.get_average_strategy_into(hash, &mut strat);
         // Open frequency = 1 - P(fold). Fold is bucket 0.

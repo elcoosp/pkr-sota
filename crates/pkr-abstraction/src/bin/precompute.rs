@@ -120,13 +120,27 @@ fn main() {
                 "Centroids: {} | Rank table: {}",
                 centroids_path, rank_table_path
             );
-            let _ = generate_abstraction_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_abstraction_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "hand_ranks" => {
             let output = args.get(2).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             println!("Generating hand ranks -> {}", output);
-            let _ = generate_hand_ranks(output);
+            if let Err(e) = generate_hand_ranks(output) {
+
+                eprintln!("precompute generate_hand_ranks failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "centroids" => {
@@ -138,7 +152,14 @@ fn main() {
                 "Samples: {} | K: {} | Rank table: {} | Output: {}",
                 num_samples, k, rank_table_path, output
             );
-            let _ = generate_centroids(num_samples, k, rank_table_path, output);
+            if let Err(e) = generate_centroids(num_samples, k, rank_table_path, output) {
+
+                eprintln!("precompute generate_centroids failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "centroids-potential" => {
@@ -156,7 +177,14 @@ fn main() {
             let rank_table_path = args.get(4).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             let output = args.get(5).map(|s| s.as_str()).unwrap_or("centroids_pot.bin");
             let street = args.get(6).map(|s| s.as_str()).unwrap_or("flop");
-            let _ = generate_centroids_potential(num_boards, k, rank_table_path, output, street);
+            if let Err(e) = generate_centroids_potential(num_boards, k, rank_table_path, output, street) {
+
+                eprintln!("precompute generate_centroids_potential failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "abs-potential" => {
@@ -165,7 +193,14 @@ fn main() {
             let centroids_path = args.get(2).map(|s| s.as_str()).unwrap_or("centroids_pot.bin");
             let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             let output = args.get(4).map(|s| s.as_str()).unwrap_or("abstraction_pot.bin");
-            let _ = generate_abstraction_table_potential(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_abstraction_table_potential(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_abstraction_table_potential failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "turn-potential" => {
@@ -173,7 +208,14 @@ fn main() {
             let centroids_path = args.get(2).map(|s| s.as_str()).unwrap_or("centroids_turn_pot.bin");
             let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             let output = args.get(4).map(|s| s.as_str()).unwrap_or("turn_table_pot.bin");
-            let _ = generate_turn_table_potential(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_turn_table_potential(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_turn_table_potential failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "turn" => {
@@ -188,7 +230,14 @@ fn main() {
                 centroids_path, rank_table_path, output
             );
             let num_samples = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(10_000);
-            let _ = generate_turn_table(centroids_path, rank_table_path, output, num_samples);
+            if let Err(e) = generate_turn_table(centroids_path, rank_table_path, output, num_samples) {
+
+                eprintln!("precompute generate_turn_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "preflop" => {
@@ -201,7 +250,14 @@ fn main() {
                 .get(4)
                 .map(|s| s.as_str())
                 .unwrap_or("preflop_table.bin");
-            let _ = generate_preflop_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_preflop_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_preflop_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "preflop-rich" => {
@@ -218,7 +274,14 @@ fn main() {
                 "preflop-rich | centroids(6D): {} | rank table: {} | output: {}",
                 centroids_path, rank_table_path, output
             );
-            let _ = generate_preflop_rich_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_preflop_rich_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_preflop_rich_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "flop-rich" => {
@@ -236,7 +299,14 @@ fn main() {
                 "flop-rich | rank: {} | centroids: {} | table: {} | k={}",
                 rank_table_path, centroids_out, table_out, k
             );
-            let _ = generate_flop_rich_table(rank_table_path, centroids_out, table_out, k);
+            if let Err(e) = generate_flop_rich_table(rank_table_path, centroids_out, table_out, k) {
+
+                eprintln!("precompute generate_flop_rich_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "turn-rich" => {
@@ -254,7 +324,14 @@ fn main() {
                 "turn-rich | rank: {} | centroids: {} | table: {} | k={}",
                 rank_table_path, centroids_out, table_out, k
             );
-            let _ = generate_turn_rich_table(rank_table_path, centroids_out, table_out, k);
+            if let Err(e) = generate_turn_rich_table(rank_table_path, centroids_out, table_out, k) {
+
+                eprintln!("precompute generate_turn_rich_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "flop" => {
@@ -265,7 +342,14 @@ fn main() {
                 .unwrap_or("flop_buckets.bin");
             let k = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(64);
             println!("Generating {} flop buckets -> {}", k, output);
-            let _ = generate_flop_buckets(k, rank_table_path, output);
+            if let Err(e) = generate_flop_buckets(k, rank_table_path, output) {
+
+                eprintln!("precompute generate_flop_buckets failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "river" => {
@@ -289,13 +373,27 @@ fn main() {
                 std::env::set_var("RIVER_OUTER_SAMPLES", "50");
                 println!("  (river default RIVER_OUTER_SAMPLES=50; override with env)");
             }
-            let _ = generate_river_buckets(k, rank_table_path, output);
+            if let Err(e) = generate_river_buckets(k, rank_table_path, output) {
+
+                eprintln!("precompute generate_river_buckets failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "all7" => {
             let rank_table_path = args.get(2).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             let output = args.get(3).map(|s| s.as_str()).unwrap_or("all7_scores.bin");
-            let _ = generate_all7_scores(rank_table_path, output);
+            if let Err(e) = generate_all7_scores(rank_table_path, output) {
+
+                eprintln!("precompute generate_all7_scores failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "abs5" => {
@@ -308,7 +406,14 @@ fn main() {
                 .get(4)
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
-            let _ = generate_abstraction_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_abstraction_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "abs6" => {
@@ -321,7 +426,14 @@ fn main() {
                 .get(4)
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
-            let _ = generate_abstraction_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_abstraction_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "all4" => {
@@ -334,7 +446,14 @@ fn main() {
                 .get(4)
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
-            let _ = generate_abstraction_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_abstraction_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "all6" => {
@@ -347,7 +466,14 @@ fn main() {
                 .get(4)
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
-            let _ = generate_abstraction_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_abstraction_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         "all8" => {
@@ -360,7 +486,14 @@ fn main() {
                 .get(4)
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
-            let _ = generate_abstraction_table(centroids_path, rank_table_path, output);
+            if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
+
+                eprintln!("precompute generate_abstraction_table failed: {e}");
+
+                std::process::exit(1);
+
+            }
+
             println!("Done.");
         }
         cmd => {
@@ -1225,7 +1358,9 @@ fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> 
         return vec![];
     }
     let k = k.min(n);
-    let mut centroids: Vec<[f32; 10]> = data.sample(&mut rand::rng(), k).cloned().collect();
+    let mut _kmeans_rng = StdRng::seed_from_u64(
+        0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
+    let mut centroids: Vec<[f32; 10]> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
         let mut assignments: Vec<usize> = vec![0; n];
@@ -1279,7 +1414,9 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
         return vec![];
     }
     let k = k.min(n);
-    let mut centroids: Vec<(f32, f32)> = data.sample(&mut rand::rng(), k).cloned().collect();
+    let mut _kmeans_rng = StdRng::seed_from_u64(
+        0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
+    let mut centroids: Vec<(f32, f32)> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
         let mut assignments: Vec<usize> = vec![0; n];
@@ -1416,7 +1553,9 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
         return vec![];
     }
     let k = k.min(n);
-    let mut centroids: Vec<[f32; 6]> = data.sample(&mut rand::rng(), k).cloned().collect();
+    let mut _kmeans_rng = StdRng::seed_from_u64(
+        0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
+    let mut centroids: Vec<[f32; 6]> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
         let mut assignments: Vec<usize> = vec![0; n];
