@@ -722,7 +722,10 @@ impl CompactRegretTable {
             .collect();
 
         let gpu = self.gpu.get_or_init(|| GpuState::new(self.capacity));
-        let max = gpu.max_batch_size();
+        // M-13 (audit 2026-10-10): `chunks(0)` panics when
+        // the GPU feature is off -- `GpuState::max_batch_size`
+        // returns 0 in that stub. Clamp to 1.
+        let max = gpu.max_batch_size().max(1);
         for chunk in deduped.chunks(max) {
             let results = gpu.flush_batch(chunk);
             for (item, result) in chunk.iter().zip(results.iter()) {

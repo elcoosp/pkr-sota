@@ -159,7 +159,22 @@ impl TrainConfig {
     pub fn from_env() -> Self {
         let d = TrainConfig::default();
         TrainConfig {
-            momentum: env_bool("PKR_MOMENTUM", d.momentum),
+            // M-11 (audit 2026-10-10): the production i64 regret path
+            // never reads the momentum plane (see `dcfr.rs` `DcfrStep`
+            // and `update_regret_with_step`: `momentum_on=false` is
+            // hardcoded). Setting PKR_MOMENTUM=1 was a silent no-op.
+            // Refuse loudly rather than lie in stats.json.
+            momentum: {
+                let requested = env_bool("PKR_MOMENTUM", d.momentum);
+                if requested && !d.momentum {
+                    eprintln!(
+                        "WARNING: PKR_MOMENTUM=1 is set, but the production i64 \
+regret path does not use momentum (PCFR+ is disabled in dcfr.rs). \
+Proceeding with momentum=false. Setting will not affect training."
+                    );
+                }
+                false
+            },
             avg_power: env_parse("PKR_AVG_POWER", d.avg_power, |p| {
                 (0.0..=4.0).contains(p)
             }),

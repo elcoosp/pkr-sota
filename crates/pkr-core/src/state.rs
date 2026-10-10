@@ -975,6 +975,13 @@ impl GameState {
             out.copy_from_slice(&self.history_signature_v2().to_le_bytes());
             8
         } else {
+            // M-8 (audit 2026-10-10): the caller's `out` is only
+            // guaranteed to be fresh from the caller. In the 4-byte
+            // path, bytes 4..8 were left with whatever was there before.
+            // Downstream slices use `&out[..len]` so this is currently
+            // harmless, but a future caller reading the whole array
+            // would get stale data. Zero defensively.
+            out[4..].fill(0);
             out[..4].copy_from_slice(&self.history_signature().to_le_bytes());
             4
         }

@@ -13,9 +13,12 @@ const MAX_DEPTH: u32 = 50;
 /// after an all-in call on a completed street). Default off. Changes RNG
 /// streams when on, so not comparable bit-for-bit to a run where off.
 fn skip_forced_nodes() -> bool {
-    use std::sync::OnceLock;
-    static S: OnceLock<bool> = OnceLock::new();
-    *S.get_or_init(|| std::env::var("PKR_SKIP_FORCED").as_deref() == Ok("1"))
+    // M-10 (audit 2026-10-10): this used to compare against literal
+    // "1" only, while `TrainConfig::from_env` accepts on/true/yes via
+    // env_bool. Two sources of truth: stats.json could report
+    // skip_forced=ON while the traverser ran with it OFF. Delegate to
+    // the config.
+    crate::config::TrainConfig::global().skip_forced
 }
 
 /// Exploration floor at opponent nodes during MCCFR sampling.

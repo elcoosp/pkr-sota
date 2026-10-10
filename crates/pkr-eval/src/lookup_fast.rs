@@ -124,6 +124,19 @@ impl TableEvaluator {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         let file = File::open(&path)?;
         let mmap = unsafe { Mmap::map(&file)? };
+        // M-18 (audit 2026-10-10): Fast7Evaluator::new now validates the
+        // size, but keep a local check too so a v1 caller that bypasses
+        // fast still fails loudly.
+        const EXPECTED: usize = 2_598_960 * 4;
+        if mmap.len() < EXPECTED {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "hand_ranks.bin too small: {} bytes, expected at least {}",
+                    mmap.len(), EXPECTED
+                ),
+            ));
+        }
         let fast = Fast7Evaluator::new(&path)?;
         Ok(TableEvaluator { mmap, fast })
     }

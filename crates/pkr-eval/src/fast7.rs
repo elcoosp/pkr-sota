@@ -43,6 +43,20 @@ impl Fast7Evaluator {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
+        // M-18 (audit 2026-10-10): a truncated hand_ranks.bin silently
+        // returned "worst hand" per index past the end. Check the size
+        // before building the LUT. 2,598,960 combinadic 5-card ranks,
+        // 4 bytes each.
+        const EXPECTED: usize = 2_598_960 * 4;
+        if mmap.len() < EXPECTED {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "hand_ranks.bin too small: {} bytes, expected at least {}",
+                    mmap.len(), EXPECTED
+                ),
+            ));
+        }
         let non_flush = precompute_non_flush(&mmap);
         Ok(Self { mmap, non_flush })
     }
