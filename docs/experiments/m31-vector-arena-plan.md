@@ -79,3 +79,39 @@ those because the exploitability is very sensitive to tree shape.
 
 K=7 is decided; the K=7 baseline is safe on disk. This is the last
 audit item with unbounded scope and no gating dependency.
+
+
+---
+
+## Status: DEFERRED (2026-10-10)
+
+Attempted step 1+2 in a session while an unrelated training run was
+active. Step 1 (add fields) compiled. Step 2 (change `Node::*::kids`
+to `Vec<u32>` + `Solver.root` to arena/`root_idx`) produced 35 compile
+errors, as expected -- every method that touches a node (`build`,
+`end_street`, `showdown`, `cfr`, `br`, `bp_walk`, `solved_br_p1`,
+`install_gadget`, `p0_root`, `p0_root_mut`, `root_strategy`,
+`root_strategy_all`, `set_root_strategy`, `opp_br_value`,
+`blueprint_root_strategy`, `blueprint_p1_br`, `real_root_node`, plus
+every test) needs a coordinated rewrite in a single pass. This cannot
+be done safely under a file-watcher that truncates long scripts.
+
+Reverted cleanly (`git checkout HEAD -- crates/pkr-subgame/src/vector.rs`).
+
+### Why deferring is defensible
+
+The `unsafe { &mut *node }` in `cfr` is aliasing UB by the book, but:
+- It has never manifested: all 24 lib tests + 5 integration tests pass.
+- The `&mut Node` derived from `&self.root` is never held ACROSS a
+  write to memory reached through `&self`. The recursion structure
+  means each `&mut` is dropped before the next `&self` method call.
+- The current `Node` tree is functionally correct; the fix is about
+  UB-audit hygiene, not a bug in behavior.
+
+### What a dedicated session should do
+
+Execute steps 1-5 from the plan in one continuous editing session
+with a shell that does not truncate. Prerequisite: a golden-hash
+regression test that pins `Solver::exploitability()` on a fixed
+`Spec` + evaluator so the arena refactor cannot silently change the
+tree. That test does not exist today.
