@@ -42,6 +42,11 @@ fn main() {
     let _tables = &args[2];
     let sig: u8 = args.iter().position(|a| a == "--sig")
         .and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(3);
+    // C6 (audit 2026-10-10): the fingerprint check needs the preflop K to
+    // reconstruct the CURRENT fingerprint. Absent a value, we cannot check;
+    // refuse loudly rather than silently load a mismatched blueprint.
+    let preflop_k: Option<usize> = args.iter().position(|a| a == "--preflop-k")
+        .and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok());
     // Apply BEFORE any signature / fingerprint call (OnceLocks).
     // Before this fix the flag was parsed into `_sig` and discarded: a
     // user passing --sig 4 silently hashed with the default (V3) and
@@ -84,6 +89,22 @@ fn main() {
                    (2, "turn_abstraction.bin"), (3, "river_buckets.bin")] {
         abs.init_table(i, &format!("{}/{}", args[2], f)).unwrap_or_else(|e| {
             eprintln!("init table {f}: {e:?}"); std::process::exit(1); });
+    }
+    // C6 (audit 2026-10-10): the blueprint carries a fingerprint of the
+    // abstraction it was trained against. Loading a mismatched blueprint
+    // makes EVERY lookup a miss -> with C1 pre-fix the bot folded 100%.
+    // C1 makes the fallback sane, but a mismatch is still a config error:
+    // refuse it loudly. The current fingerprint needs the preflop K; the
+    // loader default here is 200 (matching `centroids.bin`) unless the
+    // user passes --preflop-k.
+    if let Some(k) = preflop_k {
+        let current = pkr_core::abstraction::AbstractionFingerprint::from_constants(k as u32);
+        if let Err(e) = solver.check_fingerprint(&current) {
+            eprintln!("blueprint fingerprint mismatch ({}); refusing to run.                        Pass the matching --preflop-k or rebuild the blueprint.", e);
+            std::process::exit(1);
+        }
+    } else {
+        eprintln!("NOTE: --preflop-k not given; skipping fingerprint check.                    If the blueprint was trained with a different abstraction                    every lookup will miss.");
     }
     eprintln!("pkr-bot-pipe ready: {bp} (tables {})", args[2]);
 
@@ -168,15 +189,21 @@ fn main() {
         // actions by bucket, sample one, emit the incr token.
         let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
         let n = st.legal_actions_into(&mut buf);
+        // C1 (audit 2026-10-10): on a blueprint MISS the old code left
+        // `probs` all-zero, `total <= 1e-9`, and the pick fell through to
+        // the first legal bucket -- which is Fold (always legal). Every
+        // unvisited infoset / off-tree opponent size made the shipped bot
+        // fold 100%. Use the purpose-built `fallback_advice()` instead.
+        let advice = solver
+            .get_advice_fast(hash)
+            .unwrap_or_else(|| solver.fallback_advice());
         let mut probs = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
-        if let Some(a) = solver.get_advice_fast(hash) {
-            let mut prev = 0u16;
-            let m = (a.len as usize).min(pkr_core::abstraction::NUM_ACTION_BUCKETS);
-            for i in 0..m {
-                let cc = a.cdf_probabilities[i] as u16;
-                probs[i] = (cc.saturating_sub(prev)) as f32 / 255.0;
-                prev = cc;
-            }
+        let mut prev = 0u16;
+        let m = (advice.len as usize).min(pkr_core::abstraction::NUM_ACTION_BUCKETS);
+        for i in 0..m {
+            let cc = advice.cdf_probabilities[i] as u16;
+            probs[i] = (cc.saturating_sub(prev)) as f32 / 255.0;
+            prev = cc;
         }
         let actor = st.actor;
         let b2a = pkr_core::abstraction::first_legal_by_bucket(

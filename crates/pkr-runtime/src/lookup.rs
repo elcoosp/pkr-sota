@@ -116,12 +116,30 @@ impl SolverHandle {
     /// "always fold" and "always jam" ends. Host apps that want a
     /// smarter fallback (pot-odds, preflop chart) should layer that on
     /// top of this.
+    /// C6 (audit 2026-10-10): enforce that a loaded blueprint's stored
+    /// abstraction fingerprint matches the caller's current config. A
+    /// mismatched blueprint makes EVERY lookup miss; without this check
+    /// the failure was silent. Returns the underlying MmapError on
+    /// mismatch, `Ok(())` on match or on a v3 file with no fingerprint.
+    pub fn check_fingerprint(
+        &self,
+        current: &pkr_core::abstraction::AbstractionFingerprint,
+    ) -> Result<(), crate::mmap::MmapError> {
+        self.mmap.check_fingerprint(current)
+    }
+
     pub fn fallback_advice(&self) -> SotaAdvice {
+        // C2 (audit 2026-10-10): this used to be `len: 6` -- a K=6 fossil.
+        // K=7 landed 2026-10-10 (NUM_ACTION_BUCKETS 6 -> 7, bucket 6 = jam).
+        // A `len: 6` CDF makes every consumer stop before bucket 6, silently
+        // dropping the jam from the fallback path. `len: 7`, mass on bucket 1
+        // (check/call) with a mild tail to 6 so off-tree / unvisited
+        // infosets do not fold 100%.
         SotaAdvice {
             cdf_probabilities: [
-                26, 128, 179, 204, 230, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+                26, 128, 179, 204, 230, 248, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
             ],
-            len: 6,
+            len: 7,
         }
     }
 }

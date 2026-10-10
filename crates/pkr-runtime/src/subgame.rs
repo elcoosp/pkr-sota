@@ -115,6 +115,14 @@ fn mirror_to_seat0(state: &GameState) -> GameState {
     // shipped config was safe, but turn subgames (`enabled_streets[2]`)
     // were not.
     m.dealer = 1 - m.dealer;
+    // M-28 (audit 2026-10-10): the previous-street aggressor fields were
+    // not swapped. Under `--sig 5` the gadget's blueprint-continuation
+    // values are keyed on those fields, so a seat-1 actor after a
+    // previous-street bet was reading the WRONG infoset. Swap them like
+    // every other per-seat field. Value 2 is the "no aggressor" sentinel
+    // and must pass through unchanged.
+    m.street_aggressor = match m.street_aggressor { 0 => 1, 1 => 0, a => a };
+    m.prev_street_aggressor = match m.prev_street_aggressor { 0 => 1, 1 => 0, a => a };
     m
 }
 
