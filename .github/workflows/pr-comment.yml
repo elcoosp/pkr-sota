@@ -20,6 +20,10 @@ jobs:
           shared-key: bench-release
           cache-targets: true
 
+      - name: Compute cache key
+        id: key
+        run: echo "k=$(./ci/cache-key.sh)" >> $GITHUB_OUTPUT
+
       - name: Restore smoke artifacts
         uses: actions/cache@v4
         with:
