@@ -121,10 +121,13 @@ fn roundtrip_cdf_survives_byte_for_byte() {
 }
 
 /// The fallback advice must produce a valid non-degenerate CDF:
-/// monotonic non-decreasing, last byte = 255, len = 6, first byte > 0
-/// and < 200 (so it is neither all-fold nor never-fold).
+/// monotonic non-decreasing, last byte = 255, length = NUM_ACTION_BUCKETS
+/// (K=7 since 2026-10-10; this test pinned `len == 6` until the C2 audit
+/// fix, which changed the fallback from a K=6 fossil to K=7), first byte
+/// > 0 and < 200 (so it is neither all-fold nor never-fold).
 #[test]
 fn fallback_advice_is_safe() {
+    use pkr_core::abstraction::NUM_ACTION_BUCKETS;
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let keys: [u64; 0] = [];
     let cdfs: [[u8; K]; 0] = [];
@@ -132,14 +135,17 @@ fn fallback_advice_is_safe() {
     let reader = MmapReader::new(tmp.path()).unwrap();
     let handle = SolverHandle::new(reader);
     let fb = handle.fallback_advice();
-    assert_eq!(fb.len, 6);
-    for i in 1..6 {
+    assert_eq!(
+        fb.len as usize, NUM_ACTION_BUCKETS,
+        "fallback_advice must be K = NUM_ACTION_BUCKETS"
+    );
+    for i in 1..NUM_ACTION_BUCKETS {
         assert!(
             fb.cdf_probabilities[i] >= fb.cdf_probabilities[i - 1],
             "CDF must be monotonic"
         );
     }
-    assert_eq!(fb.cdf_probabilities[5], 255);
+    assert_eq!(fb.cdf_probabilities[NUM_ACTION_BUCKETS - 1], 255);
     assert!(
         fb.cdf_probabilities[0] > 0,
         "must have some fold probability"
