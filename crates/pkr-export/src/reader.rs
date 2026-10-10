@@ -63,7 +63,12 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
     if &fh.magic != MAGIC {
         return Err(ReadError::BadMagic(fh.magic));
     }
-    if fh.version < FORMAT_VERSION_V3 || fh.version > FORMAT_VERSION_V4 {
+    // m12 (audit 2026-10-10): the runtime MmapReader accepts v2; this
+    // reader rejected it. A v2 file loaded at runtime but failed here,
+    // hiding v2 regressions. Accept v2 too.
+    if fh.version < pkr_export::header::FORMAT_VERSION_V2
+        || fh.version > FORMAT_VERSION_V4
+    {
         return Err(ReadError::UnsupportedVersion(fh.version));
     }
     if fh.hash_algo != HASH_ALGO_FNV1A64_INFOSET {

@@ -680,10 +680,14 @@ impl AbstractionBuilder for KMeansAbstraction {
             let w = 0.5 + 0.5 * (low as f64 / threshold as f64);
             (hand_bucket - 1, w as f32)
         } else if low > tier_size - threshold {
-            // Near upper boundary: blend with tier above.
+            // Near upper boundary: blend with tier above. Clamp to the
+            // highest tier reachable by `hand_rank >> tier_bits` so the
+            // secondary hash cannot point past the tier range training
+            // saw (it would be an automatic miss for the consumer).
             let dist = low - (tier_size - threshold);
             let w = 1.0 - 0.5 * (dist as f64 / threshold as f64);
-            (hand_bucket + 1, w as f32)
+            let max_tier = (u32::MAX as u64) >> tier_bits;
+            (hand_bucket.saturating_add(1).min(max_tier), w as f32)
         } else {
             return pkr_contracts::SoftHash::hard(primary);
         };
