@@ -259,7 +259,7 @@ pub fn lookup_from_table<'a>(
         // history_signature at preflop start is 0.
         let history: [u8; 4] = 0u32.to_le_bytes();
         let hash = abstraction.get_infoset_hash(&hole, &[], &history, 0);
-        let mut strat = [0.0f32; 6];
+        let mut strat = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
         table.get_average_strategy_into(hash, &mut strat);
         // Open frequency = 1 - P(fold). Fold is bucket 0.
         1.0 - strat[0]

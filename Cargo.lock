@@ -1192,6 +1192,7 @@ dependencies = [
  "criterion",
  "pkr-cfr",
  "pkr-contracts",
+ "pkr-core",
 ]
 
 [[package]]

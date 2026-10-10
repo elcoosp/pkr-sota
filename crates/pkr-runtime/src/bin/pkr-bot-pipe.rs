@@ -168,10 +168,10 @@ fn main() {
         // actions by bucket, sample one, emit the incr token.
         let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
         let n = st.legal_actions_into(&mut buf);
-        let mut probs = [0.0f32; 6];
+        let mut probs = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
         if let Some(a) = solver.get_advice_fast(hash) {
             let mut prev = 0u16;
-            let m = (a.len as usize).min(6);
+            let m = (a.len as usize).min(pkr_core::abstraction::NUM_ACTION_BUCKETS);
             for i in 0..m {
                 let cc = a.cdf_probabilities[i] as u16;
                 probs[i] = (cc.saturating_sub(prev)) as f32 / 255.0;
@@ -179,14 +179,14 @@ fn main() {
             }
         }
         let actor = st.actor;
-        let mut b2a: [Option<usize>; 6] = [None; 6];
+        let mut b2a: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
         for (i, act) in buf.iter().take(n).enumerate() {
             let b = pkr_core::abstraction::action_bucket(
                 &act.kind, st.stacks[actor], st.street_bets[actor],
                 st.street_bets[1 - actor], st.pot) as usize;
-            if b < 6 && b2a[b].is_none() { b2a[b] = Some(i); }
+            if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && b2a[b].is_none() { b2a[b] = Some(i); }
         }
-        let total: f32 = (0..6).filter(|&b| b2a[b].is_some()).map(|b| probs[b]).sum();
+        let total: f32 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).filter(|&b| b2a[b].is_some()).map(|b| probs[b]).sum();
         let chosen: Option<Action> = if n == 0 {
             None
         } else if total > 1e-9 {
@@ -198,15 +198,15 @@ fn main() {
                 None => rand::rng().random_range(0.0..total),
             };
             let mut acc = 0.0f32;
-            let mut pick = (0..6).find(|&b| b2a[b].is_some()).unwrap_or(0);
-            for b in 0..6 {
+            let mut pick = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find(|&b| b2a[b].is_some()).unwrap_or(0);
+            for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
                 if b2a[b].is_none() { continue; }
                 acc += probs[b];
                 if r <= acc { pick = b; break; }
             }
             b2a[pick].map(|i| buf[i])
         } else {
-            (0..6).find_map(|b| b2a[b].map(|i| buf[i]))
+            (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find_map(|b| b2a[b].map(|i| buf[i]))
         };
         let token = match chosen.map(|a| a.kind) {
             Some(ActionKind::Fold) => "f".to_string(),

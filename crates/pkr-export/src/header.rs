@@ -62,14 +62,14 @@ pub struct TranslationTableHeader {
 pub struct AnchorsSection {
     /// [preflop, flop, turn, river] × [small, medium, large] in pot fractions.
     /// Preflop row is all zeros (no partial bet sizes preflop in this abstraction).
-    pub anchors: [[f32; 3]; 4],
+    pub anchors: [[f32; 4]; 4],
 }
 
 /// The concrete anchors used by the trainer. Mirror of
 /// `crates/pkr-core/src/state.rs`'s bet-size loop. When those change,
 /// regenerate abstraction tables and re-export.
-pub const ANCHORS: [[f32; 3]; 4] = [
-    [0.0, 0.0, 0.0],
+pub const ANCHORS: [[f32; 4]; 4] = [
+    [0.0, 0.0, 0.0, 0.0],
     pkr_core::abstraction::BET_SIZINGS,
     pkr_core::abstraction::BET_SIZINGS,
     pkr_core::abstraction::BET_SIZINGS,
@@ -79,7 +79,7 @@ pub const ANCHORS: [[f32; 3]; 4] = [
 const _: () = assert!(std::mem::size_of::<FileHeader>() == 32);
 const _: () = assert!(std::mem::size_of::<FmphHeader>() == 40);
 const _: () = assert!(std::mem::size_of::<TranslationTableHeader>() == 16);
-const _: () = assert!(std::mem::size_of::<AnchorsSection>() == 48);
+const _: () = assert!(std::mem::size_of::<AnchorsSection>() == 64);
 const _: () = assert!(std::mem::size_of::<pkr_core::abstraction::AbstractionFingerprint>() == 40);
 
 #[cfg(test)]
@@ -95,6 +95,6 @@ mod c3_anchor_tests {
                 "ANCHORS[{street}] drifted from BET_SIZINGS"
             );
         }
-        assert_eq!(ANCHORS[0], [0.0, 0.0, 0.0]);
+        assert_eq!(ANCHORS[0], [0.0, 0.0, 0.0, 0.0]);
     }
 }

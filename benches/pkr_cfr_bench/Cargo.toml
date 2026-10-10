@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+pkr-core = { workspace = true }
 pkr-cfr = { workspace = true }
 pkr-contracts = { workspace = true }
 

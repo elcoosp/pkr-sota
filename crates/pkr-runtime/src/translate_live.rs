@@ -68,28 +68,36 @@ pub fn pseudo_harmonic_prob_lower(a: f32, b: f32, x: f32) -> f32 {
 ///   [`pseudo_harmonic_prob_lower`]. Window endpoints map
 ///   deterministically to their own bucket.
 pub fn translate_bet(x: f32, jam_frac: f32, rng: &mut impl rand::Rng) -> u8 {
-    // Anchor fractions and their buckets. The jam anchor moves with the
-    // stacks; the pot-fraction anchors are the abstract game's sizings.
-    let jam = if jam_frac.is_finite() { jam_frac } else { f32::INFINITY };
-    if x <= 0.5 {
-        return 2;
-    }
+    use pkr_core::abstraction::{BET_SIZINGS, FIRST_BET_BUCKET, JAM_BUCKET};
+    // Derive the ladder from the abstraction constants so it can never
+    // drift again (it did once: K=6->7 left jams mapping to bucket 5).
+    let jam = jam_frac;
     if x >= jam {
-        return 5;
+        return JAM_BUCKET;
     }
-    let (a, b, lower, upper) = if x < 1.0 {
-        (0.5f32, 1.0f32, 2u8, 3u8)
-    } else if x < 2.0 {
-        (1.0f32, 2.0f32, 3u8, 4u8)
-    } else {
-        (2.0f32, jam, 4u8, 5u8)
-    };
-    let p_lower = pseudo_harmonic_prob_lower(a, b, x);
-    if rng.random::<f32>() < p_lower {
-        lower
-    } else {
-        upper
+    let n = BET_SIZINGS.len();
+    if x <= BET_SIZINGS[0] {
+        return FIRST_BET_BUCKET;
     }
+    for i in 0..n {
+        let a = BET_SIZINGS[i];
+        let (b, upper) = if i + 1 < n && BET_SIZINGS[i + 1] < jam {
+            (BET_SIZINGS[i + 1], FIRST_BET_BUCKET + (i + 1) as u8)
+        } else if jam.is_finite() {
+            (jam, JAM_BUCKET)
+        } else {
+            return FIRST_BET_BUCKET + i as u8; // no jam window
+        };
+        if x < b {
+            let p = pseudo_harmonic_prob_lower(a, b, x);
+            return if rng.random::<f32>() < p {
+                FIRST_BET_BUCKET + i as u8
+            } else {
+                upper
+            };
+        }
+    }
+    JAM_BUCKET
 }
 
 /// Map an observed bet (total street commitment) to the in-tree abstract
@@ -164,21 +172,24 @@ mod tests {
 
     #[test]
     fn translate_bet_deterministic_at_boundaries() {
+        use pkr_core::abstraction::JAM_BUCKET;
         let mut rng = SmallRng::seed_from_u64(42);
         // Below/at the small anchor → 2 regardless of draw.
         for _ in 0..25 {
             assert_eq!(translate_bet(0.5, 8.0, &mut rng), 2);
             assert_eq!(translate_bet(0.1, 8.0, &mut rng), 2);
         }
-        // At pot-fraction anchors → the anchor's own bucket.
+        // At each pot-fraction anchor → the anchor's own bucket
+        // (K=7: 0.5→2, 1.0→3, 2.0→4, 3.0→5).
         for _ in 0..25 {
             assert_eq!(translate_bet(1.0, 8.0, &mut rng), 3);
             assert_eq!(translate_bet(2.0, 8.0, &mut rng), 4);
+            assert_eq!(translate_bet(3.0, 8.0, &mut rng), 5);
         }
-        // At/above jam → 5.
+        // At/above jam → JAM_BUCKET (6).
         for _ in 0..25 {
-            assert_eq!(translate_bet(8.0, 8.0, &mut rng), 5);
-            assert_eq!(translate_bet(20.0, 8.0, &mut rng), 5);
+            assert_eq!(translate_bet(8.0, 8.0, &mut rng), JAM_BUCKET);
+            assert_eq!(translate_bet(20.0, 8.0, &mut rng), JAM_BUCKET);
         }
     }
 
@@ -191,9 +202,49 @@ mod tests {
             assert!(b == 2 || b == 3, "b={b}");
             let b = translate_bet(1.5, 8.0, &mut rng);
             assert!(b == 3 || b == 4, "b={b}");
-            let b = translate_bet(4.0, 8.0, &mut rng);
+            let b = translate_bet(2.5, 8.0, &mut rng);
             assert!(b == 4 || b == 5, "b={b}");
+            let b = translate_bet(4.0, 8.0, &mut rng);
+            assert!(b == 5 || b == 6, "b={b}");
         }
+    }
+
+    /// Round-trip: every legal in-tree bet must translate to the SAME
+    /// bucket `action_bucket` assigns it (500 draws each). This is the
+    /// guard that would have caught the K=6->7 jam drift.
+    #[test]
+    fn translate_matches_action_bucket_on_all_legal_bets() {
+        use pkr_core::abstraction::action_bucket;
+        use pkr_core::state::{Action, ActionKind, GameState};
+        let mut rng = SmallRng::seed_from_u64(2024);
+        let mut st = GameState::new(200.0, 1.0, 2.0);
+        st.set_hole_cards([0, 5], [10, 15]);
+        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.advance_street_in_place(&[20, 25, 30]);
+        // Now P0 to act postflop.
+        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = st.legal_actions_into(&mut buf);
+        let a = st.actor;
+        let mut checked = 0;
+        for act in buf.iter().take(n) {
+            if let ActionKind::Bet(total) = act.kind {
+                let committed = st.street_bets[a].max(st.street_bets[1 - a]);
+                let pot = if st.pot < 1.2 { 1.2 } else { st.pot };
+                let x = (total - committed).max(0.0) / pot;
+                let jam_frac = (st.stacks[a] + st.street_bets[a] - committed) / pot;
+                let want = action_bucket(
+                    &act.kind, st.stacks[a], st.street_bets[a],
+                    st.street_bets[1 - a], st.pot,
+                );
+                for _ in 0..500 {
+                    let got = translate_bet(x, jam_frac, &mut rng);
+                    assert_eq!(got, want, "bet total={total} x={x} jam={jam_frac}");
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked >= 2, "expected several in-tree bets, got {checked}");
     }
 
     #[test]
@@ -215,9 +266,13 @@ mod tests {
 
     #[test]
     fn infinite_jam_frac_disables_jam_window() {
+        use pkr_core::abstraction::BET_SIZINGS;
         let mut rng = SmallRng::seed_from_u64(99);
+        // No jam window: a size beyond the last anchor clamps to the
+        // last anchor's bucket (K=7: 3.0 -> 5).
         for _ in 0..50 {
-            assert_eq!(translate_bet(5.0, f32::INFINITY, &mut rng), 4);
+            assert_eq!(translate_bet(5.0, f32::INFINITY, &mut rng),
+                       2 + (BET_SIZINGS.len() - 1) as u8);
         }
     }
 }

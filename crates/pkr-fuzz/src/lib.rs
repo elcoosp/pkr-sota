@@ -398,7 +398,7 @@ pub struct EvalContext<'a> {
     pub search: Option<&'a dyn pkr_runtime::subgame::SearchHandle>,
 }
 
-const K_BUCKETS: usize = 6;
+const K_BUCKETS: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
 
 /// Decode a u8 CDF into a probability vector of length K_BUCKETS.
 fn decode_cdf_into(advice: &pkr_contracts::SotaAdvice, out: &mut [f32; K_BUCKETS]) {
@@ -461,19 +461,19 @@ fn decide_from_blueprint(
             let hole = state.hole[state.actor];
             if let Some(strat) = sh.decide(state, &hole, &uniform) {
                 // map buckets -> representative legal actions
-                let mut b2a: [Option<usize>; 6] = [None; 6];
+                let mut b2a: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
                 for (i, a) in buf.iter().take(n_legal).enumerate() {
                     let b = pkr_core::abstraction::action_bucket(
                         &a.kind, state.stacks[state.actor], state.street_bets[state.actor],
                         state.street_bets[1 - state.actor], state.pot) as usize;
-                    if b < 6 && b2a[b].is_none() { b2a[b] = Some(i); }
+                    if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && b2a[b].is_none() { b2a[b] = Some(i); }
                 }
-                let total: f64 = (0..6).filter(|&b| b2a[b].is_some()).map(|b| strat[b]).sum();
+                let total: f64 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).filter(|&b| b2a[b].is_some()).map(|b| strat[b]).sum();
                 if total > 1e-9 {
                     let r: f64 = rng.random::<f64>() * total;
                     let mut acc = 0.0;
-                    let mut pick = (0..6).find(|&b| b2a[b].is_some()).unwrap_or(0);
-                    for b in 0..6 {
+                    let mut pick = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find(|&b| b2a[b].is_some()).unwrap_or(0);
+                    for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
                         if b2a[b].is_none() { continue; }
                         acc += strat[b];
                         if r <= acc { pick = b; break; }

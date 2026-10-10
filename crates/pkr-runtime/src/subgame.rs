@@ -43,7 +43,7 @@ use std::sync::Arc;
 
 /// Which streets the handle will solve. Preflop and flop are always
 /// `false` in practice — the subgame tree doesn't scale that far.
-pub const SUBGAME_BUCKETS: usize = 6;
+pub const SUBGAME_BUCKETS: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
 
 #[derive(Clone)]
 pub struct SubgameConfig {

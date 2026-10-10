@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Write;
 
 const MAGIC: &[u8; 8] = b"PKRSOTA1";
-const K: usize = 6;
+const K: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
 
 /// Quantise a probability vector to a monotone u8 CDF that ALWAYS
 /// closes at 255 on the last action with non-zero probability. This
@@ -81,7 +81,7 @@ pub(crate) fn quantize_cdf(strat: &[f32; K]) -> [u8; K] {
 /// Write a complete blueprint file.
 ///
 /// v4 layout:
-///   [FileHeader:32][AnchorsSection:48][Fingerprint:40][key_count:u32][cdf_size:u32][keys][cdf]
+///   [FileHeader:32][AnchorsSection:64][Fingerprint:40][key_count:u32][cdf_size:u32][keys][cdf]
 ///
 /// Keys are u64 ascending; CDFs are K bytes per key with monotonic
 /// non-decreasing values ending at 255.
@@ -184,8 +184,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn anchors_section_size_is_48() {
-        assert_eq!(std::mem::size_of::<AnchorsSection>(), 48);
+    fn anchors_section_size_is_64() {
+        assert_eq!(std::mem::size_of::<AnchorsSection>(), 64);
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod v4_layout_tests {
     /// The v4 blueprint file size is a deterministic function of the
     /// key count:
     ///
-    ///   [FileHeader:32][Anchors:48][Fingerprint:40][kc:4][cs:4][keys:8N][cdf:6N]
+    ///   [FileHeader:32][Anchors:64][Fingerprint:40][kc:4][cs:4][keys:8N][cdf:6N]
     ///   = 128 + 14N
     ///
     /// This pins the on-disk layout. If any section size changes, this
@@ -221,7 +221,7 @@ mod v4_layout_tests {
 
         let _ = write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
 
-        let expected = 32 + 48 + 40 + 4 + 4 + 8 * keys.len() + 6 * keys.len();
+        let expected = 32 + 64 + 40 + 4 + 4 + 8 * keys.len() + 7 * keys.len();
         let actual = std::fs::metadata(tmp.path()).unwrap().len() as usize;
         assert_eq!(
             actual,
@@ -244,8 +244,8 @@ mod v4_layout_tests {
         let _ = write_blueprint(tmp.path().to_str().unwrap(), &table, &keys, &fp);
 
         let bytes = std::fs::read(tmp.path()).unwrap();
-        // Fingerprint at offset 32 + 48 = 80, length 40.
-        let fp_bytes = &bytes[80..120];
+        // Fingerprint at offset 32 + 64 = 96, length 40.
+        let fp_bytes = &bytes[96..136];
         let stored: &pkr_core::abstraction::AbstractionFingerprint = bytemuck::from_bytes(fp_bytes);
         assert_eq!(*stored, fp);
     }
@@ -257,11 +257,11 @@ mod cdf_tests {
 
     #[test]
     fn cdf_is_monotone_and_closes_on_last_nonzero_action() {
-        let s = [0.2f32, 0.3, 0.5, 0.0, 0.0, 0.0];
+        let s = [0.2f32, 0.3, 0.5, 0.0, 0.0, 0.0, 0.0];
         let c = quantize_cdf(&s);
         assert!(c.windows(2).all(|w| w[0] <= w[1]));
         assert_eq!(c[2], 255);
-        assert_eq!(c[5], 255);
+        assert_eq!(c[6], 255);
         assert!(c[1] < 255);
     }
 
@@ -273,7 +273,7 @@ mod cdf_tests {
 
     #[test]
     fn rounds_to_nearest_without_overshoot() {
-        let s = [0.333f32, 0.333, 0.334, 0.0, 0.0, 0.0];
+        let s = [0.333f32, 0.333, 0.334, 0.0, 0.0, 0.0, 0.0];
         let c = quantize_cdf(&s);
         for i in 0..K {
             assert!(c[i] >= c[i.saturating_sub(1)]);
@@ -343,7 +343,7 @@ mod f8_purify_tests {
     /// Threshold 0 is a no-op.
     #[test]
     fn zero_threshold_is_identity() {
-        let mut s = [0.1f32, 0.2, 0.05, 0.15, 0.4, 0.1];
+        let mut s = [0.1f32, 0.2, 0.05, 0.15, 0.4, 0.1, 0.0];
         let orig = s;
         purify(&mut s, 0.0);
         assert_eq!(s, orig);
@@ -352,7 +352,7 @@ mod f8_purify_tests {
     /// Below-threshold entries are zeroed and the rest renormalize to 1.
     #[test]
     fn below_threshold_zeroed_and_renormalized() {
-        let mut s = [0.01f32, 0.49, 0.01, 0.49, 0.0, 0.0];
+        let mut s = [0.01f32, 0.49, 0.01, 0.49, 0.0, 0.0, 0.0];
         purify(&mut s, 0.05);
         assert_eq!(s[0], 0.0);
         assert_eq!(s[2], 0.0);
@@ -367,7 +367,7 @@ mod f8_purify_tests {
     /// function can't accidentally turn a 45/55 into a pure strategy.
     #[test]
     fn two_live_actions_are_protected() {
-        let mut s = [0.02f32, 0.98, 0.0, 0.0, 0.0, 0.0];
+        let mut s = [0.02f32, 0.98, 0.0, 0.0, 0.0, 0.0, 0.0];
         purify(&mut s, 0.1);
         assert_eq!(s[0], 0.02);
         assert_eq!(s[1], 0.98);
@@ -379,7 +379,7 @@ mod f8_purify_tests {
     /// survivors (p >= thresh).
     #[test]
     fn three_live_with_subthreshold_tails_not_collapsed() {
-        let mut s = [0.01f32, 0.01, 0.98, 0.0, 0.0, 0.0];
+        let mut s = [0.01f32, 0.01, 0.98, 0.0, 0.0, 0.0, 0.0];
         purify(&mut s, 0.1);
         assert_eq!(s[0], 0.01, "tail action must not be zeroed");
         assert_eq!(s[1], 0.01);
@@ -389,7 +389,7 @@ mod f8_purify_tests {
     /// All-action infoset: threshold removes the smallest two.
     #[test]
     fn many_live_actions_pruned() {
-        let mut s = [0.05f32, 0.5, 0.02, 0.4, 0.01, 0.02];
+        let mut s = [0.05f32, 0.5, 0.02, 0.4, 0.01, 0.02, 0.0];
         purify(&mut s, 0.03);
         assert_eq!(s[2], 0.0);
         assert_eq!(s[4], 0.0);

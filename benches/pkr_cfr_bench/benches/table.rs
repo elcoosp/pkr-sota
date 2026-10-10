@@ -14,7 +14,7 @@ use pkr_cfr::metrics::LocalMetrics;
 use pkr_cfr::table::CompactRegretTable;
 
 fn fill_table(t: &CompactRegretTable, n: u64) {
-    let mut out = [0.0f32; 6];
+    let mut out = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
     let mut m = LocalMetrics::default();
     for i in 0..n {
         let k = i.wrapping_mul(0x9E3779B97F4A7C15);
@@ -29,7 +29,7 @@ fn bench_get_or_create(c: &mut Criterion) {
             b.iter_batched(
                 || CompactRegretTable::with_capacity(200_000),
                 |t| {
-                    let mut out = [0.0f32; 6];
+                    let mut out = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
                     let mut m = LocalMetrics::default();
                     for i in 0..n {
                         let k = i.wrapping_mul(0x9E3779B97F4A7C15);
@@ -48,7 +48,7 @@ fn bench_lookup_hit(c: &mut Criterion) {
     fill_table(&t, 100_000);
     c.bench_function("table/get_strategy_into_hit/100k", |b| {
         b.iter(|| {
-            let mut out = [0.0f32; 6];
+            let mut out = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
             // Key 42*GOLDEN was inserted by fill_table -> lookup hit.
             t.get_strategy_into(black_box(42u64.wrapping_mul(0x9E3779B97F4A7C15)), &mut out);
             black_box(out)

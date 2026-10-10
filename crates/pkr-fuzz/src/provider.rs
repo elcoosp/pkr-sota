@@ -37,7 +37,7 @@ impl<'a> BlueprintProvider for TableProvider<'a> {
         // emitted an all-zero prefix, which a consumer decodes as
         // "bucket 0 gets 100% of the mass" — not uniform. The exporter
         // emits a uniform CDF instead. Same encoding now.
-        const K: usize = 6;
+        const K: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
         let total: f32 = strat.iter().sum();
         let mut out = [0u8; 16];
         if total.is_nan() || total <= 0.0 {

@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 let hash = abs_arc.get_infoset_hash(&hole, board, history, street);
-                let mut strat = [0.0f32; 6];
+                let mut strat = [0.0f32; 7];
                 table.get_average_strategy_into(hash, &mut strat);
 
                 // Look up the cluster id.

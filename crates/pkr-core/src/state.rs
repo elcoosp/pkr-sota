@@ -908,7 +908,10 @@ impl GameState {
         let tail: u64 = if self.street == Street::Preflop {
             let mut seq = 0u64;
             for i in 0..(self.abstract_history_len as usize).min(12) {
-                seq = seq * 7 + (self.abstract_history[i] as u64 + 1);
+                // K=7: buckets are 0 through 6, so pack base-7 digits with no +1
+                // which would overflow to digit 7). Length is carried by v3
+                // n_actions (bits 0..3), so the encoding stays unambiguous.
+                seq = seq * 7 + (self.abstract_history[i] as u64);
             }
             seq << 10
         } else {
@@ -1163,7 +1166,7 @@ mod c2_tests {
             s.street_bets[1 - s.actor],
             s.pot,
         );
-        assert_eq!(bucket, 5, "all-in total must bucket as 5, not 4");
+        assert_eq!(bucket, 6, "all-in total must bucket as 6 (K=7 jam)");
     }
 }
 
@@ -1172,7 +1175,7 @@ mod c1_5_tests {
     use super::*;
 
     // Sizings currently used by `legal_actions*` after T0.2.
-    const SIZINGS: [f32; 3] = crate::abstraction::BET_SIZINGS;
+    const SIZINGS: [f32; 4] = crate::abstraction::BET_SIZINGS;
 
     fn bets(buf: &[Action], n: usize) -> Vec<f32> {
         buf[..n]

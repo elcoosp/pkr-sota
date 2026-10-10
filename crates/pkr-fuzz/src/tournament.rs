@@ -222,18 +222,18 @@ fn decide_via(
         let hole = &state.hole[state.actor];
         if let Some(strat) = sh.decide(state, hole, &uniform) {
             // strat is bucket-indexed (6); sample a legal bucket.
-            let mut b2f: [Option<usize>; 6] = [None; 6];
+            let mut b2f: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
             for (i, a) in buf.iter().take(n).enumerate() {
                 let b = pkr_core::abstraction::action_bucket(
                     &a.kind, state.stacks[state.actor], state.street_bets[state.actor],
                     state.street_bets[1 - state.actor], state.pot) as usize;
-                if b < 6 && b2f[b].is_none() { b2f[b] = Some(i); }
+                if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && b2f[b].is_none() { b2f[b] = Some(i); }
             }
-            let total: f64 = (0..6).filter(|&b| b2f[b].is_some()).map(|b| strat[b]).sum();
+            let total: f64 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).filter(|&b| b2f[b].is_some()).map(|b| strat[b]).sum();
             if total > 1e-9 {
                 let r = rng.random_range(0.0..total);
                 let mut acc = 0.0; let mut pick = b2f.iter().position(|x| x.is_some()).unwrap_or(0);
-                for b in 0..6 {
+                for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
                     if b2f[b].is_none() { continue; }
                     acc += strat[b];
                     if r <= acc { pick = b; break; }
@@ -297,9 +297,9 @@ fn decide_via(
     };
 
     // Decode CDF into per-bucket probabilities.
-    let mut probs = [0.0f32; 6];
+    let mut probs = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
     let mut prev = 0u16;
-    let len = (advice.len as usize).min(6);
+    let len = (advice.len as usize).min(pkr_core::abstraction::NUM_ACTION_BUCKETS);
     for i in 0..len {
         let c = advice.cdf_probabilities[i] as u16;
         probs[i] = (c.saturating_sub(prev)) as f32 / 255.0;
@@ -307,7 +307,7 @@ fn decide_via(
     }
 
     // Bucket each legal action.
-    let mut bucket_to_first: [Option<usize>; 6] = [None; 6];
+    let mut bucket_to_first: [Option<usize>; pkr_core::abstraction::NUM_ACTION_BUCKETS] = [None; pkr_core::abstraction::NUM_ACTION_BUCKETS];
     for (i, a) in buf.iter().take(n).enumerate() {
         let b = pkr_core::abstraction::action_bucket(
             &a.kind,
@@ -316,21 +316,21 @@ fn decide_via(
             state.street_bets[1 - actor],
             state.pot,
         ) as usize;
-        if b < 6 && bucket_to_first[b].is_none() {
+        if (b as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS && bucket_to_first[b].is_none() {
             bucket_to_first[b] = Some(i);
         }
     }
 
     // Sample a bucket from the blueprint's distribution, restricted to
     // legal ones.
-    let total: f32 = (0..6)
+    let total: f32 = (0..pkr_core::abstraction::NUM_ACTION_BUCKETS)
         .filter(|&b| bucket_to_first[b].is_some())
         .map(|b| probs[b])
         .sum();
     let chosen_bucket = if total > 1e-9 {
         let mut r = rng.random_range(0.0..total);
         let mut pick = 0usize;
-        for b in 0..6 {
+        for b in 0..pkr_core::abstraction::NUM_ACTION_BUCKETS {
             if bucket_to_first[b].is_none() {
                 continue;
             }
@@ -344,7 +344,7 @@ fn decide_via(
         pick
     } else {
         // No blueprint mass on legal buckets: pick the first legal.
-        (0..6).find(|&b| bucket_to_first[b].is_some()).unwrap_or(0)
+        (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find(|&b| bucket_to_first[b].is_some()).unwrap_or(0)
     };
 
     let idx = bucket_to_first[chosen_bucket].unwrap_or(0);
@@ -619,6 +619,59 @@ mod tests {
         abs.init_table(2, dir.join("turn_abstraction.bin").to_str().unwrap()).unwrap();
         abs.init_table(3, dir.join("river_buckets.bin").to_str().unwrap()).unwrap();
         (abs, pkr_eval::NlheEvaluator)
+    }
+
+    /// A provider that puts 100% of the mass on the JAM bucket (6).
+    struct AllJam;
+    impl BlueprintProvider for AllJam {
+        fn lookup(&self, _h: u64) -> Option<SotaAdvice> {
+            let mut cdf = [255u8; 16];
+            // buckets 0..5 get 0 cumulative, then 255 at index 6.
+            for x in cdf.iter_mut().take(6) {
+                *x = 0;
+            }
+            cdf[6] = 255;
+            Some(SotaAdvice { cdf_probabilities: cdf, len: 7 })
+        }
+    }
+
+    /// Regression (K=6->7): the jam bucket (6) must be playable by
+    /// `decide_via`. Before the fix the decode loop was hard-coded to 6
+    /// buckets, so a 100%-jam provider was read as Fold.
+    #[test]
+    fn jam_bucket_is_playable_by_decide_via() {
+        use pkr_core::state::{ActionKind, GameState};
+        let ev = pkr_eval::NlheEvaluator;
+        let abs = pkr_abstraction::KMeansAbstraction::new(
+            vec![(0.5, 0.25)],
+            std::sync::Arc::new(pkr_eval::NlheEvaluator),
+        );
+        let ctx = EvalContext {
+            provider: &AllJam,
+            abstraction: &abs,
+            evaluator: &ev,
+            search: None,
+        };
+        // Postflop state, P0 to act -> can jam.
+        let mut st = GameState::new(200.0, 1.0, 2.0);
+        st.set_hole_cards([0, 5], [10, 15]);
+        st.apply_action_in_place(&pkr_core::state::Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        st.apply_action_in_place(&pkr_core::state::Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        st.advance_street_in_place(&[20, 25, 30]);
+        let mut rng = SmallRng::seed_from_u64(42);
+        let (act, used_bp) = decide_via(&ctx, &st, &mut rng);
+        assert!(used_bp, "provider had mass, must be used");
+        assert!(
+            matches!(act.kind, ActionKind::Bet(_)),
+            "100%-jam provider must bet/jam, got {:?}",
+            act.kind
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use pkr_core::state::{Action, ActionKind, GameState, Street};
 use rand::Rng;
 use rand::RngExt;
 
-const K: usize = 6;
+const K: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
 const MAX_DEPTH: u32 = 50;
 
 /// PKR_SKIP_FORCED=1 -> skip forced-move nodes (single legal bucket, e.g.
@@ -440,7 +440,7 @@ pub fn traverse(
                 v[a] = f32::NAN;
                 continue;
             }
-            if may_prune && strategy[a] == 0.0 && a != 5 && rng.random::<f32>() < 0.95 {
+            if may_prune && strategy[a] == 0.0 && a != pkr_core::abstraction::JAM_BUCKET as usize && rng.random::<f32>() < 0.95 {
                 v[a] = f32::NAN;
                 metrics.pruned_actions += 1;
                 continue;

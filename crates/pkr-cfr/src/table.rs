@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
-const K: usize = 6;
+const K: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
 /// Public alias for the action-bucket count, so other crates (e.g. the
 /// blueprint reader) can validate `max_actions_k` against the same
 /// constant the table strides by.
@@ -1506,7 +1506,7 @@ mod ckpt_v8_tests {
             CompactRegretTable::bytes_per_infoset(),
             (RM_STRIDE + SUM_STRIDE) * 8,
         );
-        assert_eq!(CompactRegretTable::bytes_per_infoset(), 96);
+        assert_eq!(CompactRegretTable::bytes_per_infoset(), 112);
         let t = CompactRegretTable::with_capacity(16);
         for k in 0..4u64 {
             t.get_or_create_idx(0xEE_0000 + k);
@@ -1517,7 +1517,7 @@ mod ckpt_v8_tests {
             "report must carry live count: {rep}"
         );
         assert!(
-            rep.contains(&format!("table_bytes={}", 4 * 96)),
+            rep.contains(&format!("table_bytes={}", 4 * 112)),
             "report bytes must equal len * bytes_per_infoset: {rep}"
         );
     }

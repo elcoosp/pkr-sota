@@ -121,7 +121,7 @@ impl MmapReader {
         //   v3: [FH:32][Anchors:48][key_count:4][cdf_size:4][keys][cdf]
         //   v4: [FH:32][Anchors:48][Fingerprint:40][key_count:4][cdf_size:4][keys][cdf]
         let after_file_header = std::mem::size_of::<FileHeader>();
-        let anchors_size = if file_header.version >= 3 { 48 } else { 0 };
+        let anchors_size = if file_header.version >= 3 { 64 } else { 0 };
         let fp_size = if file_header.version >= FORMAT_VERSION_V4 {
             std::mem::size_of::<pkr_core::abstraction::AbstractionFingerprint>()
         } else {
@@ -264,10 +264,10 @@ impl MmapReader {
     /// T2.1: per-street bet-size anchors. v3+ files store them after the
     /// header; v2 files return the compile-time default.
     #[inline]
-    pub fn anchors(&self) -> [[f32; 3]; 4] {
+    pub fn anchors(&self) -> [[f32; 4]; 4] {
         if self.file_header.version >= 3 {
             let base = std::mem::size_of::<FileHeader>();
-            let raw = &self.mmap[base..base + 48];
+            let raw = &self.mmap[base..base + 64];
             let s: &pkr_export::header::AnchorsSection = bytemuck::from_bytes(raw);
             s.anchors
         } else {

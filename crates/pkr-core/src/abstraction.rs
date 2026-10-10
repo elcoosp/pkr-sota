@@ -24,11 +24,16 @@ use crate::state::ActionKind;
 use bytemuck::{Pod, Zeroable};
 
 /// Number of abstract action buckets.
-pub const NUM_ACTION_BUCKETS: usize = 6;
+pub const NUM_ACTION_BUCKETS: usize = 7;
+
+/// First bucket used for a bet/raise (0 = fold, 1 = check/call).
+pub const FIRST_BET_BUCKET: u8 = 2;
+/// The jam bucket (top of the bucket range).
+pub const JAM_BUCKET: u8 = (NUM_ACTION_BUCKETS - 1) as u8;
 
 /// Concrete bet sizings in pot fractions. Length must match the
 /// `Bet` actions produced by `legal_actions*`.
-pub const BET_SIZINGS: [f32; 3] = [0.5, 1.0, 2.0];
+pub const BET_SIZINGS: [f32; 4] = [0.5, 1.0, 2.0, 3.0];
 
 /// River hand-tier quantization shift (T2.2, audit F6 follow-up).
 ///
@@ -41,10 +46,13 @@ pub const BET_SIZINGS: [f32; 3] = [0.5, 1.0, 2.0];
 /// increased infoset count ~2.5x without measurable quality improvement).
 pub const RIVER_TIER_SHIFT: u8 = 15;
 
-/// Bucket 2: raise size fraction < BUCKET_THRESHOLD_SMALL.
-pub const BUCKET_THRESHOLD_SMALL: f32 = 0.6;
-/// Bucket 3: BUCKET_THRESHOLD_SMALL <= fraction < BUCKET_THRESHOLD_LARGE.
-pub const BUCKET_THRESHOLD_LARGE: f32 = 1.2;
+/// Bucket 2: raise fraction < BUCKET_THRESHOLD_SMALL (0.5-pot size).
+pub const BUCKET_THRESHOLD_SMALL: f32 = 0.75;
+/// Bucket 3: SMALL <= fraction < BUCKET_THRESHOLD_MEDIUM (1.0-pot size).
+pub const BUCKET_THRESHOLD_MEDIUM: f32 = 1.5;
+/// Bucket 4: MEDIUM <= fraction < BUCKET_THRESHOLD_LARGE (2.0-pot size).
+/// Bucket 5: >= LARGE (3.0-pot size). Bucket 6: jam.
+pub const BUCKET_THRESHOLD_LARGE: f32 = 2.5;
 
 /// Map a concrete action to its abstract bucket (0..=5).
 ///
@@ -80,7 +88,7 @@ pub fn action_bucket(
         ActionKind::Check | ActionKind::Call => 1,
         ActionKind::Bet(amount) => {
             if *amount >= stacks + street_bets {
-                return 5;
+                return JAM_BUCKET; // jam
             }
             // Chips the actor adds above the current call obligation.
             let committed_before = street_bets.max(opp_street_bets);
@@ -89,10 +97,12 @@ pub fn action_bucket(
             let fraction = raise_size / pot;
             if fraction < BUCKET_THRESHOLD_SMALL {
                 2
-            } else if fraction < BUCKET_THRESHOLD_LARGE {
+            } else if fraction < BUCKET_THRESHOLD_MEDIUM {
                 3
-            } else {
+            } else if fraction < BUCKET_THRESHOLD_LARGE {
                 4
+            } else {
+                5
             }
         }
     }
@@ -202,14 +212,14 @@ mod c3_tests {
         // Postflop: no street bets, pot 4, stack 198.
         let (stacks, sb, opp) = (198.0f32, 0.0f32, 0.0f32);
         let pot = 4.0f32;
-        for (frac, want) in [(0.5, 2u8), (1.0, 3), (2.0, 4)] {
+        for (frac, want) in [(0.5, 2u8), (1.0, 3), (2.0, 4), (3.0, 5)] {
             let amt = sb + pot * frac;
             let got = action_bucket(&ActionKind::Bet(amt), stacks, sb, opp, pot);
             assert_eq!(got, want, "postflop frac {frac} amt {amt}");
         }
         assert_eq!(
             action_bucket(&ActionKind::Bet(stacks + sb), stacks, sb, opp, pot),
-            5,
+            6,
             "all-in bucket"
         );
     }
@@ -220,14 +230,14 @@ mod c3_tests {
         // pot = 4. The raise TOTAL is opp + pot*frac.
         let (stacks, sb, opp) = (198.0f32, 2.0f32, 2.0f32);
         let pot = 4.0f32;
-        for (frac, want) in [(0.5, 2u8), (1.0, 3), (2.0, 4)] {
+        for (frac, want) in [(0.5, 2u8), (1.0, 3), (2.0, 4), (3.0, 5)] {
             let amt = opp + pot * frac;
             let got = action_bucket(&ActionKind::Bet(amt), stacks, sb, opp, pot);
             assert_eq!(got, want, "preflop limp frac {frac} amt {amt}");
         }
         assert_eq!(
             action_bucket(&ActionKind::Bet(stacks + sb), stacks, sb, opp, pot),
-            5,
+            6,
             "all-in bucket"
         );
     }
@@ -238,7 +248,7 @@ mod c3_tests {
         // pot = 8. Total = opp + pot*frac.
         let (stacks, sb, opp) = (198.0f32, 2.0f32, 6.0f32);
         let pot = 8.0f32;
-        for (frac, want) in [(0.5, 2u8), (1.0, 3), (2.0, 4)] {
+        for (frac, want) in [(0.5, 2u8), (1.0, 3), (2.0, 4), (3.0, 5)] {
             let amt = opp + pot * frac;
             let got = action_bucket(&ActionKind::Bet(amt), stacks, sb, opp, pot);
             assert_eq!(got, want, "re-raise frac {frac} amt {amt}");
@@ -272,7 +282,7 @@ mod c3_tests {
                     "cfg (sb={sb}, opp={opp}, pot={pot}) frac {frac} → bucket {b} collides"
                 );
             }
-            assert_eq!(seen.len(), 3);
+            assert_eq!(seen.len(), 4);
         }
     }
 
@@ -339,7 +349,8 @@ pub struct AbstractionFingerprint {
     pub flop_k: u32,
     /// Number of river board buckets (currently untracked; 0).
     pub river_buckets: u32,
-    /// Pot-fraction sizings, must equal `BET_SIZINGS`.
+    /// Pot-fraction sizings. Records BET_SIZINGS[0..3]; with 4 sizes the
+    /// 4th is covered by `action_legal_v` (=2).
     pub sizing_small: f32,
     pub sizing_medium: f32,
     pub sizing_large: f32,
@@ -443,7 +454,7 @@ impl AbstractionFingerprint {
             },
             hash_algo: pkr_contracts::HASH_ALGO_FNV1A64_INFOSET,
             river_tier_shift: RIVER_TIER_SHIFT,
-            action_legal_v: 1,
+            action_legal_v: 2,
             centroid_feature_v,
             bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") { 2 } else { 1 },
             stack_bb_div2: crate::state::stack_bb_div2(),

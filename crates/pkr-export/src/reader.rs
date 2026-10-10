@@ -70,7 +70,7 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
         return Err(ReadError::BadHashAlgo(fh.hash_algo));
     }
 
-    let anchors_size = 48usize;
+    let anchors_size = 64usize;
     let fp_size = if fh.version >= FORMAT_VERSION_V4 { 40 } else { 0 };
     let after_header = fh_size + anchors_size + fp_size;
 
@@ -167,7 +167,7 @@ mod tests {
         let (dst, read_keys) = read_blueprint(&path).unwrap();
         assert_eq!(read_keys, keys);
 
-        let mut s = [0.0f32; 6];
+        let mut s = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
         dst.get_average_strategy_into(111, &mut s);
         assert!((s[0] - 0.5).abs() < 0.02, "s[0]={}", s[0]);
         assert!((s[1] - 0.5).abs() < 0.02, "s[1]={}", s[1]);

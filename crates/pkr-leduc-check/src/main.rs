@@ -17,7 +17,7 @@ use pkr_cfr::table::{CompactRegretTable, StrategyOp};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
-const K: usize = 6;
+const K: usize = 7;
 
 #[derive(Clone, Copy)]
 struct S {

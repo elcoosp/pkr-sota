@@ -69,7 +69,7 @@ fn main() {
     for cid in 0..200usize {
         if let Some(hole) = cluster_example[cid] {
             let hash = abs_arc.get_infoset_hash(&hole, board, hist, street);
-            let mut strat = [0.0f32; 6];
+            let mut strat = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
             trainer.get_table().get_average_strategy_into(hash, &mut strat);
             // bucket semantics: 0=Fold, 1=Call, 2..5=raises/all-in
             let fold = strat[0];

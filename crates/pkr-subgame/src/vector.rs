@@ -671,11 +671,11 @@ impl<'a> Solver<'a> {
                             if !self.valid_root[h] { continue; }
                             let hash = abs.get_infoset_hash(
                                 &self.holes[h], board, &an.sig[..an.sig_len as usize], street);
-                            let mut s = [0.0f32; 6];
+                            let mut s = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
                             tbl.get_average_strategy_into(hash, &mut s);
                             for a in 0..n {
                                 let b = an.buckets.get(a).copied().unwrap_or(0) as usize;
-                                per_act[a][h] = if b < 6 { s[b] } else { 0.0 };
+                                per_act[a][h] = if b < pkr_core::abstraction::NUM_ACTION_BUCKETS { s[b] } else { 0.0 };
                             }
                         }
                         per_act
@@ -965,17 +965,17 @@ impl<'a> Solver<'a> {
             }
             let hole = self.holes[h];
             let hash = abs.get_infoset_hash(&hole, &self.spec.board, history_sig, street);
-            let mut strat = [0.0f32; 6];
+            let mut strat = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
             tbl.get_average_strategy_into(hash, &mut strat);
-            let mut bucket_count = [0u8; 6];
+            let mut bucket_count = [0u8; pkr_core::abstraction::NUM_ACTION_BUCKETS];
             for &b in &bucket_of {
-                if b < 6 {
+                if b < pkr_core::abstraction::NUM_ACTION_BUCKETS {
                     bucket_count[b] = bucket_count[b].saturating_add(1);
                 }
             }
             for a in 0..n {
                 let b = bucket_of[a];
-                if b < 6 && bucket_count[b] > 0 {
+                if b < pkr_core::abstraction::NUM_ACTION_BUCKETS && bucket_count[b] > 0 {
                     out[a][h] = strat[b] / bucket_count[b] as f32;
                 }
             }

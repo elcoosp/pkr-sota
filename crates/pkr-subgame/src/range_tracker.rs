@@ -30,7 +30,7 @@ use pkr_eval::lookup::choose;
 use std::sync::OnceLock;
 
 pub const N_HANDS: usize = 1326;
-pub const N_BUCKETS: usize = 6;
+pub const N_BUCKETS: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
 
 #[derive(Debug)]
 pub enum RangeError {

@@ -847,7 +847,7 @@ pub fn nearest_centroid_6d(feat: &[f32; 6], centroids: &[[f32; 6]]) -> u64 {
         .min_by(|a, b| {
             let mut d1 = 0.0f32;
             let mut d2 = 0.0f32;
-            for k in 0..6 {
+            for k in 0..feat.len() {
                 let da = feat[k] - a.1[k];
                 let db = feat[k] - b.1[k];
                 d1 += da * da;

@@ -577,7 +577,7 @@ fn generate_turn_table(
                     let hole = [cards[pos[0]], cards[pos[1]]];
                     let mut board = [0u8; 4];
                     let mut b_idx = 0;
-                    for j in 0..6 {
+                    for j in 0..cards.len() {
                         if j != pos[0] && j != pos[1] {
                             board[b_idx] = cards[j];
                             b_idx += 1;
@@ -1168,7 +1168,7 @@ fn generate_turn_table_potential(
                     let hole = [cards[pos[0]], cards[pos[1]]];
                     let mut board = [0u8; 4];
                     let mut b_idx = 0;
-                    for j in 0..6 {
+                    for j in 0..cards.len() {
                         if j != pos[0] && j != pos[1] {
                             board[b_idx] = cards[j];
                             b_idx += 1;
@@ -1439,7 +1439,7 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
             }
             assignments[i] = best_idx;
             counts[best_idx] += 1;
-            for j in 0..6 {
+            for j in 0..point.len() {
                 sums[best_idx][j] += point[j];
             }
         }
@@ -1448,7 +1448,7 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
         for c_idx in 0..k {
             if counts[c_idx] > 0 {
                 let mut new_c = [0f32; 6];
-                for j in 0..6 {
+                for j in 0..new_c.len() {
                     new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
                 }
                 if (new_c[0] - centroids[c_idx][0]).abs() > 1e-6 {
@@ -1630,7 +1630,7 @@ fn sample_turn_features(
         let hole: [u8; 2] = [cards[pos[0]], cards[pos[1]]];
         let mut board = [0u8; 4];
         let mut bi = 0;
-        for j in 0..6 {
+        for j in 0..cards.len() {
             if j != pos[0] && j != pos[1] {
                 board[bi] = cards[j];
                 bi += 1;
@@ -1804,7 +1804,7 @@ fn generate_turn_rich_table(
                     let hole: [u8; 2] = [cards[pos[0]], cards[pos[1]]];
                     let mut board = [0u8; 4];
                     let mut bi = 0;
-                    for j in 0..6 {
+                    for j in 0..cards.len() {
                         if j != pos[0] && j != pos[1] {
                             board[bi] = cards[j];
                             bi += 1;

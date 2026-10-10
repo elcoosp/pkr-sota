@@ -13,7 +13,7 @@ use pkr_contracts::Evaluator;
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use pkr_eval::NlheEvaluator;
 
-const K: usize = 6;
+const K: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
 const MAX_RIVER_ITERATIONS: u32 = 200;
 
 /// A range over the remaining cards, represented as a bitmask of valid
@@ -298,9 +298,9 @@ mod tests {
     fn test_compute_strategy_uniform_on_zero_regret() {
         let state = GameState::new(100.0, 0.0, 0.0);
         let resolver = RiverResolver::new(&state, [0, 1], [2, 3], &[]);
-        let strat = resolver.compute_strategy(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let strat = resolver.compute_strategy(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         for p in &strat {
-            assert!((p - 1.0 / 6.0).abs() < 1e-6);
+            assert!((p - 1.0 / K as f32).abs() < 1e-6);
         }
     }
 
@@ -308,7 +308,7 @@ mod tests {
     fn test_compute_strategy_positive_regret() {
         let state = GameState::new(100.0, 0.0, 0.0);
         let resolver = RiverResolver::new(&state, [0, 1], [2, 3], &[]);
-        let strat = resolver.compute_strategy(&[0.0, 10.0, 0.0, 5.0, 0.0, 0.0]);
+        let strat = resolver.compute_strategy(&[0.0, 10.0, 0.0, 5.0, 0.0, 0.0, 0.0]);
         // Action 1 has regret 10, action 3 has regret 5
         // Total positive = 15
         // strat[1] = 10/15, strat[3] = 5/15
