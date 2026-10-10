@@ -134,6 +134,16 @@ pub fn solve_root_bounded(
     }
     iterate_budgeted(&mut solver, cfg);
 
+    // Phase 4.5: arm a decision-wide deadline so the BR walks below
+    // honour `time_budget_ms`. Without this a turn solve's binary search
+    // cost ~40 s because only `iterate_budgeted` was clocked.
+    if cfg.time_budget_ms > 0 {
+        solver.set_deadline(Some(
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(cfg.time_budget_ms),
+        ));
+    }
+
     let mut sig_buf = [0u8; 8];
     let sig_len = st.infoset_signature_into(&mut sig_buf);
     let history_sig = &sig_buf[..sig_len];
@@ -147,9 +157,26 @@ pub fn solve_root_bounded(
         return Some(solver.root_strategy(our_hand));
     };
 
-    let br_search = solver.opp_br_value();
+    let br_search = match solver.opp_br_value() {
+        Some(v) => v,
+        None => {
+            // Deadline fired during the search walk. Blueprint root is
+            // safe by construction; abandon search for this decision.
+            VSEARCH_BOUND_FELL_BACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            solver.set_root_strategy(&bp_root);
+            return Some(solver.root_strategy(our_hand));
+        }
+    };
     solver.set_root_strategy(&bp_root);
-    let br_bp = solver.opp_br_value();
+    let br_bp = match solver.opp_br_value() {
+        Some(v) => v,
+        None => {
+            // Deadline fired during the blueprint walk. bp_root is already
+            // installed, so its sampled action is the safe answer.
+            VSEARCH_BOUND_FELL_BACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(solver.root_strategy(our_hand));
+        }
+    };
 
     let final_root = if br_search <= br_bp {
         VSEARCH_BOUND_KEPT_SEARCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -171,12 +198,20 @@ pub fn solve_root_bounded(
             let mid = 0.5 * (lo + hi);
             let mixed = Solver::blend_root(&search_root, &bp_root, mid);
             solver.set_root_strategy(&mixed);
-            let br = solver.opp_br_value();
-            if br <= br_bp {
-                best = mixed;
-                lo = mid;
-            } else {
-                hi = mid;
+            match solver.opp_br_value() {
+                Some(br) => {
+                    if br <= br_bp {
+                        best = mixed;
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                None => {
+                    // Timed out mid-search. `best` already holds the best
+                    // SAFE blend found (it starts as bp_root).
+                    break;
+                }
             }
             if hi - lo < 1e-3 {
                 break;

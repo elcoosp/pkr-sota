@@ -4,7 +4,8 @@
 //! Carries the full 1326-hand range through every node (unlike the
 //! sampled-hand solver). Exact river enumeration; turn via chance nodes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -76,12 +77,21 @@ pub struct Solver<'a> {
     gadget_player: Option<u8>,
     /// Per-board showdown cache (single-threaded; `iterate` is serial).
     show_cache: RefCell<HashMap<u64, Arc<ShowTable>>>,
+    /// Phase 4.5: wall-clock deadline for expensive `opp_br_value` walks.
+    /// A turn tree is ~46x a river tree; without a deadline the binary
+    /// search could blow 40 s on ONE decision. When the deadline fires,
+    /// every subsequent `br()` call returns early with zero vectors and
+    /// sets `timed_out`; callers detect it via `timed_out()` and fall
+    /// back to the blueprint root (always safe).
+    deadline: Cell<Option<Instant>>,
+    /// Set when the deadline has fired at least once.
+    timed_out: Cell<bool>,
 }
 
 impl<'a> Solver<'a> {
     pub fn new(spec: Spec, eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync)) -> Self {
         let holes = hole_table();
-        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None, root_state: None, show_cache: RefCell::new(HashMap::new()) };
+        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None, root_state: None, show_cache: RefCell::new(HashMap::new()), deadline: Cell::new(None), timed_out: Cell::new(false) };
         s.valid_root = (0..N).map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c))).collect();
         for p in 0..2 { for h in 0..N { if !s.valid_root[h] { s.spec.ranges[p][h] = 0.0; } } }
         let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
@@ -535,6 +545,12 @@ impl<'a> Solver<'a> {
     }
 
     fn br(&self, node: &Node, p: usize, r_opp: &[f32]) -> Vec<f32> {
+        // Phase 4.5: abort the walk cleanly when the deadline fires.
+        // Returning a zero vector leaves the accumulated z/v sum intact
+        // (callers treat a timed-out walk as unusable and fall back).
+        if self.budget_exceeded() {
+            return vec![0.0f32; N];
+        }
         let sp = &self.spec;
         match node {
             Node::Fold { folder, inv } => {
@@ -828,6 +844,30 @@ impl<'a> Solver<'a> {
         } else { vec![] }
     }
     pub fn n_root_actions(&self) -> usize { self.p0_root().map(|an| an.acts.len()).unwrap_or(0) }
+
+    /// Install a wall-clock deadline for subsequent `opp_br_value` walks.
+    /// `None` clears it. The flag is decision-wide: once fired it stays
+    /// set until `set_deadline` is called again, so an over-budget solve
+    /// stops computing and picks a safe fallback.
+    pub fn set_deadline(&self, deadline: Option<Instant>) {
+        self.deadline.set(deadline);
+        self.timed_out.set(false);
+    }
+
+    pub fn timed_out(&self) -> bool { self.timed_out.get() }
+
+    /// True if the current walk should abort.
+    #[inline]
+    fn budget_exceeded(&self) -> bool {
+        if self.timed_out.get() { return true; }
+        if let Some(d) = self.deadline.get() {
+            if Instant::now() >= d {
+                self.timed_out.set(true);
+                return true;
+            }
+        }
+        false
+    }
     // -----------------------------------------------------------------
     // Safety-bound primitives (root-level blend toward the blueprint).
     //
@@ -890,14 +930,21 @@ impl<'a> Solver<'a> {
     /// Mirrors the appropriate term of `exploitability()`:
     /// `br(root, opp, ranges[1-opp])`, weighted by `ranges[opp]` with its
     /// compatibility against `ranges[1-opp]`.
-    pub fn opp_br_value(&self) -> f32 {
+    /// Phase 4.5: returns `None` if the walk exceeded the installed
+    /// deadline (`set_deadline`). Callers MUST fall back to the blueprint
+    /// root when this is `None`; a partial value would be unreliable and
+    /// could accept the search root unsafely.
+    pub fn opp_br_value(&self) -> Option<f32> {
         let root_actor = match &self.root {
             Node::Act(an) => an.player,
-            _ => return 0.0,
+            _ => return Some(0.0),
         };
         let opp = 1 - root_actor;
         let opp_range = &self.spec.ranges[1 - opp];
         let cf = self.br(&self.root, opp, opp_range);
+        if self.timed_out() {
+            return None;
+        }
         let mut z = 0.0f64;
         let mut v = 0.0f64;
         let mut tot_o = 0.0f32;
@@ -920,9 +967,9 @@ impl<'a> Solver<'a> {
             v += w * cf[h] as f64;
         }
         if z > 0.0 {
-            (v / z) as f32
+            Some((v / z) as f32)
         } else {
-            0.0
+            Some(0.0)
         }
     }
     /// The blueprint's strategy at the root, per action per hand, mapped
@@ -1224,9 +1271,9 @@ mod tests {
         let bp: Vec<Vec<f32>> = (0..n).map(|_| vec![1.0 / n as f32; N]).collect();
 
         s.set_root_strategy(&bp);
-        let bp_br = s.opp_br_value();
+        let bp_br = s.opp_br_value().unwrap();
         s.set_root_strategy(&search);
-        let search_br = s.opp_br_value();
+        let search_br = s.opp_br_value().unwrap();
 
         // Replicate solve_root_bounded's safety blend.
         let final_root = if search_br <= bp_br {
@@ -1239,14 +1286,14 @@ mod tests {
                 let mid = 0.5 * (lo + hi);
                 let mixed = Solver::blend_root(&search, &bp, mid);
                 s.set_root_strategy(&mixed);
-                let br = s.opp_br_value();
+                let br = s.opp_br_value().unwrap();
                 if br <= bp_br { best = mixed; lo = mid; } else { hi = mid; }
                 if hi - lo < 1e-3 { break; }
             }
             best
         };
         s.set_root_strategy(&final_root);
-        let final_br = s.opp_br_value();
+        let final_br = s.opp_br_value().unwrap();
         eprintln!(
             "bound safety: bp_br={bp_br:.4} search_br={search_br:.4} final_br={final_br:.4}"
         );
@@ -1671,7 +1718,7 @@ mod tests {
             }
         }
 
-        assert!(s.opp_br_value().is_finite());
+        assert!(s.opp_br_value().unwrap().is_finite());
 
         let blended = Solver::blend_root(&full, &full, 0.3);
         for a in 0..n_actions {
