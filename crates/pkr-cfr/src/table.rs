@@ -293,8 +293,8 @@ impl CompactRegretTable {
     pub fn with_capacity(capacity: usize) -> Self {
         // F7: allocate lazily-zeroed pages instead of eagerly writing
         // zeros with resize_with. At `capacity = 60_000_000` the data
-        // array is 60M * 6 * 8 = 2.88 GB and the strategy_sum array is
-        // 60M * 6 * 8 = 2.88 GB (S5: momentum plane removed, was 12
+        // array is 60M * 7 * 8 = 3.36 GB and the strategy_sum array is
+        // 60M * 7 * 8 = 3.36 GB (S5: momentum plane removed, was 12
         // wide). resize_with(_, AtomicI64::new(0))
         // touches every page up front; `vec![0i64; n]` goes through
         // `alloc_zeroed`, which on macOS/Linux gives anonymous
@@ -985,7 +985,8 @@ impl CompactRegretTable {
     /// Bytes of table backing storage per infoset, excluding the
     /// hash-map entry overhead (unmeasured): regret plane
     /// (`RM_STRIDE` i64 cells) + strategy sums (`SUM_STRIDE` f64
-    /// cells). S5: 6*8 + 6*8 = 96 B (was 144 B with momentum).
+    /// cells). Current: 7*8 + 7*8 = 112 B at K=7 (was 96 at K=6, 144 at
+    /// K=6 with the removed momentum plane).
     pub fn bytes_per_infoset() -> usize {
         (RM_STRIDE + SUM_STRIDE) * 8
     }
@@ -1082,6 +1083,23 @@ impl CompactRegretTable {
     ) -> std::io::Result<u32> {
         use std::io::Read;
         let mut f = std::fs::File::open(path)?;
+        let file_len = f.metadata()?.len();
+        // M-15 (audit 2026-10-10): loading a full 60M-capacity checkpoint
+        // held ~7.7 GB transient; combined with the live table this can
+        // OOM a 16 GB machine. Streaming the read is a larger refactor;
+        // until it lands, refuse to OOM: bound the read and tell the
+        // operator to reduce capacity or move to a machine with headroom.
+        const MAX_TRANSIENT_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
+        if file_len > MAX_TRANSIENT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "checkpoint is {} bytes; the streaming loader is not \
+yet wired. Reduce --capacity or run on a bigger machine.",
+                    file_len
+                ),
+            ));
+        }
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
         let mut p = 0usize;
@@ -1832,7 +1850,7 @@ mod f7_allocation_tests {
     /// A freshly constructed table with a large capacity must not be
     /// resident in full. We can't assert RSS from inside the test, but
     /// we can assert the allocation succeeds (would fail at capacity
-    /// * 96 B = 5.76 GB virtual on a 16 GB machine if it eagerly
+    /// * 112 B = 6.72 GB virtual on a 16 GB machine if it eagerly
     /// touched all pages).
     #[test]
     #[ignore]

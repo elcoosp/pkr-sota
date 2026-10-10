@@ -651,8 +651,22 @@ fn generate_turn_table(
     let mut table: Vec<u16> = vec![0u16; entries];
     let mut resume_from: usize = 0;
     if let Ok(prog_bytes) = std::fs::read(&prog_path) {
-        if prog_bytes.len() == 8 {
-            let p = u64::from_le_bytes(prog_bytes.try_into().unwrap()) as usize;
+        // M-24 (audit 2026-10-10): the progress marker used to be a bare
+        // u64. Resuming after a bucket-width flip (PKR_BUCKET_U16=0 vs 1)
+        // produced a mixed-width table. New format:
+        //   [width_marker:u8][done:u64le]  (9 bytes)
+        // Reject the mismatch. Old 8-byte files are accepted as legacy
+        // (assume the current width; a mismatch is the caller's problem).
+        if prog_bytes.len() == 9 {
+            let stored_u16 = prog_bytes[0] == 1u8;
+            if stored_u16 != bucket_u16() {
+                return Err(format!(
+                    "resume marker width mismatch: file says bucket_u16={}, \
+current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
+                    stored_u16, bucket_u16()
+                ).into());
+            }
+            let p = u64::from_le_bytes(prog_bytes[1..9].try_into().unwrap()) as usize;
             if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
                 if let Ok(disk) = std::fs::read(&tmp_path) {
                     let decoded = read_bucket_bytes(&disk);
@@ -740,6 +754,7 @@ fn generate_turn_table(
         f.sync_all().ok();
         let mut pf =
             File::create(&prog_path).map_err(|e| format!("create {}: {}", prog_path, e))?;
+        pf.write_all(&[if bucket_u16() { 1u8 } else { 0u8 }])?;
         pf.write_all(&(done as u64).to_le_bytes())
             .map_err(|e| format!("write {}: {}", prog_path, e))?;
         pf.sync_all().ok();
@@ -1256,8 +1271,22 @@ fn generate_turn_table_potential(
     let mut table: Vec<u8> = vec![0u8; entries];
     let mut resume_from: usize = 0;
     if let Ok(prog_bytes) = std::fs::read(&prog_path) {
-        if prog_bytes.len() == 8 {
-            let p = u64::from_le_bytes(prog_bytes.try_into().unwrap()) as usize;
+        // M-24 (audit 2026-10-10): the progress marker used to be a bare
+        // u64. Resuming after a bucket-width flip (PKR_BUCKET_U16=0 vs 1)
+        // produced a mixed-width table. New format:
+        //   [width_marker:u8][done:u64le]  (9 bytes)
+        // Reject the mismatch. Old 8-byte files are accepted as legacy
+        // (assume the current width; a mismatch is the caller's problem).
+        if prog_bytes.len() == 9 {
+            let stored_u16 = prog_bytes[0] == 1u8;
+            if stored_u16 != bucket_u16() {
+                return Err(format!(
+                    "resume marker width mismatch: file says bucket_u16={}, \
+current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
+                    stored_u16, bucket_u16()
+                ).into());
+            }
+            let p = u64::from_le_bytes(prog_bytes[1..9].try_into().unwrap()) as usize;
             if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
                 if let Ok(disk) = std::fs::read(&tmp_path) {
                     let copy = disk.len().min(table.len());
@@ -1329,6 +1358,7 @@ fn generate_turn_table_potential(
         f.write_all(&table).map_err(|e| format!("write {}: {}", tmp_path, e))?;
         f.sync_all().ok();
         let mut pf = File::create(&prog_path).map_err(|e| format!("create {}: {}", prog_path, e))?;
+        pf.write_all(&[if bucket_u16() { 1u8 } else { 0u8 }])?;
         pf.write_all(&(done as u64).to_le_bytes())
             .map_err(|e| format!("write {}: {}", prog_path, e))?;
         pf.sync_all().ok();
@@ -1902,8 +1932,22 @@ fn generate_turn_rich_table(
     let mut table: Vec<u8> = vec![0u8; entries];
     let mut resume_from: usize = 0;
     if let Ok(prog_bytes) = std::fs::read(&prog_path) {
-        if prog_bytes.len() == 8 {
-            let p = u64::from_le_bytes(prog_bytes.try_into().unwrap()) as usize;
+        // M-24 (audit 2026-10-10): the progress marker used to be a bare
+        // u64. Resuming after a bucket-width flip (PKR_BUCKET_U16=0 vs 1)
+        // produced a mixed-width table. New format:
+        //   [width_marker:u8][done:u64le]  (9 bytes)
+        // Reject the mismatch. Old 8-byte files are accepted as legacy
+        // (assume the current width; a mismatch is the caller's problem).
+        if prog_bytes.len() == 9 {
+            let stored_u16 = prog_bytes[0] == 1u8;
+            if stored_u16 != bucket_u16() {
+                return Err(format!(
+                    "resume marker width mismatch: file says bucket_u16={}, \
+current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
+                    stored_u16, bucket_u16()
+                ).into());
+            }
+            let p = u64::from_le_bytes(prog_bytes[1..9].try_into().unwrap()) as usize;
             if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
                 if let Ok(disk) = std::fs::read(&tmp_path) {
                     let copy = disk.len().min(table.len());
@@ -1963,6 +2007,7 @@ fn generate_turn_rich_table(
         f.sync_all().ok();
         let mut pf = File::create(&prog_path)
             .map_err(|e| format!("create {}: {}", prog_path, e))?;
+        pf.write_all(&[if bucket_u16() { 1u8 } else { 0u8 }])?;
         pf.write_all(&(done as u64).to_le_bytes())
             .map_err(|e| format!("write {}: {}", prog_path, e))?;
         pf.sync_all().ok();

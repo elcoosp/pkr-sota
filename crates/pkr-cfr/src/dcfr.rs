@@ -13,9 +13,10 @@
 //! visited a few dozen times, producing NaN and silently corrupting
 //! training. It is not available as an option.
 //!
-//! This module is the ONLY place regret updates are computed on the CPU
-//! path; the WGSL shader in gpu.rs mirrors the same math. Both use the
-//! same SCALE = 1000.0 fixed-point encoding.
+//! This module holds the CPU-side regret update helpers. The i64 path
+//! (`update_regret_with_step`) is production; the f32 helpers here are
+//! used by the baseline tests and the (feature-gated) GPU shader, which
+//! mirrors the same SCALE = 1000.0 fixed-point encoding.
 
 pub const ALPHA: f32 = 1.5;
 pub const BETA: f32 = 0.0;
@@ -120,8 +121,9 @@ pub fn update_regret_full(
     (new_regret, predicted_delta)
 }
 
-/// Production update: canonical discount, PCFR+ momentum on. This is
-/// what `flush_cpu_batch` calls.
+/// f32 reference update with PCFR+ momentum ON. The PRODUCTION path
+/// (`update_regret_with_step`) is momentum-OFF -- this fn is kept for
+/// the baseline tests only.
 #[inline(always)]
 #[allow(dead_code)] // superseded by update_regret_i64; kept for the f32 baseline
 pub fn update_regret_pfr_plus(

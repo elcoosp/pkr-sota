@@ -41,7 +41,7 @@ fn skip_forced_nodes() -> bool {
 /// intended strategy while ensuring every legal action has nonzero
 /// probability.
 ///
-/// F2: reads from `TrainConfig::global().avg_power` (default 2.0,
+/// F2: reads from `TrainConfig::global().avg_power` (default 1.0,
 /// matching the experiment config). Set PKR_AVG_POWER=0 to reproduce
 /// the historical uniform-averaging default.
 fn avg_weight_power() -> f32 {

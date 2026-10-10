@@ -42,7 +42,11 @@ pub fn class_of(rank: u32) -> usize {
     let idx = ((r - MIN_RANK) * N_CLASSES as u64) / span;
     (idx as usize).min(N_CLASSES - 1)
 }
-const MAX_TREE_DEPTH: u32 = 50;
+// M-38 (audit 2026-10-10): the recursion depth cap was 50 but the undo
+// stack on GameState holds only 48 entries. A tree that hit 50 would
+// silently corrupt the undo trail on unwind. Cap at 48 (the state's
+// limit). If the state's buffer grows, raise both together.
+const MAX_TREE_DEPTH: u32 = 48;
 
 /// Cap on chance-node children at build time. 0 = enumerate all (flop 47,
 /// turn 46). When set (env `PKR_SUBGAME_MAX_RIVERS=K`), a chance node
@@ -612,6 +616,15 @@ struct PublicTree {
 }
 
 fn build_tree(state: &mut GameState, nodes: &mut Vec<PublicNode>, depth: u32) -> u32 {
+    // M-34 (audit 2026-10-10): a preflop root would blow the 48-slot
+    // undo stack during enumeration. That was documented but not
+    // enforced. Assert here so a caller cannot silently get a fold
+    // leaf instead of a tree.
+    debug_assert!(
+        depth > 0 || state.street != Street::Preflop || state.is_terminal(),
+        "build_tree called with a preflop root; subgame solvers are \
+postflop-only (see docs/roadmap/subgame-solving-plan.md)"
+    );
     let idx = nodes.len() as u32;
     nodes.push(PublicNode::Fold { to_p0: 0.0 });
 
