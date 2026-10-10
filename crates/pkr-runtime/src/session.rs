@@ -233,7 +233,7 @@ impl<'a> RuntimeSession<'a> {
 
     /// Vector-search decision: build [OOP,IP] f32 ranges from the tracker,
     /// solve the current street, return the root distribution mapped to
-    /// the 6 action buckets.
+    /// the action buckets (count = NUM_ACTION_BUCKETS).
     fn advise_vsearch(
         &self,
         st: &GameState,
