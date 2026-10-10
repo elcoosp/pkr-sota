@@ -1,29 +1,39 @@
 # pkr-sota: Current Status
 
-**Last updated:** 2026-10-09
+**Last updated:** 2026-10-10
 
 This is the source of truth for what is actually implemented.
 
 ## Where the bot stands
 
 **Tier: weak-bot.** LBR (local best response) lower bound on the
-100M-iteration checkpoints:
+100M-iteration K=6 checkpoints:
 
 | checkpoint | LBR mbb/hand | exploiter |
 |---|---|---|
 | v4 (V4 sig) | 821 (default) / 997 (samples=2000) / 227 (in-tree only) | LBR |
 | v5 (V5 sig) | -2 (default) / 183 (samples=2000) / 29 (in-tree only) | LBR |
 
-Scale: superhuman HUNL bots ~50 mbb; competent < 500 mbb. So v4 is
-weak; v5 is HARDER to exploit by greedy LBR but only marginally ahead
-in self-play (see below). Not competitive.
+Scale: superhuman HUNL bots ~50 mbb; competent < 500 mbb. v4 is weak;
+v5 is HARDER to exploit by greedy LBR but only marginally ahead in
+self-play. Not competitive.
 
 **Caveats that matter:**
 - LBR is ONE greedy exploiter and has misled three times. The honest
   cross-process H2H (examples/v4v5_h2h.rs, CRN) shows V4 vs V5 are
   EQUAL in self-play (10k x 4 seeds, all |t|<1; V4 marginally ahead).
-- In-sample BR (the trainer's own number, ~6100 mbb) is NOT a strength
-  measure.
+- In-sample BR (the trainer's own number) is NOT a strength measure;
+  it fell 3796 -> 1707 -> 1222 as deals went 5k -> 20k -> 40k.
+
+## K=7 action abstraction (landed 2026-10-10)
+
+`NUM_ACTION_BUCKETS` 6 -> 7; `BET_SIZINGS` [0.5,1,2] -> [0.5,1,2,3];
+bucket 6 = jam. Checkpoint-invalidating by design. A K=7 baseline
+(100M iters, seed 42) is training now; its own LBR + search-vs-blueprint
+H2H decide whether K=7 becomes the base or we revert to K=6. All
+numbers in the table above are K=6 and remain suggestive only for K=7.
+K=6 and K=7 cannot meet in `tournament` or `lbr_eval`: stride + infoset
+key both differ. See `docs/experiments/k6-vs-k7-incomparable.md`.
 
 ## Search (runtime)
 
@@ -32,30 +42,33 @@ in self-play (see below). Not competitive.
   821->444, H2H +1.25.
 - **Shipped safe config = the heuristic BOUND** (`--search-bound`;
   live gate `PKR_VSEARCH=1 PKR_VSEARCH_BOUND=1`). Bound safety PROVEN
-  (final_br <= blueprint_br).
+  (final_br <= blueprint_br). Deadline now enforced in BR walks
+  (Phase 4.5, 2026-10-10).
 - **CFR-D gadget: SAMPLED proven** (bp_br 9.56 vs gadget_br 0.63);
-  **VECTOR gadget PROVEN safe** (2026-10-09; EV cbv; worst delta -0.94 over 4 subgames).
-  For a real opponent use the sampled gadget (SubgameHandle).
+  **VECTOR gadget PROVEN safe** (2026-10-09; EV cbv; worst delta -0.94
+  over 4 subgames).
 
 ## What works
 
-- **Training pipeline.** Precompute → train → export → load →
-  query. Verified end to end by `./smoke.sh` (10 iterations, k=8)
-  and by the golden-hash CI check (`ci/scripts/golden-training.sh`,
-  100k iterations, k=200).
-- **Runtime lookup.** `SolverHandle::get_advice_fast` p50 ≈ 42ns,
-  p99 ≈ 84ns on the M1 against the v34long blueprint. Batch variant
-  `get_advice_batch` walks the sorted key table once.
-- **Subgame solving.** River-only, integrated through
-  `RuntimeSession`. Verified +2.40 chips/deal (t=6.04) at 20k paired
-  deals across three checkpoints. Turn is flat-to-negative at both 10
-  and 50 inner iterations — ship river-only.
-- **Deterministic training.** Same seed + same inputs → identical
-  `blueprint.bin` and `exploitability.csv` at any thread count.
-  `train.ckpt` is byte-identical at 1 thread; the 4+ thread strategy-
-  sum accumulation has a residual divergence documented in
-  `docs/experiments/training-nondeterminism.md`, which does not
-  affect the shipped artifacts.
+- **Training pipeline.** Precompute -> train -> export -> load -> query.
+  Verified by `./smoke.sh` and the golden-hash CI check.
+- **Runtime lookup.** `SolverHandle::get_advice_fast` p50 ~ 42ns,
+  p99 ~ 84ns on M1 against v34long.
+- **Subgame solving.** River-only via `RuntimeSession`. Turn is
+  flat-to-negative at both 10 and 50 inner iterations; ship river-only.
+- **Live bot binary.** `crates/pkr-runtime/src/bin/pkr-bot-pipe.rs`
+  reads a JSON line, emits one action incr. Uses the same code path as
+  tournament / arena / LBR.
+- **Shadow state (Phase 1.1).** `crates/pkr-runtime/src/shadow.rs`
+  keeps an in-tree view advanced by translated actions; blueprint hash
+  and RangeTracker use it. `PKR_SHADOW=1`.
+- **Stack depth param (Phase 0.1).** `PKR_STACK_BB` (default 100).
+  Fingerprinted via `stack_bb_div2`, so a 100bb checkpoint refuses to
+  load into a 200bb run.
+- **Slumbot client (Phase 0.4).** `scripts/slumbot_client.py`. Wire
+  format UNVERIFIED against `sample_api.py`; no live run yet.
+- **Deterministic training.** Same seed + inputs -> identical
+  `blueprint.bin`. See `docs/experiments/archive/training-nondeterminism.md`.
 
 ## What's broken or unknown (audit 2026-09-30)
 
@@ -63,36 +76,43 @@ Nine findings from an external audit. Status:
 
 | # | description | state |
 |---|---|---|
-| F1 | estimator ignored opponent reach | **fixed** — `e43c74f` |
-| F2 | config not reproducible | **fixed** — `72ad117` |
-| F3 | infoset key can't see bet/pot size | gated infrastructure, off |
-| F4 | abstraction noise-dominated | function + plan, rebuild not launched |
-| F5 | regret floor + averaging site | flags added, grid not run |
-| F6 | jam illegal + raise clamp | **fixed** — `e73e39c` |
-| F7 | eager zero allocation | **fixed** — `839ed47` |
-| F8 | purify + fallback bug | **fixed** — `4564848` |
-| F9 | no tournament harness | **done** — tournament + LBR + cross-process H2H (`examples/v4v5_h2h.rs`, CRN) |
-
-The F1 fix changed the 1-deal reading from 8981 to 1748 mbb. Every
-number published before 2026-09-30 was measured with that estimator.
-See `docs/experiments/post-audit-invalidation.md`.
+| F1 | estimator ignored opponent reach | **fixed** - `e43c74f` |
+| F2 | config not reproducible | **fixed** - `72ad117` |
+| F3 | infoset key can't see bet/pot size | V3-minimal shipped; V5 opt-in |
+| F4 | abstraction noise-dominated | histogram module landed; buckets not rebuilt |
+| F5 | regret floor + averaging site | flags added; Leduc grid run (eps win) |
+| F6 | jam illegal + raise clamp | **fixed** - `e73e39c` |
+| F7 | eager zero allocation | **fixed** - `839ed47` |
+| F8 | purify + fallback bug | **fixed** - `4564848` |
+| F9 | no tournament harness | **done** - tournament + LBR + cross-process H2H |
 
 ## What's running
 
-`outputs/v41-post-f6/` — the first clean post-F1/F2/F6 training run.
-30M iterations, seed 42, F2 experiment defaults, F6 game tree.
+`outputs/k7-baseline/` - K=7 baseline train (PID 59819, 100M iters,
+seed 42, cap 60M, 4 threads). ETA ~16:52. A search-vs-blueprint H2H
+(PID 9576) is queued behind it. See `docs/roadmap/queue-2026-10-10.md`.
+
+Next queued: NLHE epsilon A/B (`/tmp/eps-ab.sh`), gated on the K=7
+decision. Leduc grid (2026-10-10) says eps=0.002 ~35% better than 0.01;
+see `docs/experiments/leduc-cfr-grid-2026-10-10.md`.
 
 ## What isn't there
 
-- No real-game evaluation. Nothing has ever played a full game
-  against a scripted opponent suite. `pkr-fuzz::tournament` exists
-  but the scripted-bot wiring is untested end to end.
-- LBR lower bound: `lbr_eval` (JSON line). NOTE: one greedy exploiter; it has misled 3x. Use `--samples 2000` for a stronger reading and cross-check with H2H.
-- No suit isomorphism for flop/turn rebuilds. Blocks F4's turn half.
-- No bot binary. `RuntimeSession` is the API a bot would use.
+- No external-strength evaluation. Nothing has played Slumbot or any
+  public API. Slumbot client written; wire format unverified.
+- 200bb build not launched (stack param + fingerprint exist).
+- LBR lower bound: `lbr_eval` (JSON line). One greedy exploiter; has
+  misled 3x. Use `--samples 2000` and cross-check with H2H.
+- No suit isomorphism for flop/turn rebuilds. Task 2.3a attempt
+  REVERTED (test caught over-identification); see
+  `docs/roadmap/PLAN_STATUS_2026-10-10.md`.
+- Turn-time search is offline-only (~45s before Phase 4.5 fix; now
+  bounded, not yet measured live).
+- Depth-limited flop search not started.
 
 ## Reference
 
-- `docs/experiments/post-audit-invalidation.md` — what F6 invalidated.
-- `docs/experiments/range-aware-solving-poc.md` — the subgame work.
-- `docs/roadmap/post-ab-plan.md` — the production-grade checklist.
+- `docs/experiments/VERIFIED_FINDINGS.md` - authoritative numbers.
+- `docs/roadmap/PLAN_STATUS_2026-10-10.md` - plan progress.
+- `docs/experiments/k6-vs-k7-incomparable.md` - K=6/K=7 relationship.
+- `docs/INDEX.md` - full docs index.
