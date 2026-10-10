@@ -798,7 +798,7 @@ mod fingerprint_sensitivity_tests {
 // pkr-fuzz/src/lib.rs (search hook), and
 // pkr-runtime/src/bin/pkr-bot-pipe.rs. That duplication is exactly
 // how the K=6->7 jam-drop bug (bug 1b) hid: three sites each had
-// their own `[Option<usize>; 6]` and only some were updated.
+// their own fixed-length option arrays and only some were updated.
 //
 // Centralise. Any future action-abstraction change touches ONE place.
 // ============================================================
@@ -896,7 +896,7 @@ mod bucket_decode_helper_tests {
     #[test]
     fn first_legal_by_bucket_preserves_jam() {
         // Regression for bug 1b: the jam bucket 6 must survive the
-        // bucket -> legal-index mapping. A hardcoded 6-bucket loop
+        // bucket -> legal-index mapping. A fixed-size bucket loop
         // silently dropped it at K=7.
         let stacks = 100.0_f32;
         let street_bets = 0.0_f32;

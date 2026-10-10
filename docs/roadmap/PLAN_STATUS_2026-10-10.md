@@ -34,7 +34,7 @@ k7base PID 59819 still training; k7h2h queued behind it.
   vector variants).
 - 4.6 Show cache (`Arc<ShowTable>` + `show_cache: HashMap<u64, Arc<..>>`).
 - Review-fix batch 1a-1d applied; CI gate now covers code literals and
-  stale "6-bucket" doc phrases.
+  stale bucket-count doc phrases.
 
 ## Still open
 
