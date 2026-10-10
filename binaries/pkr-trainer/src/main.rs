@@ -511,6 +511,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cli.capacity
     );
 
+    // C3 (audit 2026-10-10): if the primary is missing but .prev exists,
+    // a previous run was killed between `rename(ckpt->prev)` and
+    // `rename(tmp->ckpt)`. Without this, the match below falls to
+    // `_ => 0` and training restarts from iteration 0 (silently
+    // discarding all prior work). Promote .prev first.
+    if !cli.fresh {
+        if let Some(ckpt) = &cli.checkpoint {
+            let prev = ckpt.with_extension("ckpt.prev");
+            if !ckpt.exists() && prev.exists() {
+                eprintln!(
+                    "primary checkpoint {} missing but .prev exists (crash during rotate?); promoting .prev",
+                    ckpt.display()
+                );
+                if let Err(e) = std::fs::rename(&prev, ckpt) {
+                    eprintln!("WARNING: could not promote .prev -> primary: {e}");
+                }
+            }
+        }
+    }
+
     let start_iter: u32 = match &cli.checkpoint {
         Some(ckpt) if ckpt.exists() && !cli.fresh => {
             match trainer.load_checkpoint(ckpt.to_str().unwrap(), &fingerprint) {
@@ -738,6 +758,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     let mut best_expl_mbb: Option<f64> = None;
+    // C4 (audit 2026-10-10): re-seed the promote-gate baseline from the
+    // existing exploitability.csv so a restart does not treat its first
+    // new eval as "first eval" (which auto-promotes regardless of how
+    // much worse it is than the historical best). Only when we are
+    // appending to an existing CSV (`!is_new` semantics).
+    if !cli.fresh {
+        if let Some(path) = &cli.exploitability_csv {
+            if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    let min = text
+                        .lines()
+                        .skip(1)
+                        .filter_map(|l| l.split(',').nth(1))
+                        .filter_map(|v| v.trim().parse::<f64>().ok())
+                        .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |m: f64| m.min(v))));
+                    if let Some(b) = min {
+                        eprintln!("re-seeded promote gate: historical best = {b:.2} mbb");
+                        best_expl_mbb = Some(b);
+                    }
+                }
+            }
+        }
+    }
     // Best raw reading ever seen, for --save-best-reading. Distinct from
     // best_expl_mbb, which is the best *significant* reading that drives
     // the gate and the plateau counter.
@@ -1234,11 +1277,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if !stopped_early || hit_capacity || interrupted {
-        if let Some(ckpt) = &cli.checkpoint {
-            if let Err(e) = save_checkpoint_rolling(&trainer, ckpt, &fingerprint) {
-                eprintln!("WARNING: final checkpoint failed: {}", e);
-            }
+    // m36 (audit 2026-10-10): write the final checkpoint on plateau-stop
+    // too. The previous guard `if !stopped_early || ...` explicitly
+    // skipped the save when the plateau detector fired -- which is
+    // exactly when you want to persist the state you just stopped on.
+    // The rolling save is safe on any exit path (writes to .tmp, then
+    // rotates); there is no reason to gate it.
+    let _ = stopped_early;
+    if let Some(ckpt) = &cli.checkpoint {
+        if let Err(e) = save_checkpoint_rolling(&trainer, ckpt, &fingerprint) {
+            eprintln!("WARNING: final checkpoint failed: {}", e);
         }
     }
 

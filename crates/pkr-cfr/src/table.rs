@@ -1058,7 +1058,14 @@ impl CompactRegretTable {
         let sum_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(sums.as_ptr() as *const u8, sum_entries * 8) };
         w.write_all(sum_bytes)?;
+        // M-9 (audit 2026-10-10): BufWriter::flush only drains the user-
+        // space buffer to the OS; it does NOT fsync. The comment above
+        // `save_checkpoint_rolling` claims the new file is "confirmed
+        // on disk" before the rotate -- without sync_all that claim is
+        // false. A crash/power-loss can leave a truncated primary whose
+        // rename already rotated the previous good file to `.prev`.
         w.flush()?;
+        w.get_ref().sync_all()?;
         Ok(())
     }
 
