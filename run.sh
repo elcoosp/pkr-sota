@@ -18,6 +18,21 @@ cd "$(dirname "$0")"
 # shellcheck source=scripts/run-config.sh
 source scripts/run-config.sh
 
+# m50 (audit 2026-10-10): the header claims a trap but there was none.
+# Install one so a `nohup ... &` run does not lose the last checkpoint
+# on SIGINT/SIGTERM. The training wrapper writes to $LOG, and the trainer
+# itself handles SIGINT (see binaries/pkr-trainer), so we only need to
+# forward the signal and wait for the child to exit.
+_CHILD_PID=""
+_forward() {
+    if [ -n "$_CHILD_PID" ] && kill -0 "$_CHILD_PID" 2>/dev/null; then
+        kill -TERM "$_CHILD_PID" 2>/dev/null || true
+        wait "$_CHILD_PID" 2>/dev/null || true
+    fi
+    exit 130
+}
+trap _forward INT TERM
+
 LOG="${LOG:-/tmp/${VERSION}.log}"
 EVAL_LOG="${EVAL_LOG:-/tmp/${VERSION}_evals.log}"
 mkdir -p "$OUT"

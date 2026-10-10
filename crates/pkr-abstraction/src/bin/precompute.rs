@@ -630,6 +630,8 @@ fn generate_turn_table(
     centroids_path: &str,
     rank_table_path: &str,
     output: &str,
+    // m15 (audit 2026-10-10): unused -- the caller's --samples arg is
+    // ignored by this generator. Kept for signature stability.
     _num_samples: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
@@ -1847,6 +1849,10 @@ fn generate_flop_rich_table(
     ];
     let total_combos = choose(52, 5) as usize;
     let entries = total_combos * 10;
+    // M-19 (audit 2026-10-10): a u8 table silently truncates
+    // bucket ids > 255 (300 as u8 = 44). Refuse.
+    // Set PKR_BUCKET_U16=1 for k > 255.
+    assert!(k <= 255, "u8 bucket table cannot hold k={} (>255)", k);
     let mut table: Vec<u8> = vec![0u8; entries];
     eprintln!(
         "  flop-rich: assigning {} entries ({} combos × 10 masks)",
@@ -1929,6 +1935,10 @@ fn generate_turn_rich_table(
     let entries = total_combos * 15;
     let tmp_path = format!("{}.tmp", table_out);
     let prog_path = format!("{}.progress", table_out);
+    // M-19 (audit 2026-10-10): a u8 table silently truncates
+    // bucket ids > 255 (300 as u8 = 44). Refuse.
+    // Set PKR_BUCKET_U16=1 for k > 255.
+    assert!(k <= 255, "u8 bucket table cannot hold k={} (>255)", k);
     let mut table: Vec<u8> = vec![0u8; entries];
     let mut resume_from: usize = 0;
     if let Ok(prog_bytes) = std::fs::read(&prog_path) {

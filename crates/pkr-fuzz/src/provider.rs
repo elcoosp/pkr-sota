@@ -29,7 +29,7 @@ impl<'a> TableProvider<'a> {
 impl<'a> BlueprintProvider for TableProvider<'a> {
     fn lookup(&self, infoset_hash: u64) -> Option<SotaAdvice> {
         let strat = self.table.get_average_strategy_slice(infoset_hash)?;
-        // Encode as a cumulative CDF over the 6 buckets, then pad to
+        // Encode as a cumulative CDF over the K action buckets, then pad to
         // 16 slots with 255 (the exporter's convention).
         //
         // F1 followup (bug hunt): the zero-sum case must match

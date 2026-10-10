@@ -4,7 +4,8 @@
 //!
 //! Architecture: the public betting tree is enumerated once from the root
 //! GameState. Each node caches the actions-by-bucket mapping. CFR walks the
-//! tree by node_id; regrets/strategy sums live in flat `Vec<[f64;6]>`
+//! tree by node_id; regrets/strategy sums live in flat
+//! `Vec<[f64; NUM_ACTION_BUCKETS]>`
 //! indexed by `node_id * n_deals + deal_id`. No HashMap, no infoset
 //! signature hashing on the hot path.
 
@@ -48,8 +49,8 @@ pub fn class_of(rank: u32) -> usize {
 // limit). If the state's buffer grows, raise both together.
 const MAX_TREE_DEPTH: u32 = 48;
 
-/// Cap on chance-node children at build time. 0 = enumerate all (flop 47,
-/// turn 46). When set (env `PKR_SUBGAME_MAX_RIVERS=K`), a chance node
+/// Cap on chance-node children at build time. 0 = enumerate all.
+/// Flop: 49 remaining cards (52-3 board), turn: 48 (52-4). When set (env `PKR_SUBGAME_MAX_RIVERS=K`), a chance node
 /// keeps K evenly-spaced cards instead of all — shrinking a turn
 /// subgame's tree ~46/K and making search ~10x faster at the cost of a
 /// coarser (sampled) river expectation.

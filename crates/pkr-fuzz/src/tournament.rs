@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(r.t, 0.0);
     }
 
-    /// A trivial provider that always returns uniform over 6 buckets.
+    /// A trivial provider that always returns uniform over NUM_ACTION_BUCKETS.
     struct Uniform;
     impl BlueprintProvider for Uniform {
         fn lookup(&self, _h: u64) -> Option<SotaAdvice> {

@@ -19,15 +19,15 @@ pub const HASH_ALGO_FNV1A64_INFOSET: u8 = pkr_contracts::HASH_ALGO_FNV1A64_INFOS
 /// v2: introduced hash_algo field to reject legacy DefaultHasher blueprints.
 pub const FORMAT_VERSION_V2: u32 = 2;
 
-/// v3: introduced a 48-byte AnchorsSection immediately after FileHeader.
-/// Layout: [FileHeader:32][AnchorsSection:48][key_count:u32][cdf_size:u32][keys][cdf]
+/// v3: introduced a 64-byte AnchorsSection immediately after FileHeader.
+/// Layout: [FileHeader:32][AnchorsSection:64][key_count:u32][cdf_size:u32][keys][cdf]
 pub const FORMAT_VERSION_V3: u32 = 3;
 
 /// v4: introduced a 40-byte `AbstractionFingerprint` between the
 /// AnchorsSection and the key_count/cdf_size prefix. Loading a v3 file
 /// is still supported (warning), but v4 is the only version the writer
 /// emits. Layout:
-///   [FileHeader:32][AnchorsSection:48][Fingerprint:40][key_count:u32][cdf_size:u32][keys][cdf]
+///   [FileHeader:32][AnchorsSection:64][Fingerprint:40][key_count:u32][cdf_size:u32][keys][cdf]
 pub const FORMAT_VERSION_V4: u32 = 4;
 
 /// Minimal perfect hash header. Currently unused by the writer, kept for

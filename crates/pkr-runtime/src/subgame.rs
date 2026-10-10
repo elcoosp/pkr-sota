@@ -268,7 +268,7 @@ impl SubgameHandle {
 }
 
 /// Object-safe handle for a subgame solver: given a state, our hole, and
-/// an opponent range, return the strategy at the root (6 buckets). Both
+/// an opponent range, return the strategy at the root (NUM_ACTION_BUCKETS). Both
 /// the sampled solver (`SubgameHandle`) and the vector solver
 /// (`VSearchHandle`, in `vsearch.rs`) implement this, so LBR and the
 /// tournament can pick either at runtime without a hard dependency on

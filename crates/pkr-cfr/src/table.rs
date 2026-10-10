@@ -879,7 +879,7 @@ impl CompactRegretTable {
             let strat = self.compute_export_strategy(idx);
             visited += 1;
 
-            // Classify: uniform when all six equal (the last-resort case,
+            // Classify: uniform when all K equal (the last-resort case,
             // where even regrets were flat). Counted separately because
             // these are the infosets where we genuinely have no signal.
             let mut is_uniform = true;
@@ -1404,7 +1404,7 @@ mod tests {
         let mut avg = [0.0f32; K];
         table.get_average_strategy_into(deep_hash, &mut avg);
         // With f64 accumulation, the tiny contribution is preserved and
-        // the average normalizes to 1/K across the 6 actions.
+        // the average normalizes to 1/K across the K=NUM_ACTION_BUCKETS actions.
         let expected = 1.0 / K as f32;
         for a in 0..K {
             assert!(

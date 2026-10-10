@@ -13,7 +13,7 @@
 #[cfg(feature = "gpu")]
 compile_error!(
     "the gpu feature is broken against the current i64 regret-only table \
-     (RM_STRIDE=6, i64 cells); the WGSL shader indexes a stride-6 i32 \
+     (RM_STRIDE=7 at K=7, i64 cells); the WGSL shader indexes a stride-6 i32 \
      layout. Port gpu.rs to the i64 layout before enabling."
 );
 
