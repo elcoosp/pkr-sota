@@ -41,7 +41,11 @@ done
 
 # 3) Thread-scaling bench via bench.sh.
 echo "==> thread scaling"
-THREADS_LIST="1 2 4 8" SECONDS_PER_RUN=10 \
+# C10 (audit 2026-10-10): bench.sh reads BENCH_DIR (default ./.smoke); the
+# exported PKR_* vars above do not feed it. Pass the smoke dir explicitly
+# so the thread-scaling run does not silently exit 1 (the failure was
+# previously swallowed by `|| true`, leaving zero thread metrics).
+BENCH_DIR="$SMOKE_DIR" THREADS_LIST="1 2 4 8" SECONDS_PER_RUN=10 \
     ./bench.sh > /tmp/bench-scaling.log 2>&1 || true
 python3 ci/scripts/parse-bench-scaling.py /tmp/bench-scaling.log \
     >> "$BENCH_OUT"

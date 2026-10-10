@@ -77,6 +77,11 @@ ensure "$SMOKE_DIR_ABS/turn_abstraction.bin" \
         "$SMOKE_DIR_ABS/turn_abstraction.bin" 100
 
 echo "==> [8/8] pkr-trainer (10 iterations)"
+# M-48 (audit 2026-10-10): an existing train.ckpt from a previous
+# smoke run makes the trainer resume at iteration 10; max_iters=10
+# then means the loop never runs. Delete the ckpt first so the
+# smoke run always exercises the full pipeline.
+rm -f "$SMOKE_DIR_ABS/train.ckpt"
 env EHS_SAMPLES=5 cargo run --release --quiet -p pkr-trainer -- \
     --iterations 10 \
     --threads 2 \

@@ -7,7 +7,7 @@ cargo install cargo-fuzz 2>&1 | tail -1 || true
 # 5 minutes per target — keeps weekly budget manageable.
 for T in blueprint_loader state_transitions; do
     echo "==> fuzz: $T (5 min)"
-    cargo fuzz run "$T" -- -max_total_time=300 --release || {
+    cargo fuzz run --release "$T" -- -max_total_time=300 || {
         # Fuzz crash — save the input.
         echo "FAIL: $T crashed. Artifacts in fuzz/artifacts/"
         mkdir -p fuzz-artifacts/

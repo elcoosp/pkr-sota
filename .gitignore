@@ -33,3 +33,6 @@ benches/*/target/criterion
 .env
 wr*.sh
 launcher-*.sh
+
+# Shell detritus
+nohup.out

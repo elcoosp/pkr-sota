@@ -6,6 +6,12 @@ PROF_DIR="${PROF_DIR:-./outputs/v0-proftest}"
 mkdir -p "$PROF_DIR"
 PROF_DIR_ABS="$(cd "$PROF_DIR" && pwd)"
 
+# C10 (audit 2026-10-10): the precompute below uses k=64, which is
+# below the trainer's hard k>=100 floor. Without these exports the
+# trainer aborts. They are harness-only; never set in production.
+export PKR_ALLOW_SMALL_K=1
+export PKR_ALLOW_EHS_FALLBACK=1
+
 ITERATIONS="${ITERATIONS:-100000}"
 THREADS="${THREADS:-8}"
 CAPACITY="${CAPACITY:-50000000}"
