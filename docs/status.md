@@ -25,13 +25,23 @@ self-play. Not competitive.
 - In-sample BR (the trainer's own number) is NOT a strength measure;
   it fell 3796 -> 1707 -> 1222 as deals went 5k -> 20k -> 40k.
 
-## K=7 action abstraction (landed 2026-10-10)
+## K=7 action abstraction: SHIPPED as the new base (2026-10-10)
 
 `NUM_ACTION_BUCKETS` 6 -> 7; `BET_SIZINGS` [0.5,1,2] -> [0.5,1,2,3];
-bucket 6 = jam. Checkpoint-invalidating by design. A K=7 baseline
-(100M iters, seed 42) is training now; its own LBR + search-vs-blueprint
-H2H decide whether K=7 becomes the base or we revert to K=6. All
-numbers in the table above are K=6 and remain suggestive only for K=7.
+bucket 6 = jam. Checkpoint-invalidating by design.
+
+Baseline finished 100M iters in 19962s (5009.6 it/s, 4 threads, seed 42,
+cap 60M). **Decision: SHIP.**
+
+| metric | K=6 V5 | K=7 baseline | gate |
+|---|---:|---:|---|
+| LBR, 20k seed 42 | 183 ± 84 mbb | **-163 ± 104 mbb** | ✅ |
+| H2H search-vs-bp seed 42 | — | **+0.958 chips, t=+5.28** | ✅ |
+| H2H search-vs-bp seed 43 | — | **+1.279 chips, t=+7.02** | ✅ |
+
+Both plan §3 gates cleared (LBR ≥ 2·SE, H2H > 2·SE). K=7 is the base;
+K=6 checkpoints remain on disk but no longer the shipping config.
+Full write-up: `docs/experiments/k7-decision-2026-10-10.md`.
 K=6 and K=7 cannot meet in `tournament` or `lbr_eval`: stride + infoset
 key both differ. See `docs/experiments/k6-vs-k7-incomparable.md`.
 
