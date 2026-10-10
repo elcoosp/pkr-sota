@@ -24,7 +24,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: outputs/v0-smoke
-          key: smoke-abstractions-${{ runner.os }}-${{ hashFiles('ci/cache-key.sh', 'smoke.sh') }}
+          # M-42 (audit 2026-10-10): smoke.yml derives the key from
+          # `ci/cache-key.sh`'s output; this workflow hashed the script
+          # text instead, so the two never matched and every run
+          # rebuilt from scratch.
+          key: smoke-abstractions-${{ runner.os }}-${{ steps.key.outputs.k }}
 
       - name: Run benches on PR branch
         run: |

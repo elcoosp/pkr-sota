@@ -14,6 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install bencher CLI
+        # M-44 (audit 2026-10-10): the workflows invoked `./bencher` but
+        # never downloaded it, so every run failed at the report step.
+        run: |
+          BENCHER_VERSION=0.4.36
+          curl -sSL "https://github.com/bencherdev/bencher/releases/download/v${BENCHER_VERSION}/bencher_${BENCHER_VERSION}_x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz
+          chmod +x bencher
+
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
