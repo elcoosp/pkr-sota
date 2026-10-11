@@ -122,10 +122,14 @@ a small slice**:
 
 ## Concrete follow-up tasks (in order)
 
-1. **Measure.** Time a `blueprint_p1_br`-style walk on ONE flop leaf
-   at the current `flop_k = 200`. ~30 lines in
-   `crates/pkr-subgame/tests/` and a `cargo test --nocapture`. If it
-   is > 1 ms per leaf (it will be), stop here.
+1. **Measure.** Time the TURN subtree build (4-card board, 46 rivers).
+   Multiply by 47 to get the flop-leaf cost. **Do NOT actually build a
+   flop tree** (3-card board): it is ~46x the turn tree, i.e. GB-scale,
+   and (observed 2026-10-11) will OOM the machine mid-test. The turn
+   build is a valid proxy because the flop tree is exactly 47 nested
+   turn trees. ~30 lines in `crates/pkr-subgame/tests/` and a
+   `cargo test --nocapture`. If the extrapolated flop cost is > 1 ms
+   per leaf (it will be), stop here.
 2. **Decide the leaf bucket resolution.** 200 flop buckets x ~10 pot
    classes x ~3 stack classes = 6000 leaf classes; or 2048 x 10 x 3 =
    60k. The flop bucket already exists; the pot/stack classes need
