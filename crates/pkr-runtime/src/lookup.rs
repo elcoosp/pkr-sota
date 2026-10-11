@@ -1,4 +1,4 @@
-use crate::mmap::MmapReader;
+use crate::mmap::{FmphView, MmapReader};
 use pkr_contracts::{BlueprintProvider, SotaAdvice};
 
 pub struct SolverHandle {
@@ -19,6 +19,20 @@ impl SolverHandle {
         let num_keys = keys.len();
         if num_keys == 0 {
             return None;
+        }
+        // P1 (audit 2026-10-10): if the blueprint carries an FMph tail,
+        // try the O(1) candidate first. The FMph construction is
+        // injective by design (built via a retry loop that only accepts
+        // a perfect assignment), but we VERIFY the candidate key byte
+        // matches before trusting it -- a corrupt or truncated tail
+        // falls back to the binary search instead of returning wrong
+        // advice.
+        if let Some(fmph) = self.mmap.fmph() {
+            if let Some(i) = fmph_candidate(fmph, infoset_hash) {
+                if i < num_keys && keys[i] == infoset_hash {
+                    return self.advice_for_key_index(i);
+                }
+            }
         }
         // Branchless upper-bound search: find the largest i with keys[i] <= target.
         let mut base = 0usize;
@@ -288,4 +302,17 @@ impl HealthReport {
             self.p50_ns, self.p99_ns, self.max_ns
         )
     }
+}
+
+/// P1: FMph candidate index. Mirrors `pkr_export::fmph::eval_fmph` but
+/// takes the parsed `FmphView` directly. Returns `None` if the view is
+/// degenerate (zero bucket_count or zero num_keys).
+fn fmph_candidate(f: &FmphView, key: u64) -> Option<usize> {
+    if f.bucket_count == 0 || f.num_keys == 0 {
+        return None;
+    }
+    use pkr_export::fmph::hash_key;
+    let b = hash_key(key, f.seed1) as usize % f.bucket_count;
+    let d = *f.displacements.get(b)? as u64;
+    Some(hash_key(key, f.seed2).wrapping_add(d) as usize % f.num_keys)
 }

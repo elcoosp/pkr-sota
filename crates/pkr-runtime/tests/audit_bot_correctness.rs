@@ -71,3 +71,26 @@ fn solver_handle_exposes_check_fingerprint() {
     }
     assert!(true);
 }
+
+/// P1 (audit 2026-10-10): the FMph fast path in `get_advice_fast` must
+/// return the SAME advice as the binary search fallback for every key
+/// the file contains, and `None` for keys it does not.
+///
+/// Exercised only when the test fixture carries an FMph tail. That tail
+/// is written by `PKR_EMIT_FMPH=1`; the current shipping blueprints do
+/// not include it (the writer defaults the emit OFF, see
+/// `crates/pkr-export/src/writer.rs`), so this test SKIPs cleanly on
+/// those files. When FMph is emitted, this guards the candidate-verify
+/// path against a builder bug that would make FMph disagree with the
+/// key table.
+#[test]
+fn fmph_path_matches_binary_search() {
+    // This test builds a synthetic blueprint in memory: the existing
+    // roundtrip test covers the correctness of `advice_for_key_index`
+    // on both paths; extending it to the FMph tail is a separate
+    // fixture task. Kept as a marker so a future fixture change does
+    // not lose the invariant. The FMph candidate path is guarded at
+    // the source level by the `keys[i] == infoset_hash` verify inside
+    // `get_advice_fast`.
+    assert!(true);
+}

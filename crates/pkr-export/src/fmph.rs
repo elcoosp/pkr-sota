@@ -25,7 +25,7 @@ impl FmphData {
 }
 
 #[inline]
-fn hash_key(key: u64, seed: u64) -> u64 {
+pub fn hash_key(key: u64, seed: u64) -> u64 {
     key.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(seed)
 }
 
