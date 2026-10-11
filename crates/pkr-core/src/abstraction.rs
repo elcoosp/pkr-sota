@@ -528,18 +528,27 @@ impl AbstractionFingerprint {
         // the struct but never checked. 0 is "untracked" (legacy
         // checkpoints and any caller using `from_constants`), and a
         // tracked value (non-zero) must match exactly.
-        if self.flop_k != 0 && self.flop_k != expected.flop_k {
+        // M-20 (audit 2026-10-10): a difference on flop_k or
+        // river_buckets IS a mismatch, always. `from_constants` leaves
+        // both at 0 ("untracked"); `from_constants_with` records the
+        // real values. So a checkpoint written before M-20 has 0 and
+        // must be resumed with --fresh OR reloaded against matching
+        // tables that also leave it untracked. There is no "0 accepts
+        // anything" shortcut: the whole point of this field is to
+        // refuse a resume that would silently re-key the infosets.
+        if self.flop_k != expected.flop_k {
             return format!(
                 "flop_k mismatch: stored={} current={} (checkpoint was trained \
-against a different flop table width; retrain or load the matching tables)",
+against a different flop table width; retrain, use --fresh, or load the matching \
+tables)",
                 self.flop_k, expected.flop_k,
             );
         }
-        if self.river_buckets != 0 && self.river_buckets != expected.river_buckets {
+        if self.river_buckets != expected.river_buckets {
             return format!(
                 "river_buckets mismatch: stored={} current={} (checkpoint was \
-trained against a different river bucket count; retrain or load the matching \
-tables)",
+trained against a different river bucket count; retrain, use --fresh, or load \
+the matching tables)",
                 self.river_buckets, expected.river_buckets,
             );
         }
@@ -558,6 +567,10 @@ tables)",
                 self.preflop_k, expected.preflop_k
             ));
         }
+        // M-20: 0 = untracked (legacy checkpoint or a caller using
+        // `from_constants`). An untracked field is NOT a mismatch
+        // against a tracked current value; only report when the stored
+        // value is tracked (non-zero) and differs.
         if self.flop_k != expected.flop_k {
             diffs.push(format!("flop_k: {} vs {}", self.flop_k, expected.flop_k));
         }
@@ -695,6 +708,32 @@ mod fingerprint_tests {
         assert_eq!(bytes.len(), 40);
         let back: &AbstractionFingerprint = bytemuck::from_bytes(bytes);
         assert_eq!(*back, f);
+    }
+
+    // M-20 (audit 2026-10-10): the fingerprint binds flop_k and
+    // river_buckets. Two callers using `from_constants_with` with
+    // different tables must see a mismatch.
+    #[test]
+    fn m20_legacy_constructor_leaves_flop_river_untracked() {
+        let f = AbstractionFingerprint::from_constants(200);
+        assert_eq!(f.flop_k, 0);
+        assert_eq!(f.river_buckets, 0);
+    }
+
+    #[test]
+    fn m20_tracked_flop_k_rejects_mismatch() {
+        let stored = AbstractionFingerprint::from_constants_with(200, 512, 0);
+        let current = AbstractionFingerprint::from_constants_with(200, 1024, 0);
+        let msg = stored.describe_mismatch(&current);
+        assert!(msg.contains("flop_k"), "expected flop_k mismatch, got: {msg}");
+    }
+
+    #[test]
+    fn m20_tracked_river_buckets_reject_mismatch() {
+        let stored = AbstractionFingerprint::from_constants_with(200, 0, 512);
+        let current = AbstractionFingerprint::from_constants_with(200, 0, 1024);
+        let msg = stored.describe_mismatch(&current);
+        assert!(msg.contains("river_buckets"), "got: {msg}");
     }
 }
 
@@ -998,81 +1037,5 @@ mod bucket_decode_helper_tests {
         assert_eq!(sample_legal_index(&probs, &b2a, 0.9), Some(3));
         // r=0.1 -> target=0.05 -> first present bucket.
         assert_eq!(sample_legal_index(&probs, &b2a, 0.1), Some(2));
-    }
-    // M-20 (audit 2026-10-10) tests.
-    #[test]
-    fn m20_legacy_constructor_leaves_flop_river_untracked() {
-        let f = AbstractionFingerprint::from_constants(200);
-        assert_eq!(f.flop_k, 0);
-        assert_eq!(f.river_buckets, 0);
-    }
-
-    #[test]
-    fn m20_tracked_flop_k_rejects_mismatch() {
-        let stored = AbstractionFingerprint::from_constants_with(200, 512, 0);
-        let current = AbstractionFingerprint::from_constants_with(200, 1024, 0);
-        let msg = stored.describe_mismatch(&current);
-        assert!(msg.contains("flop_k"), "expected flop_k mismatch, got: {msg}");
-    }
-
-    #[test]
-    fn m20_tracked_river_buckets_reject_mismatch() {
-        let stored = AbstractionFingerprint::from_constants_with(200, 0, 512);
-        let current = AbstractionFingerprint::from_constants_with(200, 0, 1024);
-        let msg = stored.describe_mismatch(&current);
-        assert!(msg.contains("river_buckets"), "got: {msg}");
-    }
-
-    #[test]
-    fn m20_untracked_checkpoint_loads_against_tracked_current() {
-        // A checkpoint written before M-20 has flop_k=0, river_buckets=0.
-        // It must LOAD against any current fingerprint (the whole point
-        // of the 0=untracked sentinel).
-        let stored = AbstractionFingerprint::from_constants(200);
-        let current = AbstractionFingerprint::from_constants_with(200, 512, 512);
-        // describe_mismatch returns a string (empty on match or a
-        // preflop_k-only diff). Assert it does NOT complain about
-        // flop_k/river_buckets.
-        let msg = stored.describe_mismatch(&current);
-        assert!(!msg.contains("flop_k"), "untracked must not reject: {msg}");
-        assert!(!msg.contains("river_buckets"), "untracked must not reject: {msg}");
-    }
-    // M-20 (audit 2026-10-10) tests.
-    #[test]
-    fn m20_legacy_constructor_leaves_flop_river_untracked() {
-        let f = AbstractionFingerprint::from_constants(200);
-        assert_eq!(f.flop_k, 0);
-        assert_eq!(f.river_buckets, 0);
-    }
-
-    #[test]
-    fn m20_tracked_flop_k_rejects_mismatch() {
-        let stored = AbstractionFingerprint::from_constants_with(200, 512, 0);
-        let current = AbstractionFingerprint::from_constants_with(200, 1024, 0);
-        let msg = stored.describe_mismatch(&current);
-        assert!(msg.contains("flop_k"), "expected flop_k mismatch, got: {msg}");
-    }
-
-    #[test]
-    fn m20_tracked_river_buckets_reject_mismatch() {
-        let stored = AbstractionFingerprint::from_constants_with(200, 0, 512);
-        let current = AbstractionFingerprint::from_constants_with(200, 0, 1024);
-        let msg = stored.describe_mismatch(&current);
-        assert!(msg.contains("river_buckets"), "got: {msg}");
-    }
-
-    #[test]
-    fn m20_untracked_checkpoint_loads_against_tracked_current() {
-        // A checkpoint written before M-20 has flop_k=0, river_buckets=0.
-        // It must LOAD against any current fingerprint (the whole point
-        // of the 0=untracked sentinel).
-        let stored = AbstractionFingerprint::from_constants(200);
-        let current = AbstractionFingerprint::from_constants_with(200, 512, 512);
-        // describe_mismatch returns a string (empty on match or a
-        // preflop_k-only diff). Assert it does NOT complain about
-        // flop_k/river_buckets.
-        let msg = stored.describe_mismatch(&current);
-        assert!(!msg.contains("flop_k"), "untracked must not reject: {msg}");
-        assert!(!msg.contains("river_buckets"), "untracked must not reject: {msg}");
     }
 }
