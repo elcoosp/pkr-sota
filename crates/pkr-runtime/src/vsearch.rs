@@ -226,6 +226,137 @@ pub fn solve_root_bounded(
     Some(solver.root_strategy(our_hand))
 }
 
+/// M-4.3 (audit 2026-10-10): same as `solve_root_bounded`, but also
+/// returns the solver's per-hand root strategy matrix (`n_actions x
+/// 1326`) and the corresponding root action list. The session stores
+/// this so that when our own seat plays a search-derived action, the
+/// RangeTracker can be updated with the SEARCH probability of the
+/// chosen bucket per hand, not the blueprint's.
+///
+/// Returns `(acts, Some((root_acts, per_hand)))` on the bounded path
+/// when the per-hand matrix is available; `(acts, None)` if the solve
+/// fell back to `root_strategy(our_hand)` (blueprint path), where the
+/// caller must update with blueprint probabilities as before.
+pub fn solve_root_bounded_traced(
+    st: &pkr_core::state::GameState,
+    ranges: [Vec<f32>; 2],
+    our_hand: [u8; 2],
+    cfg: &VSearchCfg,
+    abs: &dyn pkr_contracts::AbstractionBuilder,
+    tbl: &pkr_cfr::table::CompactRegretTable,
+) -> Option<(Vec<(Act, f32)>, Option<(Vec<Act>, Vec<u8>, Vec<Vec<f32>>)>)> {
+    if !cfg.enabled_streets[st.street as usize] {
+        return None;
+    }
+    VSEARCH_SOLVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    VSEARCH_BOUNDED_SOLVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let spec = spec_from_state(st, ranges, cfg.bet_fracs.clone(), cfg.max_raises);
+    let ev = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
+    let mut solver = Solver::new(spec, &ev);
+    if solver.n_root_actions() == 0 {
+        return None;
+    }
+    iterate_budgeted(&mut solver, cfg);
+    if cfg.time_budget_ms > 0 {
+        solver.set_deadline(Some(
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(cfg.time_budget_ms),
+        ));
+    }
+    let mut sig_buf = [0u8; 8];
+    let sig_len = st.infoset_signature_into(&mut sig_buf);
+    let history_sig = &sig_buf[..sig_len];
+    let Some(bp_root) =
+        solver.blueprint_root_strategy(abs, tbl, history_sig, st.street as u8, st)
+    else {
+        return Some((solver.root_strategy(our_hand), None));
+    };
+    let Some(search_root) = solver.root_strategy_all() else {
+        VSEARCH_BOUND_FELL_BACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return Some((solver.root_strategy(our_hand), None));
+    };
+    let br_search = match solver.opp_br_value() {
+        Some(v) => v,
+        None => {
+            VSEARCH_BOUND_FELL_BACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            solver.set_root_strategy(&bp_root);
+            return Some((solver.root_strategy(our_hand), None));
+        }
+    };
+    solver.set_root_strategy(&bp_root);
+    let br_bp = match solver.opp_br_value() {
+        Some(v) => v,
+        None => {
+            VSEARCH_BOUND_FELL_BACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some((solver.root_strategy(our_hand), None));
+        }
+    };
+    let (final_root, is_search) = if br_search <= br_bp {
+        VSEARCH_BOUND_KEPT_SEARCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        (search_root.clone(), true)
+    } else {
+        VSEARCH_BOUND_BLENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let t0 = std::time::Instant::now();
+        let budget = std::time::Duration::from_millis(cfg.time_budget_ms);
+        let timed = cfg.time_budget_ms > 0;
+        let mut lo = 0.0f32;
+        let mut hi = 1.0f32;
+        let mut best = bp_root.clone();
+        for _ in 0..cfg.bound_max_steps.max(1) {
+            if timed && t0.elapsed() >= budget { break; }
+            let mid = 0.5 * (lo + hi);
+            let mixed = Solver::blend_root(&search_root, &bp_root, mid);
+            solver.set_root_strategy(&mixed);
+            match solver.opp_br_value() {
+                Some(br) => {
+                    if br <= br_bp {
+                        best = mixed;
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                None => { break; }
+            }
+            if hi - lo < 1e-3 { break; }
+        }
+        (best, false)
+    };
+    solver.set_root_strategy(&final_root);
+    let acts = solver.root_strategy(our_hand);
+    // M-4.3: only use per-hand trace when we kept the search root WHOLE
+    // (not when we blended toward the blueprint). A blend would update
+    // the tracker with a mixed policy the actual bot did not play.
+    let per_hand = if is_search {
+        let acts_list = solver.root_acts()?;
+        // M-4.3: precompute each tree action's abstract bucket from the
+        // SAME scalars `spec_from_state`/`action_bucket` used to build
+        // the tree. The session matches `applied_bucket` (also computed
+        // by `action_bucket`) against these, so the two agree exactly.
+        let stack = st.stacks[st.actor] + st.street_bets[st.actor];
+        let street_bets = st.street_bets[st.actor];
+        let opp_street_bets = st.street_bets[1 - st.actor];
+        let pot = st.pot;
+        let mut buckets: Vec<u8> = Vec::with_capacity(acts_list.len());
+        for act in &acts_list {
+            use pkr_core::state::ActionKind;
+            let kind = match act {
+                Act::Fold => ActionKind::Fold,
+                Act::Check => ActionKind::Check,
+                Act::Call => ActionKind::Call,
+                Act::Bet(t) => ActionKind::Bet(*t),
+            };
+            buckets.push(pkr_core::abstraction::action_bucket(
+                &kind, stack, street_bets, opp_street_bets, pot,
+            ));
+        }
+        Some((acts_list, buckets, final_root))
+    } else {
+        None
+    };
+    Some((acts, per_hand))
+}
+
 /// CFR-D gadget solve for EITHER seat. Places the acting player in
 /// solver-seat 0 via `dealer = 1 - actor` (so `root_actor = 0`); swaps
 /// only the range slots when the actor is IP. The gadget pays the

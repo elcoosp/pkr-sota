@@ -46,6 +46,17 @@ pub struct RuntimeSession<'a> {
     /// m10: per-session RNG so translation is deterministic within a deal
     /// and replayable across paired runs (CRN). Seeded from the deal root.
     rng: rand::rngs::SmallRng,
+    /// M-4.3 (audit 2026-10-10): the per-hand root strategy matrix and
+    /// action list from the LAST search solve. Consumed once, by the
+    /// next `observe_action` for OUR seat, so the RangeTracker is
+    /// updated with the SEARCH probability of the bucket we actually
+    /// played, not the blueprint's. `None` when the last decision was
+    /// blueprint-only or when the search was blended toward the
+    /// blueprint (in which case the played policy is not the search).
+    ///
+    /// `RefCell` because `advise` takes `&self` (callers hold the
+    /// session immutably while sampling an action).
+    pending_trace: std::cell::RefCell<Option<(Vec<pkr_subgame::vector::Act>, Vec<u8>, Vec<Vec<f32>>)>>,
 }
 
 /// §B: enable live action translation (env `PKR_TRANSLATE=1`). Off by
@@ -98,6 +109,7 @@ impl<'a> RuntimeSession<'a> {
                 use rand::SeedableRng;
                 rand::rngs::SmallRng::seed_from_u64(0xC0FFEE_u64)
             },
+            pending_trace: std::cell::RefCell::new(None),
         }
     }
 
@@ -118,6 +130,7 @@ impl<'a> RuntimeSession<'a> {
             self.shadow = Some(Shadow::new(root.clone()));
         }
         self.tracker = Some(RangeTracker::new(root, self.abs, self.tbl, self.ev));
+        *self.pending_trace.borrow_mut() = None;
     }
 
     /// Observe an action (ours or the opponent's).
@@ -152,6 +165,51 @@ impl<'a> RuntimeSession<'a> {
                     );
                     sh.observe_own_bucket(bucket)
                 };
+                // M-4.3 (audit 2026-10-10): if the last decision came from
+                // a search we KEPT WHOLE, update our own range with the
+                // SEARCH probability of the chosen bucket, not the
+                // blueprint's. Without this the posterior used for a
+                // later street's solve is the wrong belief about our own
+                // hand distribution. `pending_trace` is `Some` only when
+                // the search was unbounded-kept (not blended); when it is
+                // `None`, fall back to the blueprint update as before.
+                let consumed = self.pending_trace.borrow_mut().take();
+                if let (Some((acts, buckets, per_hand)), Some(t)) = (consumed, self.tracker.as_mut()) {
+                    let bucket = pkr_core::abstraction::action_bucket(
+                        &applied.kind,
+                        t.state().stacks[t.state().actor],
+                        t.state().street_bets[t.state().actor],
+                        t.state().street_bets[1 - t.state().actor],
+                        t.state().pot,
+                    );
+                    // Sum the per-hand probabilities of the tree actions
+                    // that map to `bucket` (multiple tree actions can
+                    // share a bucket; they represent one physical
+                    // decision to the tracker).
+                    let mut updated = [0.0f64; N_HANDS];
+                    let cur = *t.range(self.our_seat);
+                    let mut any = false;
+                    for (i, b) in buckets.iter().enumerate() {
+                        if *b != bucket { continue; }
+                        any = true;
+                        for h in 0..N_HANDS {
+                            let p = per_hand.get(i).map(|row| row[h] as f64).unwrap_or(0.0);
+                            updated[h] += cur[h] * p;
+                        }
+                    }
+                    if any {
+                        let ssum: f64 = updated.iter().sum();
+                        if ssum > 1e-12 {
+                            for v in updated.iter_mut() { *v /= ssum; }
+                            t.set_range(self.our_seat, &updated);
+                        }
+                    }
+                    // Still advance the tracker state (this is our own
+                    // action; the state must move forward). Use the
+                    // standard apply_action on a fresh tracker path.
+                    let _ = t.apply_action(applied);
+                    return;
+                }
                 if let Some(t) = self.tracker.as_mut() {
                     let _ = t.apply_action(applied);
                 }
@@ -290,10 +348,28 @@ impl<'a> RuntimeSession<'a> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(2000);
         let ranges = || [r_oop.clone(), r_ip.clone()];
+        // M-4.3: use the traced variant when the bound path runs, so we
+        // can update the tracker with the search policy after our own
+        // decision. Clear any prior trace first.
         let acts = if cfg.bound {
-            crate::vsearch::solve_root_bounded(st, ranges(), *our_hole, &cfg, self.abs, self.tbl)
-                .or_else(|| crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg))?
+            match crate::vsearch::solve_root_bounded_traced(
+                st, ranges(), *our_hole, &cfg, self.abs, self.tbl,
+            ) {
+                Some((a, trace)) => {
+                    *self.pending_trace.borrow_mut() = trace;
+                    a
+                }
+                None => {
+                    // Traced path returned nothing -> try the untraced
+                    // bound (which may still succeed on the fallback
+                    // branch). If that also fails, try the raw solve.
+                    *self.pending_trace.borrow_mut() = None;
+                    crate::vsearch::solve_root_bounded(st, ranges(), *our_hole, &cfg, self.abs, self.tbl)
+                        .or_else(|| crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg))?
+                }
+            }
         } else {
+            *self.pending_trace.borrow_mut() = None;
             crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg)?
         };
 
@@ -403,5 +479,19 @@ impl<'a> RuntimeSession<'a> {
 
     fn handle_blueprint_strategy(&self, hash: u64, out: &mut [f32; crate::subgame::SUBGAME_BUCKETS]) {
         self.handle.table_ref().get_average_strategy_into(hash, out);
+    }
+}
+
+/// Given the trace's tree actions and the tracker's bucket, return the
+/// bucket index if any tree action maps to it. This is a coarse check;
+/// the caller then sums per-hand probabilities across those actions.
+fn own_bucket_in_trace(_acts: &[pkr_subgame::vector::Act], applied_bucket: u8) -> Option<u8> {
+    // The bucket passed by the caller is authoritative (it was computed
+    // by `action_bucket` on the shadow state, exactly as the tracker
+    // will compute it). Return it as long as it is a valid bucket.
+    if (applied_bucket as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS {
+        Some(applied_bucket)
+    } else {
+        None
     }
 }

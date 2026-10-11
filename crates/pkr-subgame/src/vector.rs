@@ -926,6 +926,13 @@ impl<'a> Solver<'a> {
     }
     pub fn n_root_actions(&self) -> usize { self.p0_root().map(|an| an.acts.len()).unwrap_or(0) }
 
+    /// M-4.3: the root action list, if the root is a decision node.
+    /// Index-aligned with `root_strategy_all`'s outer dimension (both
+    /// read the same `ActNode::acts`).
+    pub fn root_acts(&self) -> Option<Vec<Act>> {
+        self.p0_root().map(|an| an.acts.clone())
+    }
+
     /// Install a wall-clock deadline for subsequent `opp_br_value` walks.
     /// `None` clears it. The flag is decision-wide: once fired it stays
     /// set until `set_deadline` is called again, so an over-budget solve
