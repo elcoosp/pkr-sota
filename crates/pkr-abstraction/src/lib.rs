@@ -959,7 +959,7 @@ mod extended_tests {
         let store = CentroidStore {
             centroids: vec![(0.1, 0.01), (0.5, 0.25), (0.9, 0.81)],
         };
-        let tmp = std::env::temp_dir().join("test_centroids.bin");
+        let tmp = std::env::temp_dir().join(format!("test_centroids-{}.bin", std::process::id()));
         save_centroids(tmp.to_str().unwrap(), &store).unwrap();
         let loaded = load_centroids(tmp.to_str().unwrap()).unwrap();
         assert_eq!(loaded.centroids.len(), 3);
@@ -976,7 +976,7 @@ mod extended_tests {
                 .map(|i| (i as f32 / n as f32, i as f32 / n as f32))
                 .collect(),
         };
-        let tmp = std::env::temp_dir().join("test_river_centroids.bin");
+        let tmp = std::env::temp_dir().join(format!("test_river_centroids-{}.bin", std::process::id()));
         save_centroids(tmp.to_str().unwrap(), &store).unwrap();
         let loaded = load_centroids(tmp.to_str().unwrap()).unwrap();
         assert_eq!(loaded.centroids.len(), n);
