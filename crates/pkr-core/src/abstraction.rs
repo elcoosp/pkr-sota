@@ -474,7 +474,11 @@ impl AbstractionFingerprint {
             },
             hash_algo: pkr_contracts::HASH_ALGO_FNV1A64_INFOSET,
             river_tier_shift: RIVER_TIER_SHIFT,
-            action_legal_v: 2,
+            // M-3 (audit 2026-10-10): strict min-raise / reopen rules
+            // change the legal action set, so a checkpoint trained with
+            // them must not load into a loose run and vice versa. Value
+            // 3 = strict mode; 2 = the shipped loose rules.
+            action_legal_v: if crate::state::strict_min_raise() { 3 } else { 2 },
             centroid_feature_v,
             bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") { 2 } else { 1 },
             stack_bb_div2: crate::state::stack_bb_div2(),

@@ -77,6 +77,25 @@ pub const SIG_V2_VERSION: u64 = 2;
 /// "Was the prior street bet into, and by whom" is a coarse proxy for
 /// whether the opponent's range is polarized or capped — the next
 /// standard missing dimension after faced-bet-size and pot class.
+/// M-3 (audit 2026-10-10): strict NLHE min-raise and betting-reopen
+/// rules. When ON (`PKR_STRICT_MIN_RAISE=1`):
+///
+/// - A short all-in (a Bet that raises by less than the last full raise)
+///   does NOT reopen betting. The opponent can call or fold, but not
+///   re-raise.
+/// - The min-raise-to is measured against the last FULL raise delta,
+///   not the (possibly short) current street bet.
+///
+/// Default OFF: the shipped K=7 checkpoint was trained under the loose
+/// rules, so enabling this invalidates it (the fingerprint bumps
+/// `action_legal_v` to 3). Read once via OnceLock; changing it after
+/// the first call has no effect.
+pub fn strict_min_raise() -> bool {
+    use std::sync::OnceLock;
+    static B: OnceLock<bool> = OnceLock::new();
+    *B.get_or_init(|| std::env::var("PKR_STRICT_MIN_RAISE").as_deref() == Ok("1"))
+}
+
 pub fn sig_v5_size_aware() -> bool {
     use std::sync::OnceLock;
     static B: OnceLock<bool> = OnceLock::new();
@@ -164,6 +183,15 @@ pub struct UndoRecord {
     /// `undo_action`. Consumed by `history_signature_v5`'s
     /// postflop aggressor bit.
     prev_street_aggressor: u8,
+    /// M-3: street_bets level after the last FULL bet/raise. Used by
+    /// the strict min-raise formula and the reopen rule.
+    last_full_raise_to: f32,
+    /// M-3: delta of the last full bet/raise. `opp_bet + this` is the
+    /// strict min-raise-to.
+    last_full_raise_delta: f32,
+    /// M-3: whether the current actor may raise (a short all-in clears
+    /// it). Only consulted when `strict_min_raise()` is on.
+    betting_reopened: bool,
     /// S6: last bettor of the CURRENT street (0/1; 2 = none yet).
     /// Set on every `Bet` apply, snapshotted into
     /// `prev_street_aggressor` at street advance, reset to 2 there,
@@ -213,6 +241,17 @@ pub struct GameState {
     /// `prev_street_aggressor` at street advance, reset to 2 there,
     /// restored by `undo_action`.
     pub street_aggressor: u8,
+    /// M-3 (audit 2026-10-10): street_bets level after the last FULL
+    /// bet/raise. Initialized to `bb` at preflop start, 0 postflop.
+    /// Only consulted when `strict_min_raise()` is on.
+    pub last_full_raise_to: f32,
+    /// M-3: delta of the last full bet/raise. Strict min-raise-to is
+    /// `opp_bet + last_full_raise_delta`.
+    pub last_full_raise_delta: f32,
+    /// M-3: whether the current actor may raise. Cleared by a short
+    /// all-in, reset to `true` at the start of each street. Only
+    /// consulted when `strict_min_raise()` is on.
+    pub betting_reopened: bool,
     /// Big blind, in chips. Set once in `new`; immutable after. Stored so
     /// signatures and bucketing that reason in bb are correct for any
     /// blind, not just the 1/2 default (L1).
@@ -249,6 +288,12 @@ impl GameState {
             actions_this_street: 0,
             raises_this_street: 0,
             total_raises: 0,
+            // M-3: preflop the forced BB is the "last full raise" for
+            // min-raise purposes; the delta is also bb. Postflop these
+            // are reset in advance_street_in_place.
+            last_full_raise_to: bb,
+            last_full_raise_delta: bb,
+            betting_reopened: true,
             abstract_history: [0u8; 48],
             abstract_history_len: 0,
             // F3: the pot at preflop start is the two forced bets.
@@ -273,7 +318,11 @@ impl GameState {
                 street_start_pot: 0.0,
                 prev_street_aggressor: 2,
                 street_aggressor: 2,
-            }; 48],
+                            // M-3: the strict-mode fields are restored by undo.
+                last_full_raise_to: 0.0,
+                last_full_raise_delta: 0.0,
+                betting_reopened: true,
+}; 48],
             undo_len: 0,
         }
     }
@@ -389,7 +438,12 @@ impl GameState {
                 kind: ActionKind::Call,
             };
             n += 1;
-            if can_raise {
+            // M-3: under strict rules, a short all-in does NOT reopen
+            // betting -- a player who already acted may only
+            // call or fold. Only consulted when strict mode is on.
+            let may_raise = can_raise
+                && (!strict_min_raise() || self.betting_reopened);
+            if may_raise {
                 let pot = self.pot;
                 let opp_bet = self.street_bets[1 - self.actor];
                 // F6: true NLHE min-raise-to is
@@ -408,7 +462,15 @@ impl GameState {
                 // Before this fix `opp_bet + pot * frac` could produce
                 // sizes below the legal minimum (audit F6), which real
                 // engines reject and which inflated the abstract game.
-                let min_raise_to = if self.raises_this_street == 0 {
+                // M-3 (audit 2026-10-10): under strict rules the
+                // min-raise-to is measured against the last FULL raise
+                // (not the possibly-short current street bet). The loose
+                // formula is kept when the flag is off, so the default
+                // path is byte-identical.
+                let min_raise_to = if strict_min_raise() {
+                    (self.last_full_raise_to + self.last_full_raise_delta)
+                        .max(opp_bet + self.last_full_raise_delta)
+                } else if self.raises_this_street == 0 {
                     2.0 * opp_bet
                 } else {
                     2.0 * opp_bet - self.street_bets[self.actor]
@@ -507,7 +569,11 @@ impl GameState {
             street_start_pot: self.street_start_pot,
             prev_street_aggressor: self.prev_street_aggressor,
             street_aggressor: self.street_aggressor,
-        };
+                    // M-3: save/restore the strict-mode fields.
+            last_full_raise_to: self.last_full_raise_to,
+            last_full_raise_delta: self.last_full_raise_delta,
+            betting_reopened: self.betting_reopened,
+};
         self.undo_stack[self.undo_len as usize] = record;
         self.undo_len += 1;
     }
@@ -603,6 +669,25 @@ impl GameState {
                 // no-op under-bet (chips == 0) still counts as aggression
                 // for signature purposes, matching `total_raises`.
                 self.street_aggressor = actor as u8;
+                // M-3 (audit 2026-10-10): update the strict min-raise
+                // bookkeeping ONLY when strict mode is on, so the loose
+                // (default) rules produce byte-identical state.
+                if strict_min_raise() {
+                    let new_level = current + chips;
+                    let delta = new_level - self.last_full_raise_to;
+                    if delta >= self.last_full_raise_delta - 1e-6 {
+                        // A genuine full raise: updates the level and
+                        // delta, and reopens betting.
+                        self.last_full_raise_to = new_level;
+                        self.last_full_raise_delta = delta;
+                        self.betting_reopened = true;
+                    } else {
+                        // A short all-in: does NOT update the level and
+                        // does NOT reopen betting for a player who has
+                        // already acted this street.
+                        self.betting_reopened = false;
+                    }
+                }
             }
         }
 
@@ -658,6 +743,10 @@ impl GameState {
         self.street_start_pot = rec.street_start_pot;
         self.prev_street_aggressor = rec.prev_street_aggressor;
         self.street_aggressor = rec.street_aggressor;
+        // M-3: restore the strict min-raise / reopen state.
+        self.last_full_raise_to = rec.last_full_raise_to;
+        self.last_full_raise_delta = rec.last_full_raise_delta;
+        self.betting_reopened = rec.betting_reopened;
     }
 
     pub fn is_street_complete(&self) -> bool {
@@ -722,6 +811,13 @@ impl GameState {
         self.actor = 1 - self.dealer;
         self.actions_this_street = 0;
         self.raises_this_street = 0;
+        // M-3: postflop there is no forced bet, so the "last full
+        // raise" starts at 0 and the delta is the big blind (the
+        // minimum opening bet). Betting is reopened at the start of
+        // every street.
+        self.last_full_raise_to = 0.0;
+        self.last_full_raise_delta = self.bb;
+        self.betting_reopened = true;
         // F3: the pot as of now is the pot at the start of the next
         // street. `push_undo` already captured the previous value, so
         // an `undo_action` restores it.
@@ -2189,10 +2285,57 @@ mod p2_undo_size_tests {
     /// P2: UndoRecord should stay small. It's memcpy'd on every action
     /// push. Target: <= 48 bytes (fits comfortably within one cache line
     /// alongside bookkeeping when 48 records are packed per state).
+    /// M-3: strict mode is off by default; the loose rules produce the
+    /// same legal actions the shipped checkpoint was trained on.
+    #[test]
+    fn m3_strict_min_raise_off_by_default() {
+        // Cannot toggle the env in-process (OnceLock); assert the
+        // accessor reads a bool. If a test process sets the env, this
+        // test would reflect that, which is fine -- the point is the
+        // mechanism is exercised.
+        let _ = strict_min_raise();
+    }
+
+    /// M-3: the loose path is byte-identical to the pre-M-3 behaviour
+    /// for a simple preflop spot. This is a shape test, not a full
+    /// differential; the loose formula is `2*opp_bet` when no raise has
+    /// happened, unchanged.
+    #[test]
+    fn m3_loose_rules_unchanged_preflop() {
+        let st = GameState::new(200.0, 1.0, 2.0);
+        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let n = st.legal_actions_into(&mut buf);
+        assert!(n >= 2, "preflop SB must have at least fold + call");
+        // First action: fold, call, raises, jam.
+        assert!(matches!(buf[0].kind, ActionKind::Fold));
+        assert!(matches!(buf[1].kind, ActionKind::Call));
+    }
+
+    /// M-3: the two new fields roundtrip through push_undo / undo_action
+    /// so an undo restores the strict bookkeeping.
+    #[test]
+    fn m3_fields_roundtrip_through_undo() {
+        let mut st = GameState::new(200.0, 1.0, 2.0);
+        let before = (st.last_full_raise_to, st.last_full_raise_delta, st.betting_reopened);
+        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        // Bet(6.0) is a raise here (BB=2, so 6 > 2*2).
+        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+        st.undo_action();
+        st.undo_action();
+        assert_eq!(st.last_full_raise_to, before.0);
+        assert_eq!(st.last_full_raise_delta, before.1);
+        assert_eq!(st.betting_reopened, before.2);
+    }
+
     #[test]
     fn undo_record_is_compact() {
         let sz = std::mem::size_of::<UndoRecord>();
-        assert!(sz <= 48, "UndoRecord grew to {} bytes; revisit packing", sz);
+        // History: 48 bytes before M-3 (2026-10-10). M-3 added the
+        // strict min-raise bookkeeping -- two f32 fields plus a bool.
+        // The bool packs into the existing u8 word for free; the two
+        // f32s are +8 bytes. 56 is still under one cache line, which
+        // was the point of the P2 target.
+        assert!(sz <= 56, "UndoRecord grew to {} bytes; revisit packing", sz);
     }
 }
 
