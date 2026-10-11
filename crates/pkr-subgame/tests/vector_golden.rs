@@ -92,3 +92,57 @@ fn vector_solver_constructs_and_iterates() {
     let e = s.exploitability();
     assert!(e.is_finite());
 }
+
+/// Turn-tree golden. The board has 4 cards, so `end_street` builds a
+/// Chance node over 46 rivers -- this is the code path P7 (reach-clone
+/// elimination) touches. The river golden above does not exercise any
+/// Chance node, so this test is the one that catches a chance-arm bug.
+///
+/// Same deterministic evaluator and LCG ranges as the river golden;
+/// only the board length differs.
+#[test]
+fn vector_turn_golden_exercises_chance_nodes() {
+    let board: Vec<u8> = vec![12, 24, 37, 50]; // 4-card turn board
+    let mut s = 7u64;
+    let mut lcg = || {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((s >> 33) as f32) / ((1u64 << 31) as f32)
+    };
+    let mut r0 = vec![0.0f32; 1326];
+    let mut r1 = vec![0.0f32; 1326];
+    for h in 0..1326 {
+        r0[h] = if lcg() < 0.55 { lcg() } else { 0.0 };
+        r1[h] = if lcg() < 0.55 { lcg() } else { 0.0 };
+    }
+    let spec = Spec {
+        board,
+        dead: 100.0,
+        stack: 150.0,
+        root_actor: 0,
+        root_inv: [0.0, 0.0],
+        bet_fracs: vec![0.5, 1.0],
+        max_raises: 2,
+        min_bet: 2.0,
+        allin_snap: 0.2,
+        ranges: [r0, r1],
+    };
+    let eval: &'static (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync) = &det_eval;
+    let mut solver = Solver::new(spec, eval);
+    // Small iteration count: the turn tree is ~46x the river tree, and
+    // each iteration walks every chance branch.
+    solver.iterate(5);
+    let e = solver.exploitability();
+    eprintln!("VECTOR_TURN_GOLDEN exploitability@5 = {:.6}", e);
+    assert!(e.is_finite(), "turn exploitability non-finite: {e}");
+    assert!(e >= 0.0);
+    // Captured 2026-10-11, before the P7 reach-clone refactor:
+    //   turn exploitability@5 = 26.393711.
+    // The value is deterministic, so 1e-4 tolerance catches any drift
+    // from the P7 change to the Chance-arm reach handling.
+    let want = 26.393711_f32;
+    assert!(
+        (e - want).abs() < 1e-4,
+        "turn golden drifted: got {e:.6}, want {want:.6}. The P7 refactor \
+must preserve per-hand arithmetic at Chance nodes."
+    );
+}
