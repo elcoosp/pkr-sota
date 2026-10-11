@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history for cargo cache key
+          # Shallow fetch: cache key does not depend on history.
           fetch-depth: 1
 
       - name: Install Rust toolchain (stable, minimal)

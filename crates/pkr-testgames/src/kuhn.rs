@@ -554,7 +554,7 @@ mod t03_tests {
 
     /// After convergence, exploitability should be strictly lower than
     /// uniform. Convergence here = 50k iterations of vanilla CFR on Kuhn,
-    /// which is trivial (~50k * 18 infosets ops).
+    /// which is trivial (~50k * 12 infosets ops -- 2 players x 6 infosets).
     #[test]
     fn cfr_converges_on_kuhn() {
         let mut k = KuhnCfr::new(pkr_cfr::dcfr::DiscountMode::None);
