@@ -1326,8 +1326,13 @@ name = "pkr-runtime-bench"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "pkr-abstraction",
+ "pkr-cfr",
  "pkr-contracts",
+ "pkr-core",
+ "pkr-eval",
  "pkr-runtime",
+ "pkr-subgame",
 ]
 
 [[package]]

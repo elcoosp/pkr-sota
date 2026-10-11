@@ -8,10 +8,19 @@ publish = false
 [dependencies]
 pkr-runtime = { workspace = true }
 pkr-contracts = { workspace = true }
+pkr-core = { workspace = true }
+pkr-cfr = { workspace = true }
+pkr-subgame = { path = "../../crates/pkr-subgame" }
+pkr-abstraction = { workspace = true }
+pkr-eval = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
 
 [[bench]]
 name = "lookup"
+harness = false
+
+[[bench]]
+name = "tracker"
 harness = false
