@@ -90,6 +90,13 @@ impl MmapReader {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, MmapError> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
+        // P17 (audit 2026-10-10): the blueprint is accessed by random
+        // hash lookups (binary search over the sorted key table, plus
+        // FMph displacement reads), not by sequential scan. Tell the
+        // kernel so it does not read-ahead pages we will never touch.
+        // Best-effort: `advise` returning Err on a platform that does
+        // not support the hint is not fatal.
+        let _ = mmap.advise(memmap2::Advice::Random);
 
         if mmap.len() < std::mem::size_of::<FileHeader>() {
             return Err(MmapError::FileTooSmall);
