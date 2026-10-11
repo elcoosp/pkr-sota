@@ -22,3 +22,6 @@ pollster = { version = "0.3", optional = true }
 # GPU path is opt-in. Production uses flush_cpu_batch.
 default = []
 gpu = ["wgpu", "pollster"]
+
+[dev-dependencies]
+tempfile = "3"

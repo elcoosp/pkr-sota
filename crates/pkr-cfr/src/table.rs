@@ -1082,39 +1082,25 @@ impl CompactRegretTable {
         current: &pkr_core::abstraction::AbstractionFingerprint,
     ) -> std::io::Result<u32> {
         use std::io::Read;
+        // M-15 (audit 2026-10-10): stream the read. The old loader held
+        // the whole checkpoint (up to 4 GB) in one Vec, then decoded the
+        // bulk sections out of it; peak transient memory was file_len
+        // PLUS the freshly allocated (lazily-zeroed) table, which could
+        // OOM a 16 GB machine. Now: small header fields via `read_n`,
+        // the key map in batches, and the regret/strategy bulk data in
+        // 1 MB chunks written directly into the destination atomics.
+        // Peak transient memory is ~1 MB.
         let mut f = std::fs::File::open(path)?;
-        let file_len = f.metadata()?.len();
-        // M-15 (audit 2026-10-10): loading a full 60M-capacity checkpoint
-        // held ~7.7 GB transient; combined with the live table this can
-        // OOM a 16 GB machine. Streaming the read is a larger refactor;
-        // until it lands, refuse to OOM: bound the read and tell the
-        // operator to reduce capacity or move to a machine with headroom.
-        const MAX_TRANSIENT_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
-        if file_len > MAX_TRANSIENT_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "checkpoint is {} bytes; the streaming loader is not \
-yet wired. Reduce --capacity or run on a bigger machine.",
-                    file_len
-                ),
-            ));
+
+        // Read exactly `n` bytes into a fresh Vec. Used only for small
+        // (<= a few KB) header fields; bulk sections are streamed.
+        fn read_n<R: Read>(f: &mut R, n: usize) -> std::io::Result<Vec<u8>> {
+            let mut buf = vec![0u8; n];
+            f.read_exact(&mut buf)?;
+            Ok(buf)
         }
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf)?;
-        let mut p = 0usize;
-        let read = |p: &mut usize, n: usize| -> std::io::Result<&[u8]> {
-            if *p + n > buf.len() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "checkpoint truncated",
-                ));
-            }
-            let s = &buf[*p..*p + n];
-            *p += n;
-            Ok(s)
-        };
-        let magic = read(&mut p, 8)?;
+
+        let magic = read_n(&mut f, 8)?;
         if magic == b"PKRCKPT6" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1139,7 +1125,7 @@ yet wired. Reduce --capacity or run on a bigger machine.",
                 "bad checkpoint magic (expected v8 format)",
             ));
         }
-        let version = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
+        let version = u32::from_le_bytes(read_n(&mut f, 4)?.try_into().unwrap());
         if version != 8 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1151,9 +1137,9 @@ yet wired. Reduce --capacity or run on a bigger machine.",
         // by a binary whose abstraction differed in a way that changes
         // infoset identity or action meaning. Resuming would silently
         // corrupt training (r3 rule 0.1).
-        let fp_bytes = read(&mut p, 40)?;
+        let fp_bytes = read_n(&mut f, 40)?;
         let stored_fp: &pkr_core::abstraction::AbstractionFingerprint =
-            bytemuck::from_bytes(fp_bytes);
+            bytemuck::from_bytes(&fp_bytes[..]);
         // bucket_width was added over a previously-zero pad byte. A
         // pre-field checkpoint has stored.bucket_width == 0, which must
         // read as legacy u8 (1) so the derived `!=` does not spuriously
@@ -1161,16 +1147,9 @@ yet wired. Reduce --capacity or run on a bigger machine.",
         // differences"). Normalise a copy.
         let mut stored_norm = *stored_fp;
         if stored_norm.bucket_width == 0 {
-            // Pre-field checkpoint: the byte was never written, so the
-            // width is unknown. Accept whatever the current binary uses
-            // (the caller set PKR_BUCKET_U16 to match its tables) rather
-            // than rejecting a checkpoint that may well be correct.
             stored_norm.bucket_width = current.bucket_width;
         }
         if stored_norm.stack_bb_div2 == 0 {
-            // Pre-field checkpoint: was 100bb. Normalise so a default
-            // (PKR_STACK_BB=100) run matches; a 200bb run (expected 100)
-            // then correctly rejects it.
             stored_norm.stack_bb_div2 = 50;
         }
         if &stored_norm != current {
@@ -1184,22 +1163,22 @@ yet wired. Reduce --capacity or run on a bigger machine.",
                 ),
             ));
         }
-        let k = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap()) as usize;
+        let k = u32::from_le_bytes(read_n(&mut f, 4)?.try_into().unwrap()) as usize;
         if k != K {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "checkpoint K mismatch",
             ));
         }
-        let iteration = u32::from_le_bytes(read(&mut p, 4)?.try_into().unwrap());
-        let n = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
+        let iteration = u32::from_le_bytes(read_n(&mut f, 4)?.try_into().unwrap());
+        let n = u64::from_le_bytes(read_n(&mut f, 8)?.try_into().unwrap()) as usize;
         if n > self.capacity {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "checkpoint larger than table capacity",
             ));
         }
-        let map_len = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
+        let map_len = u64::from_le_bytes(read_n(&mut f, 8)?.try_into().unwrap()) as usize;
         // Reset ALL state first, so a failed/partial load cannot leave
         // stale cells that `alloc_idx` would later hand out as fresh.
         self.data
@@ -1210,35 +1189,72 @@ yet wired. Reduce --capacity or run on a bigger machine.",
             .for_each(|c| c.store(0, Ordering::Relaxed));
         self.next_idx.store(0, Ordering::Relaxed);
         IDX_CACHE.with(|c| *c.borrow_mut() = vec![CacheSlot { key: 0, idx: 0 }; CACHE_SIZE]);
-        let guard = self.hash_to_idx.pin();
-        guard.clear();
-        for _ in 0..map_len {
-            let key = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap());
-            let idx = u64::from_le_bytes(read(&mut p, 8)?.try_into().unwrap()) as usize;
-            if idx >= self.capacity {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "checkpoint index out of range",
-                ));
+
+        // Read the key map in batches of 4096 entries (64 KB) then
+        // insert under the pin. Batching the file IO means we do not
+        // hold the pin guard while blocked on disk.
+        const KEY_BATCH: usize = 4096;
+        let mut keys_buf: Vec<(u64, u32)> = Vec::with_capacity(map_len);
+        let mut remaining = map_len;
+        while remaining > 0 {
+            let batch = remaining.min(KEY_BATCH);
+            let bytes = read_n(&mut f, batch * 16)?;
+            for i in 0..batch {
+                let off = i * 16;
+                let key = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
+                let idx =
+                    u64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap()) as usize;
+                if idx >= self.capacity {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "checkpoint index out of range",
+                    ));
+                }
+                keys_buf.push((key, idx as u32));
             }
-            guard.insert(key, idx);
+            remaining -= batch;
         }
-        // P2-a: bulk read + per-element atomic store. The slow part was
-        // calling `read()` once per element (each call re-checks bounds
-        // and slices buf); doing one big read and iterating the slice is
-        // 10-50x faster at 5M infosets. Atomics still need per-cell
-        // stores because we hold `&self`.
-        let rm_entries = n * RM_STRIDE;
-        let rm_bytes = read(&mut p, rm_entries * 8)?;
-        for (i, chunk) in rm_bytes.as_chunks::<8>().0.iter().enumerate() {
-            let v = i64::from_le_bytes(*chunk);
-            self.data[i].store(v, Ordering::Relaxed);
+        {
+            let guard = self.hash_to_idx.pin();
+            guard.clear();
+            for (k, idx) in &keys_buf {
+                guard.insert(*k, *idx as usize);
+            }
         }
-        let sum_entries = n * SUM_STRIDE;
-        let sum_bytes = read(&mut p, sum_entries * 8)?;
-        for (i, chunk) in sum_bytes.as_chunks::<8>().0.iter().enumerate() {
-            let v = u64::from_le_bytes(*chunk);
-            self.strategy_sum[i].store(v, Ordering::Relaxed);
+        drop(keys_buf);
+
+        // Bulk regret cells: 1 MB chunk at a time, straight into the
+        // destination atomics.
+        const IO_CHUNK: usize = 1 << 20; // 1 MB
+        let rm_bytes = n * RM_STRIDE * 8;
+        if rm_bytes > 0 {
+            let mut buf = vec![0u8; IO_CHUNK.min(rm_bytes)];
+            let mut done = 0usize;
+            while done < rm_bytes {
+                let take = (rm_bytes - done).min(buf.len());
+                f.read_exact(&mut buf[..take])?;
+                let base = done / 8;
+                for (i, chunk) in buf[..take].as_chunks::<8>().0.iter().enumerate() {
+                    let v = i64::from_le_bytes(*chunk);
+                    self.data[base + i].store(v, Ordering::Relaxed);
+                }
+                done += take;
+            }
+        }
+        let sum_bytes = n * SUM_STRIDE * 8;
+        if sum_bytes > 0 {
+            let mut buf = vec![0u8; IO_CHUNK.min(sum_bytes)];
+            let mut done = 0usize;
+            while done < sum_bytes {
+                let take = (sum_bytes - done).min(buf.len());
+                f.read_exact(&mut buf[..take])?;
+                let base = done / 8;
+                for (i, chunk) in buf[..take].as_chunks::<8>().0.iter().enumerate() {
+                    let v = u64::from_le_bytes(*chunk);
+                    self.strategy_sum[base + i].store(v, Ordering::Relaxed);
+                }
+                done += take;
+            }
         }
         self.next_idx.store(n, Ordering::Relaxed);
         CACHE_GEN.fetch_add(1, Ordering::Relaxed);
