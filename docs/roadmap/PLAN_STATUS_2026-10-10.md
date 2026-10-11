@@ -92,8 +92,11 @@ Revised plan status:
 - Phase 4.5 (turn budget): `session.rs:259` note — a turn decision
   costs ~52 s because the bound's BR walks fall outside
   `time_budget_ms`.
-- Phase 5 depth-limited flop: `crates/pkr-cfr/src/riversolve.rs` is
-  river-only (`state.street == Street::River` at :268, :326).
+- Phase 5 depth-limited flop: **design doc written**, see
+  `docs/roadmap/phase-5-depth-limited-flop-design.md`. The prerequisite
+  (leaf EV table at current abstraction resolution) is UNPROVEN; a
+  step-1 measurement is required before any implementation. Not a
+  mechanical next step.
 - Phase 6 200 bb + Slumbot: client + `PKR_STACK_BB` exist; no 200 bb
   checkpoint yet; no live Slumbot number.
 - Leduc 8-config grid: only baseline finished; harness at
