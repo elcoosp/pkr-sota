@@ -81,6 +81,16 @@ struct Cli {
     #[arg(long)]
     flop_buckets: Option<PathBuf>,
 
+    /// M-20: flop table width (number of flop buckets). Recorded in the
+    /// checkpoint fingerprint so a resume with a different table refuses
+    /// to load. 0 (default) = untracked.
+    #[arg(long, default_value_t = 0)]
+    flop_k: u32,
+
+    /// M-20: river bucket count. Recorded in the fingerprint. 0 = untracked.
+    #[arg(long, default_value_t = 0)]
+    river_k: u32,
+
     #[arg(long, default_value = "hand_ranks.bin")]
     rank_table: PathBuf,
 
@@ -448,7 +458,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // F2b: fingerprint the semantic configuration. Every checkpoint
     // carries this; mismatch on load aborts (see table.rs).
-    let fingerprint = pkr_core::abstraction::AbstractionFingerprint::from_constants(k as u32);
+    // M-20: pass flop_k and river_k so the fingerprint binds the full
+    // table set. Zero (default) keeps the legacy untracked behaviour.
+    let fingerprint = pkr_core::abstraction::AbstractionFingerprint::from_constants_with(
+        k as u32,
+        cli.flop_k,
+        cli.river_k,
+    );
     eprintln!(
         "fingerprint: k={} sizings=[{:.2},{:.2},{:.2}] thresholds=[{:.2},{:.2}] sig_v={} hash_algo={}",
         fingerprint.preflop_k,

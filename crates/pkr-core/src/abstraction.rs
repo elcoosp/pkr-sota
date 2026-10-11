@@ -411,6 +411,25 @@ impl AbstractionFingerprint {
     /// dimensions; the F2b commit keeps this constructor's signature
     /// stable and adds those fields when needed.
     pub fn from_constants(preflop_k: u32) -> Self {
+        // M-20 (audit 2026-10-10): legacy constructor. Leaves flop_k and
+        // river_buckets at 0 (untracked). Callers that know the flop
+        // table width and river bucket count should use
+        // `from_constants_with`. Kept so 80+ test call sites do not
+        // need updating; a real training run passes the tracked values.
+        Self::from_constants_with(preflop_k, 0, 0)
+    }
+
+    /// M-20: same as `from_constants` but records the flop table width
+    /// and the river bucket count. Set both when the tables are known
+    /// (the trainer reads them from the CLI); a mismatch on load means
+    /// the checkpoint was trained against different tables, which would
+    /// silently produce nonsense infosets otherwise.
+    ///
+    /// `0` is the sentinel for "untracked". A checkpoint written with
+    /// `flop_k == 0` accepts any current value (legacy load), so this
+    /// change does not invalidate existing checkpoints. A checkpoint
+    /// written with `flop_k != 0` requires an exact match.
+    pub fn from_constants_with(preflop_k: u32, flop_k: u32, river_buckets: u32) -> Self {
         // F4: which feature space the centroid tables describe.
         //
         //   0 = legacy (EHS, EHS²), every pre-F4 checkpoint
@@ -435,8 +454,8 @@ impl AbstractionFingerprint {
 
         Self {
             preflop_k,
-            flop_k: 0,
-            river_buckets: 0,
+            flop_k,
+            river_buckets,
             sizing_small: BET_SIZINGS[0],
             sizing_medium: BET_SIZINGS[1],
             sizing_large: BET_SIZINGS[2],
@@ -503,6 +522,25 @@ impl AbstractionFingerprint {
                  set PKR_STACK_BB to match the checkpoint)",
                 stored_s, expected.stack_bb_div2,
                 stored_s as u32 * 2, expected.stack_bb_div2 as u32 * 2,
+            );
+        }
+        // M-20 (audit 2026-10-10): flop_k and river_buckets were added to
+        // the struct but never checked. 0 is "untracked" (legacy
+        // checkpoints and any caller using `from_constants`), and a
+        // tracked value (non-zero) must match exactly.
+        if self.flop_k != 0 && self.flop_k != expected.flop_k {
+            return format!(
+                "flop_k mismatch: stored={} current={} (checkpoint was trained \
+against a different flop table width; retrain or load the matching tables)",
+                self.flop_k, expected.flop_k,
+            );
+        }
+        if self.river_buckets != 0 && self.river_buckets != expected.river_buckets {
+            return format!(
+                "river_buckets mismatch: stored={} current={} (checkpoint was \
+trained against a different river bucket count; retrain or load the matching \
+tables)",
+                self.river_buckets, expected.river_buckets,
             );
         }
         if self.centroid_feature_v != expected.centroid_feature_v {
@@ -960,5 +998,43 @@ mod bucket_decode_helper_tests {
         assert_eq!(sample_legal_index(&probs, &b2a, 0.9), Some(3));
         // r=0.1 -> target=0.05 -> first present bucket.
         assert_eq!(sample_legal_index(&probs, &b2a, 0.1), Some(2));
+    }
+    // M-20 (audit 2026-10-10) tests.
+    #[test]
+    fn m20_legacy_constructor_leaves_flop_river_untracked() {
+        let f = AbstractionFingerprint::from_constants(200);
+        assert_eq!(f.flop_k, 0);
+        assert_eq!(f.river_buckets, 0);
+    }
+
+    #[test]
+    fn m20_tracked_flop_k_rejects_mismatch() {
+        let stored = AbstractionFingerprint::from_constants_with(200, 512, 0);
+        let current = AbstractionFingerprint::from_constants_with(200, 1024, 0);
+        let msg = stored.describe_mismatch(&current);
+        assert!(msg.contains("flop_k"), "expected flop_k mismatch, got: {msg}");
+    }
+
+    #[test]
+    fn m20_tracked_river_buckets_reject_mismatch() {
+        let stored = AbstractionFingerprint::from_constants_with(200, 0, 512);
+        let current = AbstractionFingerprint::from_constants_with(200, 0, 1024);
+        let msg = stored.describe_mismatch(&current);
+        assert!(msg.contains("river_buckets"), "got: {msg}");
+    }
+
+    #[test]
+    fn m20_untracked_checkpoint_loads_against_tracked_current() {
+        // A checkpoint written before M-20 has flop_k=0, river_buckets=0.
+        // It must LOAD against any current fingerprint (the whole point
+        // of the 0=untracked sentinel).
+        let stored = AbstractionFingerprint::from_constants(200);
+        let current = AbstractionFingerprint::from_constants_with(200, 512, 512);
+        // describe_mismatch returns a string (empty on match or a
+        // preflop_k-only diff). Assert it does NOT complain about
+        // flop_k/river_buckets.
+        let msg = stored.describe_mismatch(&current);
+        assert!(!msg.contains("flop_k"), "untracked must not reject: {msg}");
+        assert!(!msg.contains("river_buckets"), "untracked must not reject: {msg}");
     }
 }
