@@ -11,7 +11,7 @@
 //! run records the value without failing. Once the value is captured,
 //! remove `#[ignore]` and hard-code it.
 
-use pkr_subgame::vector::{spec_from_state, Solver, Spec, Act};
+use pkr_subgame::vector::{Solver, Spec, Act};
 
 /// Deterministic evaluator that ignores the actual cards and uses the
 /// sum of the two hole-card ids as the hand strength. Fast, no deps,

@@ -38,12 +38,12 @@ pub struct Spec {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act { Fold, Check, Call, Bet(f32) }
 
-struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<Node>, regret: Vec<f32>, ssum: Vec<f32>, sig: [u8; 8], sig_len: u8, buckets: Vec<u8> }
+struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<u32>, regret: Vec<f32>, ssum: Vec<f32>, sig: [u8; 8], sig_len: u8, buckets: Vec<u8> }
 /// Per-board showdown table, shared by every Show node with the
 /// same board. Computing it once instead of per node is the win.
 struct ShowTable { worst_first: Vec<u16>, rank: Vec<u32> }
 struct ShowNode { inv: f32, table: Arc<ShowTable> }
-struct ChanceNode { cards: Vec<u8>, kids: Vec<Node>, n_deck: f32 }
+struct ChanceNode { cards: Vec<u8>, kids: Vec<u32>, n_deck: f32 }
 enum Node {
     Act(ActNode),
     Fold { folder: usize, inv: [f32; 2] },
@@ -64,7 +64,13 @@ pub struct Solver<'a> {
     spec: Spec,
     holes: Vec<[u8; 2]>,
     eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync),
-    root: Node,
+    /// M-31 (audit 2026-10-10): nodes live in a flat arena; children are
+    /// `u32` indices. Removes the recursive Node-owns-Node structure
+    /// whose mutation forced a `&mut Node` laundered from a raw pointer
+    /// while `&self` was alive (aliasing UB).
+    arena: Vec<Node>,
+    /// Index of the real root node in `arena`.
+    root_idx: u32,
     pub iters: u32,
     valid_root: Vec<bool>,
     /// The real root `GameState`, when the tree was built with history.
@@ -91,14 +97,14 @@ pub struct Solver<'a> {
 impl<'a> Solver<'a> {
     pub fn new(spec: Spec, eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync)) -> Self {
         let holes = hole_table();
-        let mut s = Solver { spec, holes, eval, root: Node::Fold { folder: 0, inv: [0.0; 2] }, iters: 0, valid_root: vec![], gadget_player: None, root_state: None, show_cache: RefCell::new(HashMap::new()), deadline: Cell::new(None), timed_out: Cell::new(false) };
+        let mut s = Solver { spec, holes, eval, arena: Vec::new(), root_idx: 0, iters: 0, valid_root: vec![], gadget_player: None, root_state: None, show_cache: RefCell::new(HashMap::new()), deadline: Cell::new(None), timed_out: Cell::new(false) };
         s.valid_root = (0..N).map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c))).collect();
         for p in 0..2 { for h in 0..N { if !s.valid_root[h] { s.spec.ranges[p][h] = 0.0; } } }
         let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
         let mut board = s.spec.board.clone();
         let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 { St { raises: 1, last_raise: (st.inv[0] - st.inv[1]).abs(), n_act: 1, ..st } } else { st };
         let mut hist = s.root_state.clone();
-        s.root = s.build(st, &mut board, &mut hist);
+        s.root_idx = s.build(st, &mut board, &mut hist);
         s
     }
 
@@ -116,11 +122,36 @@ impl<'a> Solver<'a> {
         let mut board = s.spec.board.clone();
         let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 { St { raises: 1, last_raise: (st.inv[0] - st.inv[1]).abs(), n_act: 1, ..st } } else { st };
         let mut hist = Some(root_state);
-        s.root = s.build(st, &mut board, &mut hist);
+        s.root_idx = s.build(st, &mut board, &mut hist);
         s
     }
 
     fn pot(&self, inv: [f32; 2]) -> f32 { self.spec.dead + inv[0] + inv[1] }
+
+    /// M-31 (audit 2026-10-10): push a node into the arena, return its
+    /// index. Replaces the old "`Node` owns its `Vec<Node>` kids"
+    /// structure; kids are now `Vec<u32>` indices.
+    fn push_node(&mut self, n: Node) -> u32 {
+        let i = self.arena.len() as u32;
+        self.arena.push(n);
+        i
+    }
+
+    /// Read a node by index. Panics if the index is out of range --
+    /// that would be a bug in the tree builder, not user input.
+    #[inline]
+    fn node(&self, idx: u32) -> &Node {
+        &self.arena[idx as usize]
+    }
+
+    #[inline]
+    fn root(&self) -> &Node {
+        &self.arena[self.root_idx as usize]
+    }
+    #[inline]
+    fn root_mut(&mut self) -> &mut Node {
+        &mut self.arena[self.root_idx as usize]
+    }
 
     fn to_action(act: &Act, player: usize) -> pkr_core::state::Action {
         use pkr_core::state::{Action, ActionKind};
@@ -142,31 +173,28 @@ impl<'a> Solver<'a> {
     /// P0's decision node at the (possibly gadgetted) root. With the
     /// CFR-D gadget installed, P0's real root is the `Follow` child of
     /// the gadget's P1 node; otherwise it is `self.root` itself.
-    fn p0_root(&self) -> Option<&ActNode> {
-        let target = if self.gadget_player.is_some() {
-            match &self.root {
-                Node::Act(an) if an.kids.len() >= 2 => &an.kids[1],
-                _ => return None,
+    fn p0_root_idx(&self) -> Option<u32> {
+        if self.gadget_player.is_some() {
+            match self.root() {
+                Node::Act(an) if an.kids.len() >= 2 => Some(an.kids[1]),
+                _ => None,
             }
         } else {
-            &self.root
-        };
-        match target {
+            Some(self.root_idx)
+        }
+    }
+
+    fn p0_root(&self) -> Option<&ActNode> {
+        let i = self.p0_root_idx()?;
+        match &self.arena[i as usize] {
             Node::Act(an) => Some(an),
             _ => None,
         }
     }
 
     fn p0_root_mut(&mut self) -> Option<&mut ActNode> {
-        let target = if self.gadget_player.is_some() {
-            match &mut self.root {
-                Node::Act(an) if an.kids.len() >= 2 => &mut an.kids[1],
-                _ => return None,
-            }
-        } else {
-            &mut self.root
-        };
-        match target {
+        let i = self.p0_root_idx()?;
+        match &mut self.arena[i as usize] {
             Node::Act(an) => Some(an),
             _ => None,
         }
@@ -190,17 +218,12 @@ impl<'a> Solver<'a> {
         // (The verified sampled gadget has P1 both choose and receive
         // their cbv.) So the gadget node's player == payee.
         let gadget_actor = payee as usize;
-        let real_root = std::mem::replace(
-            &mut self.root,
-            Node::Fold { folder: 0, inv: [0.0; 2] },
-        );
+        let real_root_idx = self.root_idx;
+        let term_idx = self.push_node(Node::TermGadget { cbv, payee });
         let acts = vec![Act::Fold, Act::Check];
-        let kids = vec![
-            Node::TermGadget { cbv, payee },
-            real_root,
-        ];
+        let kids = vec![term_idx, real_root_idx];
         let n = acts.len();
-        self.root = Node::Act(ActNode {
+        let new_root = self.push_node(Node::Act(ActNode {
             player: gadget_actor,
             acts,
             kids,
@@ -209,7 +232,8 @@ impl<'a> Solver<'a> {
             sig: [0u8; 8],
             sig_len: 0,
             buckets: Vec::new(),
-        });
+        }));
+        self.root_idx = new_root;
         self.gadget_player = Some(payee);
     }
 
@@ -229,7 +253,7 @@ impl<'a> Solver<'a> {
         if self.gadget_player.is_none() {
             return None;
         }
-        match &self.root {
+        match self.root() {
             Node::Act(an) if an.acts.len() >= 2 => {
                 let n = an.acts.len();
                 let mut st = vec![0.0f32; n * N];
@@ -247,8 +271,17 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn build(&self, st: St, board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> Node {
-        let a = st.actor; let o = 1 - a; let sp = &self.spec;
+    fn build(&mut self, st: St, board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> u32 {
+        let a = st.actor; let o = 1 - a;
+        // M-31: `sp` is borrowed immutably, but this fn now calls
+        // `self.push_node(&mut self)` inside the loop. Copy the
+        // scalars we need out of `self.spec` so the borrow is not held
+        // across the mutable calls.
+        let max_raises = self.spec.max_raises;
+        let stack = self.spec.stack;
+        let min_bet = self.spec.min_bet;
+        let allin_snap = self.spec.allin_snap;
+        let bet_fracs: Vec<f32> = self.spec.bet_fracs.clone();
         let pot = self.pot(st.inv);
         let facing = st.inv[o] > st.inv[a] + 1e-6;
         let (sig, sig_len) = match hist.as_ref() {
@@ -256,21 +289,21 @@ impl<'a> Solver<'a> {
             None => ([0u8; 8], 0),
         };
         let mut acts: Vec<Act> = Vec::new();
-        let mut kids: Vec<Node> = Vec::new();
-        let can_raise = st.raises < sp.max_raises && sp.stack > st.inv[o] + 1e-6;
+        let mut kids: Vec<u32> = Vec::new();
+        let can_raise = st.raises < max_raises && stack > st.inv[o] + 1e-6;
         if facing { acts.push(Act::Fold); acts.push(Act::Call); } else { acts.push(Act::Check); }
         if can_raise {
             let to_call = (st.inv[o] - st.inv[a]).max(0.0);
-            let min_to = st.inv[o] + st.last_raise.max(sp.min_bet);
+            let min_to = st.inv[o] + st.last_raise.max(min_bet);
             let mut tos: Vec<f32> = Vec::new();
-            for &f in &sp.bet_fracs {
+            for &f in &bet_fracs {
                 let mut t = st.inv[o] + f * (pot + to_call);
                 if t < min_to { t = min_to; }
                 let pot_after = pot + (t - st.inv[a]);
-                if t >= sp.stack - 1e-6 || sp.stack - t < sp.allin_snap * pot_after { t = sp.stack; }
+                if t >= stack - 1e-6 || stack - t < allin_snap * pot_after { t = stack; }
                 if t > st.inv[o] + 1e-6 { tos.push(t); }
             }
-            tos.push(sp.stack);
+            tos.push(stack);
             tos.sort_by(|x, y| x.total_cmp(y));  // M-37: NaN-safe
             tos.dedup_by(|x, y| (*x - *y).abs() < 1e-4);
             for t in tos { acts.push(Act::Bet(t)); }
@@ -279,7 +312,7 @@ impl<'a> Solver<'a> {
             let mut ni = st.inv; let kid;
             if let Some(h) = hist.as_mut() { h.apply_action_in_place(&Self::to_action(act, a)); }
             match *act {
-                Act::Fold => { kid = Node::Fold { folder: a, inv: st.inv }; }
+                Act::Fold => { kid = self.push_node(Node::Fold { folder: a, inv: st.inv }); }
                 Act::Call => { ni[a] = st.inv[o]; kid = self.end_street(ni, board, hist); }
                 Act::Check => {
                     if st.n_act >= 1 { kid = self.end_street(ni, board, hist); }
@@ -301,14 +334,14 @@ impl<'a> Solver<'a> {
                 Act::Call => pkr_core::state::ActionKind::Call,
                 Act::Bet(t) => pkr_core::state::ActionKind::Bet(*t),
             };
-            let stacks_a = (sp.stack - st.inv[a]).max(0.0);
+            let stacks_a = (stack - st.inv[a]).max(0.0);
             pkr_core::abstraction::action_bucket(&kind, stacks_a, st.inv[a], st.inv[o], pot)
         }).collect();
         let n = acts.len();
-        Node::Act(ActNode { player: a, acts, kids, regret: vec![0.0; n * N], ssum: vec![0.0; n * N], sig, sig_len, buckets })
+        self.push_node(Node::Act(ActNode { player: a, acts, kids, regret: vec![0.0; n * N], ssum: vec![0.0; n * N], sig, sig_len, buckets }))
     }
 
-    fn end_street(&self, inv: [f32; 2], board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> Node {
+    fn end_street(&mut self, inv: [f32; 2], board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> u32 {
         if board.len() == 5 { return self.showdown(inv[0], board); }
         let n_deck = (52 - board.len() - 4) as f32;
         let allin = inv[0] >= self.spec.stack - 1e-6 || inv[1] >= self.spec.stack - 1e-6;
@@ -323,10 +356,10 @@ impl<'a> Solver<'a> {
             board.pop();
             cards.push(c); kids.push(kid);
         }
-        Node::Chance(ChanceNode { cards, kids, n_deck })
+        self.push_node(Node::Chance(ChanceNode { cards, kids, n_deck }))
     }
 
-    fn showdown(&self, inv: f32, board: &[u8]) -> Node {
+    fn showdown(&mut self, inv: f32, board: &[u8]) -> u32 {
         let key = board_key(board);
         // Scope the immutable borrow so it is dropped before the mutable
         // one in the else branch (RefCell is not reentrant).
@@ -346,7 +379,7 @@ impl<'a> Solver<'a> {
             self.show_cache.borrow_mut().insert(key, t.clone());
             t
         };
-        Node::Show(ShowNode { inv, table })
+        self.push_node(Node::Show(ShowNode { inv, table }))
     }
 }
 
@@ -471,10 +504,12 @@ fn avg_strat(ssum: &[f32], n: usize, strat: &mut [f32]) {
 }
 
 impl<'a> Solver<'a> {
-    fn cfr(&self, node: *mut Node, p: usize, reach: [&[f32]; 2], t: f32) -> Vec<f32> {
-        let node = unsafe { &mut *node };
+    /// M-31 (audit 2026-10-10): arena-indexed. No raw pointer, no UB.
+    /// The node is reacquired from `self.arena` on every write; reads
+    /// happen on a short borrow scoped to each match arm.
+    fn cfr(&mut self, idx: u32, p: usize, reach: [&[f32]; 2], t: f32) -> Vec<f32> {
         let sp = &self.spec;
-        match node {
+        match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
                 let val = if *folder == p { -(sp.dead * 0.5 + inv[p]) } else { sp.dead * 0.5 + inv[1 - p] };
                 fold_cfv(&self.holes, reach[1 - p], val, &self.valid_root)
@@ -485,46 +520,53 @@ impl<'a> Solver<'a> {
             }
             Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, reach[1 - p], p, &self.valid_root, *payee),
             Node::Chance(cn) => {
-                let mut out = vec![0.0f32; N];
+                // Copy the small immutable data out of the arena so the
+                // recursion can take `&mut self`.
                 let n_deck = cn.n_deck;
-                for (i, &c) in cn.cards.iter().enumerate() {
+                let cards: Vec<u8> = cn.cards.clone();
+                let kid_ids: Vec<u32> = cn.kids.clone();
+                let mut out = vec![0.0f32; N];
+                for (i, &c) in cards.iter().enumerate() {
                     let mut r0 = reach[0].to_vec(); let mut r1 = reach[1].to_vec();
                     for h in 0..N { if self.holes[h][0] == c || self.holes[h][1] == c { r0[h] = 0.0; r1[h] = 0.0; } }
-                    let kid: *mut Node = &mut cn.kids[i];
-                    let v = self.cfr(kid, p, [&r0, &r1], t);
+                    let v = self.cfr(kid_ids[i], p, [&r0, &r1], t);
                     for h in 0..N { if !(self.holes[h][0] == c || self.holes[h][1] == c) { out[h] += v[h] / n_deck; } }
                 }
                 out
             }
             Node::Act(an) => {
                 let n = an.acts.len();
+                let actor_here = an.player;
+                let regret: Vec<f32> = an.regret.clone();
+                let kid_ids: Vec<u32> = an.kids.clone();
                 let mut strat = vec![0.0f32; n * N];
-                rm_plus(&an.regret, n, &mut strat);
-                if an.player == p {
+                rm_plus(&regret, n, &mut strat);
+                if actor_here == p {
                     let mut vals: Vec<Vec<f32>> = Vec::with_capacity(n);
                     for a in 0..n {
                         let mut rp = reach[p].to_vec();
                         for h in 0..N { rp[h] *= strat[a * N + h]; }
-                        let kid: *mut Node = &mut an.kids[a];
                         let rr = if p == 0 { [&rp[..], reach[1]] } else { [reach[0], &rp[..]] };
-                        vals.push(self.cfr(kid, p, rr, t));
+                        vals.push(self.cfr(kid_ids[a], p, rr, t));
                     }
                     let mut node_v = vec![0.0f32; N];
                     for a in 0..n { for h in 0..N { node_v[h] += strat[a * N + h] * vals[a][h]; } }
-                    for a in 0..n { for h in 0..N {
-                        let r = &mut an.regret[a * N + h];
-                        *r = (*r + vals[a][h] - node_v[h]).max(0.0);
-                        an.ssum[a * N + h] += t * reach[p][h] * strat[a * N + h];
-                    } }
+                    // Reacquire a mutable handle to write regrets.
+                    if let Node::Act(an_mut) = &mut self.arena[idx as usize] {
+                        for a in 0..n { for h in 0..N {
+                            let r = &mut an_mut.regret[a * N + h];
+                            *r = (*r + vals[a][h] - node_v[h]).max(0.0);
+                            an_mut.ssum[a * N + h] += t * reach[p][h] * strat[a * N + h];
+                        } }
+                    }
                     node_v
                 } else {
                     let mut out = vec![0.0f32; N];
                     for a in 0..n {
                         let mut ro = reach[1 - p].to_vec();
                         for h in 0..N { ro[h] *= strat[a * N + h]; }
-                        let kid: *mut Node = &mut an.kids[a];
                         let rr = if p == 0 { [reach[0], &ro[..]] } else { [&ro[..], reach[1]] };
-                        let v = self.cfr(kid, p, rr, t);
+                        let v = self.cfr(kid_ids[a], p, rr, t);
                         for h in 0..N { out[h] += v[h]; }
                     }
                     out
@@ -538,13 +580,13 @@ impl<'a> Solver<'a> {
             self.iters += 1; let t = self.iters as f32;
             for p in 0..2 {
                 let r0 = self.spec.ranges[0].clone(); let r1 = self.spec.ranges[1].clone();
-                let root: *mut Node = &mut self.root;
+                let root = self.root_idx;
                 let _ = self.cfr(root, p, [&r0, &r1], t);
             }
         }
     }
 
-    fn br(&self, node: &Node, p: usize, r_opp: &[f32]) -> Vec<f32> {
+    fn br(&self, idx: u32, p: usize, r_opp: &[f32]) -> Vec<f32> {
         // Phase 4.5: abort the walk cleanly when the deadline fires.
         // Returning a zero vector leaves the accumulated z/v sum intact
         // (callers treat a timed-out walk as unusable and fall back).
@@ -552,7 +594,7 @@ impl<'a> Solver<'a> {
             return vec![0.0f32; N];
         }
         let sp = &self.spec;
-        match node {
+        match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
                 let val = if *folder == p { -(sp.dead * 0.5 + inv[p]) } else { sp.dead * 0.5 + inv[1 - p] };
                 fold_cfv(&self.holes, r_opp, val, &self.valid_root)
@@ -568,7 +610,7 @@ impl<'a> Solver<'a> {
                 for (i, &c) in cn.cards.iter().enumerate() {
                     let mut ro = r_opp.to_vec();
                     for h in 0..N { if self.holes[h][0] == c || self.holes[h][1] == c { ro[h] = 0.0; } }
-                    let v = self.br(&cn.kids[i], p, &ro);
+                    let v = self.br(cn.kids[i], p, &ro);
                     for h in 0..N { if !(self.holes[h][0] == c || self.holes[h][1] == c) { out[h] += v[h] / n_deck; } }
                 }
                 out
@@ -577,7 +619,7 @@ impl<'a> Solver<'a> {
                 let n = an.acts.len();
                 if an.player == p {
                     let mut best = vec![f32::NEG_INFINITY; N];
-                    for a in 0..n { let v = self.br(&an.kids[a], p, r_opp);
+                    for a in 0..n { let v = self.br(an.kids[a], p, r_opp);
                         for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } } }
                     for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
                     best
@@ -587,7 +629,7 @@ impl<'a> Solver<'a> {
                     for a in 0..n {
                         let mut ro = r_opp.to_vec();
                         for h in 0..N { ro[h] *= st[a * N + h]; }
-                        let v = self.br(&an.kids[a], p, &ro);
+                        let v = self.br(an.kids[a], p, &ro);
                         for h in 0..N { out[h] += v[h]; }
                     }
                     out
@@ -599,7 +641,7 @@ impl<'a> Solver<'a> {
     pub fn exploitability(&self) -> f32 {
         let mut tot = 0.0;
         for p in 0..2 {
-            let cf = self.br(&self.root, p, &self.spec.ranges[1 - p]);
+            let cf = self.br(self.root_idx, p, &self.spec.ranges[1 - p]);
             let mut z = 0.0f64; let mut v = 0.0f64;
             let mut tot_o = 0.0; let mut card = [0.0f32; 52];
             compat_sums(&self.holes, &self.spec.ranges[1 - p], &mut tot_o, &mut card);
@@ -624,7 +666,7 @@ impl<'a> Solver<'a> {
     /// by `r_opp`.
     fn bp_walk(
         &self,
-        node: &Node,
+        idx: u32,
         board: &mut Vec<u8>,
         p: usize,
         r_opp: &[f32],
@@ -633,7 +675,7 @@ impl<'a> Solver<'a> {
         root_override: Option<&[Vec<f32>]>,
         used: &mut bool,
     ) -> Vec<f32> {
-        match node {
+        match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
                 let val = if *folder == p { -(self.spec.dead * 0.5 + inv[p]) } else { self.spec.dead * 0.5 + inv[1 - p] };
                 fold_cfv(&self.holes, r_opp, val, &self.valid_root)
@@ -660,7 +702,7 @@ impl<'a> Solver<'a> {
                     board.push(cc);
                     let mut ro = r_opp.to_vec();
                     for h in 0..N { if self.holes[h][0] == cc || self.holes[h][1] == cc { ro[h] = 0.0; } }
-                    let v = self.bp_walk(&cn.kids[i], board, p, &ro, abs, tbl, root_override, used);
+                    let v = self.bp_walk(cn.kids[i], board, p, &ro, abs, tbl, root_override, used);
                     board.pop();
                     for h in 0..N { if !(self.holes[h][0] == cc || self.holes[h][1] == cc) { out[h] += v[h] / n_deck; } }
                 }
@@ -671,7 +713,7 @@ impl<'a> Solver<'a> {
                 if an.player == p {
                     let mut best = vec![f32::NEG_INFINITY; N];
                     for a in 0..n {
-                        let v = self.bp_walk(&an.kids[a], board, p, r_opp, abs, tbl, root_override, used);
+                        let v = self.bp_walk(an.kids[a], board, p, r_opp, abs, tbl, root_override, used);
                         for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } }
                     }
                     for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
@@ -735,7 +777,7 @@ impl<'a> Solver<'a> {
                     for a in 0..n {
                         let mut ro = r_opp.to_vec();
                         for h in 0..N { ro[h] *= strat[a][h]; }
-                        let v = self.bp_walk(&an.kids[a], board, p, &ro, abs, tbl, root_override, used);
+                        let v = self.bp_walk(an.kids[a], board, p, &ro, abs, tbl, root_override, used);
                         for h in 0..N { out[h] += v[h]; }
                     }
                     out
@@ -749,11 +791,11 @@ impl<'a> Solver<'a> {
     /// search, not the blueprint). Returns P1's reach-weighted value.
     fn solved_br_p1(
         &self,
-        node: &Node,
+        idx: u32,
         board: &mut Vec<u8>,
         r_opp: &[f32],
     ) -> Vec<f32> {
-        match node {
+        match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
                 let val = if *folder == 1 { -(self.spec.dead * 0.5 + inv[1]) } else { self.spec.dead * 0.5 + inv[0] };
                 fold_cfv(&self.holes, r_opp, val, &self.valid_root)
@@ -780,7 +822,7 @@ impl<'a> Solver<'a> {
                     board.push(cc);
                     let mut ro = r_opp.to_vec();
                     for h in 0..N { if self.holes[h][0] == cc || self.holes[h][1] == cc { ro[h] = 0.0; } }
-                    let v = self.solved_br_p1(&cn.kids[i], board, &ro);
+                    let v = self.solved_br_p1(cn.kids[i], board, &ro);
                     board.pop();
                     for h in 0..N { if !(self.holes[h][0] == cc || self.holes[h][1] == cc) { out[h] += v[h] / n_deck; } }
                 }
@@ -792,7 +834,7 @@ impl<'a> Solver<'a> {
                     // P1 best-responds.
                     let mut best = vec![f32::NEG_INFINITY; N];
                     for a in 0..n {
-                        let v = self.solved_br_p1(&an.kids[a], board, r_opp);
+                        let v = self.solved_br_p1(an.kids[a], board, r_opp);
                         for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } }
                     }
                     for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
@@ -805,7 +847,7 @@ impl<'a> Solver<'a> {
                     for a in 0..n {
                         let mut ro = r_opp.to_vec();
                         for h in 0..N { ro[h] *= st[a * N + h]; }
-                        let v = self.solved_br_p1(&an.kids[a], board, &ro);
+                        let v = self.solved_br_p1(an.kids[a], board, &ro);
                         for h in 0..N { out[h] += v[h]; }
                     }
                     out
@@ -817,7 +859,7 @@ impl<'a> Solver<'a> {
     /// P1's reach-weighted exploitability of the SOLVED strategy.
     pub fn solved_exploitability_p1(&self) -> f32 {
         let mut board = self.spec.board.clone();
-        let cf = self.solved_br_p1(self.real_root_node(), &mut board, &self.spec.ranges[0]);
+        let cf = self.solved_br_p1(self.real_root_idx(), &mut board, &self.spec.ranges[0]);
         let mut z = 0.0f64; let mut v = 0.0f64;
         let mut tot_o = 0.0f32; let mut card = [0.0f32; 52];
         compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
@@ -843,7 +885,7 @@ impl<'a> Solver<'a> {
     ) -> f32 {
         let mut board = self.spec.board.clone();
         let mut used = false;
-        let cf = self.bp_walk(&self.root, &mut board, 1, &self.spec.ranges[0], abs, tbl, root_override, &mut used);
+        let cf = self.bp_walk(self.root_idx, &mut board, 1, &self.spec.ranges[0], abs, tbl, root_override, &mut used);
         let mut z = 0.0f64; let mut v = 0.0f64;
         let mut tot_o = 0.0f32; let mut card = [0.0f32; 52];
         compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
@@ -860,15 +902,19 @@ impl<'a> Solver<'a> {
     /// The REAL root node: with a gadget installed this is the Follow
     /// child (the subgame); otherwise the root itself. Used for the
     /// safety measure, which must exclude the gadget's Terminate option.
-    fn real_root_node(&self) -> &Node {
+    fn real_root_idx(&self) -> u32 {
         if self.gadget_player.is_some() {
-            if let Node::Act(an) = &self.root {
+            if let Node::Act(an) = self.root() {
                 if an.kids.len() >= 2 {
-                    return &an.kids[1];
+                    return an.kids[1];
                 }
             }
         }
-        &self.root
+        self.root_idx
+    }
+
+    fn real_root_node(&self) -> &Node {
+        &self.arena[self.real_root_idx() as usize]
     }
 
     pub fn root_strategy(&self, hand: [u8; 2]) -> Vec<(Act, f32)> {
@@ -970,13 +1016,13 @@ impl<'a> Solver<'a> {
     /// root when this is `None`; a partial value would be unreliable and
     /// could accept the search root unsafely.
     pub fn opp_br_value(&self) -> Option<f32> {
-        let root_actor = match &self.root {
+        let root_actor = match self.root() {
             Node::Act(an) => an.player,
             _ => return Some(0.0),
         };
         let opp = 1 - root_actor;
         let opp_range = &self.spec.ranges[1 - opp];
-        let cf = self.br(&self.root, opp, opp_range);
+        let cf = self.br(self.root_idx, opp, opp_range);
         if self.timed_out() {
             return None;
         }
@@ -1195,7 +1241,7 @@ mod tests {
 
         // P1 BR at the gadget root includes Terminate -> at least the
         // per-hand cbv. Weighted mean must be >= the cbv mean.
-        let br = g.br(&g.root, 1, &g.spec.ranges[0]);
+        let br = g.br(g.root_idx, 1, &g.spec.ranges[0]);
         let mut br_w = 0.0f64; let mut cbv_w = 0.0f64; let mut den = 0.0f64;
         for h in 0..N {
             let w = g.spec.ranges[1][h] as f64;
@@ -1241,7 +1287,7 @@ mod tests {
 
         // P1's best response from the gadget ROOT (which includes the
         // Terminate option) must be >= 0 — P1 can always take the 0.
-        let p1_br = s.br(&s.root, 1, &s.spec.ranges[0]);
+        let p1_br = s.br(s.root_idx, 1, &s.spec.ranges[0]);
         // Weighted mean over P1's range.
         let mut num = 0.0f64; let mut den = 0.0f64;
         for h in 0..N {
@@ -1272,7 +1318,7 @@ mod tests {
         s.install_gadget(vec![0.0f32; N], 0);
         assert_eq!(s.gadget_payee(), Some(0));
         // chooser node is player 0
-        match &s.root {
+        match s.root() {
             Node::Act(an) => assert_eq!(an.player, 0, "payee=0 => chooser is player 0"),
             _ => panic!("root must be the gadget ActNode"),
         }
@@ -1441,12 +1487,13 @@ mod tests {
         let mut checked = 0u32;
         let mut state = root.clone();
         fn walk(
-            node: &Node,
+            arena: &[Node],
+            idx: u32,
             state: &mut GameState,
             checked: &mut u32,
             mismatches: &mut u32,
         ) {
-            match node {
+            match &arena[idx as usize] {
                 Node::Act(an) => {
                     let mut buf = [0u8; 8];
                     let l = state.infoset_signature_into(&mut buf);
@@ -1462,21 +1509,21 @@ mod tests {
                     }
                     for (act, kid) in an.acts.iter().zip(an.kids.iter()) {
                         state.apply_action_in_place(&Solver::to_action(act, an.player));
-                        walk(kid, state, checked, mismatches);
+                        walk(arena, *kid, state, checked, mismatches);
                         let _ = state.undo_action();
                     }
                 }
                 Node::Chance(cn) => {
                     for (card, kid) in cn.cards.iter().zip(cn.kids.iter()) {
                         state.advance_street_in_place(&[*card]);
-                        walk(kid, state, checked, mismatches);
+                        walk(arena, *kid, state, checked, mismatches);
                         let _ = state.undo_action();
                     }
                 }
                 Node::Fold { .. } | Node::Show(_) | Node::Const { .. } | Node::TermGadget { .. } => {}
             }
         }
-        walk(&s.root, &mut state, &mut checked, &mut mismatches);
+        walk(&s.arena, s.root_idx, &mut state, &mut checked, &mut mismatches);
         eprintln!("sig check: checked={checked} mismatches={mismatches}");
         assert!(checked > 50, "expected many decision nodes, got {checked}");
         assert_eq!(mismatches, 0, "{mismatches} signature mismatches");
