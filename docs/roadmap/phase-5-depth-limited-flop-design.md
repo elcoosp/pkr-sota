@@ -251,26 +251,6 @@ a small slice**:
    - a **flop subgame solve against a heavily coarsened leaf bucket**
      (a design decision, not a mechanical implementation).
 
-## Concrete follow-up tasks (in order)
-
-1. **Measure.** Time a `blueprint_p1_br`-style walk on ONE flop leaf
-   at the current `flop_k = 200`. ~30 lines in
-   `crates/pkr-subgame/tests/` and a `cargo test --nocapture`. If it
-   is > 1 ms per leaf (it will be), stop here.
-2. **Decide the leaf bucket resolution.** 200 flop buckets x ~10 pot
-   classes x ~3 stack classes = 6000 leaf classes; or 2048 x 10 x 3 =
-   60k. The flop bucket already exists; the pot/stack classes need
-   choosing.
-3. **Build the leaf EV table.** Only if step 1 says it is tolerable.
-   Chunked, resumable, same pattern as `precompute turn`.
-4. **Wire the leaf node into the vector solver.** `Node::LeafEv` +
-   `spec_from_state` passes the table. Arena/index discipline as
-   everywhere else in `vector.rs`.
-5. **Test.** A flop solve must reproduce the blueprint's river values
-   on a river-reachable leaf where the blueprint is ground truth. Then
-   the plan's acceptance test (flop solve no more exploitable than the
-   blueprint on a held-out flop set).
-
 ## Not recommended
 
 - Reusing `riversolve.rs`. Its own header lists 4 correctness bugs and
@@ -284,3 +264,54 @@ Phase 5 is a larger project than the plan implies, and its prerequisite
 start it before the step-1 measurement. The realistic alternative for a
 flop search sooner is a coarsened leaf bucket -- a strength-for-speed
 trade that needs its own A/B.
+
+
+---
+
+## Step-1 measurement result (2026-10-11)
+
+Ran `crates/pkr-subgame/examples/phase5_measure.rs` (bounded; watchdog
+aborts on > 2 GB RSS or 120 s wall). Two runs:
+
+| range | turn build | flop build (est, x47) | 1.29M flops (build only) |
+|---|---:|---:|---:|
+| 1 hand  | 158 ms | 7.4 s  | 2,669 h |
+| full 1326 | 309 ms | 14.5 s | 5,199 h |
+
+Peak RSS at full range: **33 MB** — the M-31 arena refactor removed the
+memory blow-up. The blocker is BUILD TIME, not memory.
+
+### Verdict
+
+Per this doc's own step-1 gate (> 1 ms per flop leaf -> stop), Phase 5
+at the current resolution is **infeasible**. 5,199 hours just to build
+every flop leaf, before any solve, on a machine whose previous
+precompute already takes days.
+
+### The only viable path: coarsen the leaf
+
+Phase 5 can only happen against a much smaller leaf set. Concretely:
+build the leaf EV table over **2048 canonical flop boards** (not 1.29M)
+x a small pot/stack class set. That is:
+
+    2048 boards x ~10 pot classes x ~3 stack classes = ~61k leaf solves
+    61k x 14.5 s = ~246 hours  (still large; needs chunking + resume)
+
+Or go smaller: **512 flop boards** x ~6 pot classes = ~3k leaves =
+~12 hours. That is one overnight run.
+
+The trade is explicit: solving the flop against a 512-way board
+bucketing is a different, coarser game than the blueprint was trained
+on. That is a **strength-for-speed decision**, not a mechanical
+implementation, and it needs its own A/B vs the blueprint before it
+ships anything.
+
+### Recommendation
+
+- Do **not** implement Phase 5 at the current resolution.
+- The realistic next step, if flop search is wanted, is a 512-board
+  leaf table (~12 h) plus a wire-up, then A/B vs the blueprint's own
+  flop strategy. That is a multi-day project, not a follow-on to this
+  session.
+- Keep the current shipping config: river-only search (proven) + the
+  K=7 blueprint. Flop search is not required for a competent bot.
