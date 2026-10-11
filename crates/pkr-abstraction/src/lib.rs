@@ -46,7 +46,8 @@ static FALLBACK_COUNTS: [AtomicU64; 4] = [
 /// get a soft assignment (primary tier + adjacent tier, weighted blend).
 /// Default off — training path is bit-identical when this is unset.
 #[inline]
-/// §C: exact 169-class preflop (env `PKR_PREFLOP_EXACT=1`). Default OFF.
+/// §C: exact 169-class preflop. **Default ON** (Task 2.1).
+/// `PKR_PREFLOP_EXACT=0` restores the legacy 200-cluster preflop.
 fn preflop_exact_enabled() -> bool {
     use std::sync::OnceLock;
     static E: OnceLock<bool> = OnceLock::new();

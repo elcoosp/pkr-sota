@@ -158,7 +158,8 @@ pub struct UndoRecord {
     street_start_pot: f32,
     /// S6: last bettor of the PREVIOUS street (0/1; 2 = none yet).
     /// Set from `street_aggressor` at each street advance, restored by
-    /// `undo_action`. Packed into `history_signature_v3` bit 34.
+    /// `undo_action`. Consumed by `history_signature_v5`'s
+    /// postflop aggressor bit.
     prev_street_aggressor: u8,
     /// S6: last bettor of the CURRENT street (0/1; 2 = none yet).
     /// Set on every `Bet` apply, snapshotted into

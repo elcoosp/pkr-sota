@@ -114,7 +114,8 @@ pub fn action_bucket(
 /// offsuit to 91..168. Exact: no Monte-Carlo equity fit, no bucket
 /// collisions — unlike the (EHS, EHS^2) 2D fit this can replace.
 ///
-/// Gated by `PKR_PREFLOP_EXACT=1`; off by default so existing hashes
+/// Gated by `PKR_PREFLOP_EXACT`; **default ON** since Task 2.1 (set
+/// `PKR_PREFLOP_EXACT=0` for the legacy 200-cluster preflop). Historical:
 /// (and checkpoints) are unchanged.
 #[inline]
 pub fn preflop_class(hole: &[u8; 2]) -> u8 {

@@ -9,10 +9,44 @@ pub struct InfoSet {
     pub valid_actions: Vec<u8>,
 }
 
+/// A blueprint's advice at one infoset: a CDF over abstract action
+/// buckets.
+///
+/// # Invariants
+///
+/// - `len <= 16` (`cdf_probabilities.len()`).
+/// - `cdf_probabilities[..len]` is non-decreasing.
+/// - `cdf_probabilities[len - 1] == 255` (closes at certainty).
+/// - `len >= 1`.
+///
+/// Consumers may assume the above and index `[..len]` directly. A
+/// violating advice is a producer bug; see `validate()`.
 #[derive(Debug, Clone, Copy)]
 pub struct SotaAdvice {
     pub cdf_probabilities: [u8; 16], // max 16 actions
     pub len: u8,
+}
+
+impl SotaAdvice {
+    /// Verify the invariants above. Returns Err(reason) on a violation.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.len == 0 {
+            return Err("len must be >= 1");
+        }
+        if self.len > 16 {
+            return Err("len exceeds cdf_probabilities capacity (16)");
+        }
+        let n = self.len as usize;
+        for i in 1..n {
+            if self.cdf_probabilities[i] < self.cdf_probabilities[i - 1] {
+                return Err("CDF must be non-decreasing");
+            }
+        }
+        if self.cdf_probabilities[n - 1] != 255 {
+            return Err("final CDF entry must be 255");
+        }
+        Ok(())
+    }
 }
 
 pub trait BlueprintProvider: Send + Sync {
