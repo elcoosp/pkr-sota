@@ -48,6 +48,9 @@ pub fn stack_bb_div2() -> u8 {
     (stack_bb() / 2.0).round().clamp(1.0, 200.0) as u8
 }
 
+/// P10 (audit 2026-10-10): resolved signature version, computed once.
+static SIG_DISPATCH: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+
 /// Version tag stored in bits 60..64 of `history_signature_v2()`.
 pub const SIG_V2_VERSION: u64 = 2;
 
@@ -980,29 +983,31 @@ impl GameState {
     /// .to_le_bytes()`, so training is unaffected.
     #[inline]
     pub fn infoset_signature_into(&self, out: &mut [u8; 8]) -> usize {
-        // F3 dispatch: v3 takes precedence when enabled.
-        if sig_v5_size_aware() {
-            out.copy_from_slice(&self.history_signature_v5().to_le_bytes());
-            8
-        } else if sig_v4_size_aware() {
-            out.copy_from_slice(&self.history_signature_v4().to_le_bytes());
-            8
-        } else if sig_v3_size_aware() {
-            out.copy_from_slice(&self.history_signature_v3().to_le_bytes());
-            8
-        } else if SIG_V2_STREET_MONEY {
-            out.copy_from_slice(&self.history_signature_v2().to_le_bytes());
-            8
-        } else {
-            // M-8 (audit 2026-10-10): the caller's `out` is only
-            // guaranteed to be fresh from the caller. In the 4-byte
-            // path, bytes 4..8 were left with whatever was there before.
-            // Downstream slices use `&out[..len]` so this is currently
-            // harmless, but a future caller reading the whole array
-            // would get stale data. Zero defensively.
-            out[4..].fill(0);
-            out[..4].copy_from_slice(&self.history_signature().to_le_bytes());
-            4
+        // P10 (audit 2026-10-10): the three OnceLock reads (v5, v4, v3)
+        // happen on EVERY node visit. Cache the resolved version in a
+        // single OnceLock<u8> so the hot path reads one byte.
+        //
+        // Resolution is 5 (v5), 4 (v4), 3 (v3), 2 (v2), 1 (legacy v1).
+        // The precedence mirrors the previous cascade exactly.
+        let version: u8 = *SIG_DISPATCH.get_or_init(|| {
+            if sig_v5_size_aware() { 5 }
+            else if sig_v4_size_aware() { 4 }
+            else if sig_v3_size_aware() { 3 }
+            else if SIG_V2_STREET_MONEY { 2 }
+            else { 1 }
+        });
+        match version {
+            5 => { out.copy_from_slice(&self.history_signature_v5().to_le_bytes()); 8 }
+            4 => { out.copy_from_slice(&self.history_signature_v4().to_le_bytes()); 8 }
+            3 => { out.copy_from_slice(&self.history_signature_v3().to_le_bytes()); 8 }
+            2 => { out.copy_from_slice(&self.history_signature_v2().to_le_bytes()); 8 }
+            _ => {
+                // M-8: zero out[4..] defensively; the caller might read
+                // the whole array even though the returned length is 4.
+                out[4..].fill(0);
+                out[..4].copy_from_slice(&self.history_signature().to_le_bytes());
+                4
+            }
         }
     }
 }
