@@ -18,3 +18,9 @@ Run them TOGETHER at the baseline's exact budget (100M iters, seed 42,
 cap 60M) and compare to the shipped `k7-baseline` (eps=0.01, loose).
 
 ## Config
+
+---
+
+**RESULT (2026-10-12):** DO NOT SHIP. See
+`run1-combined-result-2026-10-12.md`. The combined change is a mild
+regression (+261 mbb LBR, 1.68 SE; in-sample BR worse at every eval).
