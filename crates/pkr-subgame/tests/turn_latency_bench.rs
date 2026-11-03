@@ -3,7 +3,7 @@ use pkr_cfr::Trainer;
 use pkr_contracts::AbstractionBuilder;
 use pkr_core::abstraction::AbstractionFingerprint;
 use pkr_core::state::{Action, ActionKind, GameState};
-use pkr_subgame::range_tracker::{RangeTracker, sample_hands_weighted};
+use pkr_subgame::range_tracker::{sample_hands_weighted, RangeTracker};
 use pkr_subgame::{run_poc, POCConfig, Range};
 use std::sync::Arc;
 
@@ -12,18 +12,27 @@ fn ws() -> std::path::PathBuf {
     m.parent().unwrap().parent().unwrap().to_path_buf()
 }
 fn out(rel: &str) -> String {
-    ws().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    ws().join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn turn_board(seed: u64) -> [u8; 4] {
     let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0xBEEF);
     let mut used = [false; 52];
     let mut b = [0u8; 4];
-    for i in 0..4 {
+    for slot in b.iter_mut() {
         loop {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let c = ((s >> 33) % 52) as u8;
-            if !used[c as usize] { used[c as usize] = true; b[i] = c; break; }
+            if !used[c as usize] {
+                used[c as usize] = true;
+                *slot = c;
+                break;
+            }
         }
     }
     b
@@ -36,17 +45,36 @@ fn forced_turn<'a>(
     ev: &'a dyn pkr_contracts::Evaluator,
 ) -> Option<RangeTracker<'a>> {
     let mut t = RangeTracker::new(GameState::new(200.0, 1.0, 2.0), abs, tbl, ev);
-    let bet = |s: &GameState| Action { player: s.actor, kind: ActionKind::Bet(s.pot * 0.75) };
+    let bet = |s: &GameState| Action {
+        player: s.actor,
+        kind: ActionKind::Bet(s.pot * 0.75),
+    };
     let s0 = t.state().clone();
     t.apply_action(bet(&s0)).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Call,
+    })
+    .ok()?;
     t.advance_street(&board[0..3]).ok()?;
     let s1 = t.state().clone();
     t.apply_action(bet(&s1)).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Call,
+    })
+    .ok()?;
     t.advance_street(&board[3..4]).ok()?;
-    t.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+    t.apply_action(Action {
+        player: 0,
+        kind: ActionKind::Check,
+    })
+    .ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Check,
+    })
+    .ok()?;
     Some(t)
 }
 
@@ -66,7 +94,9 @@ fn turn_latency_bench() {
     let abs_dyn: Arc<dyn AbstractionBuilder> = abs_a.clone();
     let trainer = Trainer::with_capacity(abs_dyn, evaluator.clone(), 60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    trainer.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    trainer
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
 
     let abs_ref: &dyn AbstractionBuilder = abs_a.as_ref();
     let ev_ref: &dyn pkr_contracts::Evaluator = evaluator.as_ref();
@@ -85,7 +115,10 @@ fn turn_latency_bench() {
     println!();
     println!("=== TURN LATENCY BENCH board={:?}, mode={} ===", b, mode);
     println!();
-    println!("{:>6} {:>10} {:>12} {:>10}", "iters", "wall_s", "nodes", "br_v1");
+    println!(
+        "{:>6} {:>10} {:>12} {:>10}",
+        "iters", "wall_s", "nodes", "br_v1"
+    );
     println!("{}", "-".repeat(44));
 
     for iters in [25, 50, 100, 200, 500] {
@@ -106,7 +139,12 @@ fn turn_latency_bench() {
         let t0 = std::time::Instant::now();
         let r = run_poc(&cfg);
         let dt = t0.elapsed();
-        println!("{:>6} {:>10.3} {:>12} {:>10.4}",
-                 iters, dt.as_secs_f64(), r.nodes_visited, r.br_v1_vs_cfr);
+        println!(
+            "{:>6} {:>10.3} {:>12} {:>10.4}",
+            iters,
+            dt.as_secs_f64(),
+            r.nodes_visited,
+            r.br_v1_vs_cfr
+        );
     }
 }

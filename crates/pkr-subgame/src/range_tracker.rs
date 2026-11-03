@@ -80,7 +80,11 @@ fn uniform_board_free(board: &[u8]) -> [f64; N_HANDS] {
     let u = if legal > 0 { 1.0 / legal as f64 } else { 0.0 };
     for i in 0..N_HANDS {
         let h = cache[i];
-        r[i] = if !board.contains(&h[0]) && !board.contains(&h[1]) { u } else { 0.0 };
+        r[i] = if !board.contains(&h[0]) && !board.contains(&h[1]) {
+            u
+        } else {
+            0.0
+        };
     }
     r
 }
@@ -117,6 +121,8 @@ pub struct RangeTracker<'a> {
     p1: Box<[f64; N_HANDS]>,
     /// Snapshot stack: (p0_range, p1_range). Pushed by apply_action and
     /// advance_street, popped by undo_last_action.
+    #[allow(clippy::type_complexity)]
+    // (range, range) snapshot pair; a type alias would obscure the two roles
     undo_stack: Vec<(Box<[f64; N_HANDS]>, Box<[f64; N_HANDS]>)>,
 }
 
@@ -240,7 +246,6 @@ impl<'a> RangeTracker<'a> {
     /// needed beyond the actor). Shared by `update_range_for_action` and
     /// `apply_action_with_bucket`.
     fn update_range_for_bucket(&mut self, actor: usize, bucket: usize) {
-
         let mut sig_buf = [0u8; 8];
         let sig_len = self.state.infoset_signature_into(&mut sig_buf);
         let history = &sig_buf[..sig_len];
@@ -266,9 +271,7 @@ impl<'a> RangeTracker<'a> {
                 range[i] = 0.0;
                 continue;
             }
-            let hash = self
-                .abs
-                .get_infoset_hash(&h, board_slice, history, street);
+            let hash = self.abs.get_infoset_hash(&h, board_slice, history, street);
             let mut strat = [0.0f32; N_BUCKETS];
             self.tbl.get_average_strategy_into(hash, &mut strat);
             range[i] *= strat[bucket] as f64;
@@ -295,7 +298,11 @@ impl<'a> RangeTracker<'a> {
     /// Overwrite a player's range (Task 4.3). Used after a search solve
     /// to set our own range to the strategy we actually played.
     pub fn set_range(&mut self, player: u8, r: &[f64; N_HANDS]) {
-        if player == 0 { self.p0 = Box::new(*r); } else { self.p1 = Box::new(*r); }
+        if player == 0 {
+            *self.p0 = *r;
+        } else {
+            *self.p1 = *r;
+        }
     }
 
     /// Advance the street with `new_cards` (3 for flop, 1 for turn/river).
@@ -368,11 +375,7 @@ impl Lcg {
 /// given `seed`. Callers that want a distribution over the sample must
 /// normalize themselves; the solver needs the original weights to build
 /// joint priors that reflect the tracker's belief.
-pub fn sample_hands_weighted(
-    range: &[f64; N_HANDS],
-    n: usize,
-    seed: u64,
-) -> Vec<([u8; 2], f64)> {
+pub fn sample_hands_weighted(range: &[f64; N_HANDS], n: usize, seed: u64) -> Vec<([u8; 2], f64)> {
     let cache = hole_cache();
     let mut cum: Vec<f64> = Vec::with_capacity(N_HANDS);
     let mut acc = 0.0;
@@ -384,8 +387,7 @@ pub fn sample_hands_weighted(
         return Vec::new();
     }
     let mut rng = Lcg::new(seed);
-    let mut chosen: std::collections::HashSet<usize> =
-        std::collections::HashSet::with_capacity(n);
+    let mut chosen: std::collections::HashSet<usize> = std::collections::HashSet::with_capacity(n);
     let mut out: Vec<([u8; 2], f64)> = Vec::with_capacity(n);
     let mut attempts = 0usize;
     let max_attempts = n.saturating_mul(200).max(1000);
@@ -419,7 +421,6 @@ mod tests {
         // so this test verifies the stack behavior by pushing manually.
         // Full integration is exercised by the range_tracker_integration test.
     }
-
 
     #[test]
     fn index_hole_roundtrip() {

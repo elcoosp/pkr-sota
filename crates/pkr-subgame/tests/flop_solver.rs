@@ -3,11 +3,23 @@ use pkr_subgame::{run_poc, POCConfig, Range};
 
 fn flop_root(b: &[u8; 3]) -> GameState {
     let mut s = GameState::new(200.0, 1.0, 2.0);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(b);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s
 }
 
@@ -15,9 +27,11 @@ fn make_range(pool: &[u8], excl: &[u8], n: usize) -> Vec<[u8; 2]> {
     let avail: Vec<u8> = pool.iter().copied().filter(|c| !excl.contains(c)).collect();
     let mut hands = Vec::new();
     'outer: for i in 0..avail.len() {
-        for j in (i+1)..avail.len() {
+        for j in (i + 1)..avail.len() {
             hands.push([avail[i], avail[j]]);
-            if hands.len() >= n { break 'outer; }
+            if hands.len() >= n {
+                break 'outer;
+            }
         }
     }
     hands
@@ -63,6 +77,9 @@ fn flop_solver_builds_nested_chance_tree() {
     println!("  BR_v1 vs CFR:  {:.4} chips", r.br_v1_vs_cfr);
 
     assert!(r.br_v1_vs_cfr.is_finite());
-    assert!(r.nodes_visited > 100_000,
-        "flop tree should be large, got {}", r.nodes_visited);
+    assert!(
+        r.nodes_visited > 100_000,
+        "flop tree should be large, got {}",
+        r.nodes_visited
+    );
 }

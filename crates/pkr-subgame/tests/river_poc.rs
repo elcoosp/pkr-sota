@@ -34,14 +34,32 @@ fn make_range(pool: &[u8], exclude: &[u8], n: usize) -> Vec<[u8; 2]> {
 
 fn river_root(b: &[u8; 5]) -> GameState {
     let mut s = GameState::new(200.0, 1.0, 2.0);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[0..3]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[3..4]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[4..5]);
     s
 }
@@ -102,7 +120,7 @@ fn poc_river_cfr_beats_uniform() {
         root: river_root(&b),
         p0_range: Range::uniform(p0_hands),
         p1_range: Range::uniform(p1_hands),
-        iterations: 0,  // no CFR iterations -> P0 strategy is not used, uniform is used in BR
+        iterations: 0, // no CFR iterations -> P0 strategy is not used, uniform is used in BR
         evaluator: &evaluator,
         blueprint: None,
     };
@@ -134,6 +152,7 @@ fn poc_river_cfr_beats_uniform() {
     assert!(
         r_cfr.br_v1_vs_cfr < r_uniform.br_v1_vs_cfr,
         "CFR should reduce BR value: got CFR={} vs uniform={}",
-        r_cfr.br_v1_vs_cfr, r_uniform.br_v1_vs_cfr,
+        r_cfr.br_v1_vs_cfr,
+        r_uniform.br_v1_vs_cfr,
     );
 }

@@ -10,7 +10,7 @@ use pkr_cfr::Trainer;
 use pkr_contracts::AbstractionBuilder;
 use pkr_core::abstraction::AbstractionFingerprint;
 use pkr_core::state::{Action, ActionKind, GameState, Street};
-use pkr_subgame::range_tracker::{RangeTracker, sample_hands_weighted};
+use pkr_subgame::range_tracker::{sample_hands_weighted, RangeTracker};
 use pkr_subgame::{run_poc, POCConfig, Range};
 use std::sync::Arc;
 
@@ -19,18 +19,27 @@ fn ws() -> std::path::PathBuf {
     m.parent().unwrap().parent().unwrap().to_path_buf()
 }
 fn out(rel: &str) -> String {
-    ws().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    ws().join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn turn_board_for(seed: u64) -> [u8; 4] {
     let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0xBEEF);
     let mut used = [false; 52];
     let mut b = [0u8; 4];
-    for i in 0..4 {
+    for slot in b.iter_mut() {
         loop {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let c = ((s >> 33) % 52) as u8;
-            if !used[c as usize] { used[c as usize] = true; b[i] = c; break; }
+            if !used[c as usize] {
+                used[c as usize] = true;
+                *slot = c;
+                break;
+            }
         }
     }
     b
@@ -43,23 +52,42 @@ fn forced_turn_line<'a>(
     ev: &'a dyn pkr_contracts::Evaluator,
 ) -> Option<RangeTracker<'a>> {
     let mut t = RangeTracker::new(GameState::new(200.0, 1.0, 2.0), abs, tbl, ev);
-    let bet = |s: &GameState| Action { player: s.actor, kind: ActionKind::Bet(s.pot * 0.75) };
+    let bet = |s: &GameState| Action {
+        player: s.actor,
+        kind: ActionKind::Bet(s.pot * 0.75),
+    };
 
     // Preflop: SB raise, BB call
     let s0 = t.state().clone();
     t.apply_action(bet(&s0)).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Call,
+    })
+    .ok()?;
 
     // Flop
     t.advance_street(&board[0..3]).ok()?;
     let s1 = t.state().clone();
     t.apply_action(bet(&s1)).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Call,
+    })
+    .ok()?;
 
     // Turn: check-check -> at turn complete (root for our solve)
     t.advance_street(&board[3..4]).ok()?;
-    t.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+    t.apply_action(Action {
+        player: 0,
+        kind: ActionKind::Check,
+    })
+    .ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Check,
+    })
+    .ok()?;
 
     Some(t)
 }
@@ -80,21 +108,38 @@ fn turn_real_range_sweep() {
     let abs_dyn: Arc<dyn AbstractionBuilder> = abs_a.clone();
     let trainer = Trainer::with_capacity(abs_dyn, evaluator.clone(), 60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    trainer.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    trainer
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
 
     let abs_ref: &dyn AbstractionBuilder = abs_a.as_ref();
     let ev_ref: &dyn pkr_contracts::Evaluator = evaluator.as_ref();
     let tbl_ref = trainer.get_table();
 
-    let n_boards: u64 = std::env::var("PKR_POC_BOARDS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
-    let n_hands: usize = std::env::var("PKR_POC_HANDS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
-    let iters: u32 = std::env::var("PKR_POC_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(50);
+    let n_boards: u64 = std::env::var("PKR_POC_BOARDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    let n_hands: usize = std::env::var("PKR_POC_HANDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    let iters: u32 = std::env::var("PKR_POC_ITERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
 
     println!();
-    println!("=== TURN REAL-RANGE SWEEP ({} boards, {} iters, {} hands) ===", n_boards, iters, n_hands);
+    println!(
+        "=== TURN REAL-RANGE SWEEP ({} boards, {} iters, {} hands) ===",
+        n_boards, iters, n_hands
+    );
     println!("line: SB raise, BB call; SB bet, BB call; check-check on turn");
     println!();
-    println!("{:>6} {:>20} {:>10} {:>10} {:>10}", "board", "cards", "cfr", "bp", "delta");
+    println!(
+        "{:>6} {:>20} {:>10} {:>10} {:>10}",
+        "board", "cards", "cfr", "bp", "delta"
+    );
     println!("{}", "-".repeat(60));
 
     let mut deltas: Vec<f64> = Vec::new();
@@ -104,7 +149,10 @@ fn turn_real_range_sweep() {
         let b = turn_board_for(seed);
         let tracker = match forced_turn_line(&b, abs_ref, tbl_ref, ev_ref) {
             Some(t) => t,
-            None => { fails += 1; continue; }
+            None => {
+                fails += 1;
+                continue;
+            }
         };
         if tracker.state().street != Street::Turn {
             fails += 1;
@@ -113,7 +161,10 @@ fn turn_real_range_sweep() {
 
         let p0_s = sample_hands_weighted(tracker.range(0), n_hands, seed ^ 0x1111);
         let p1_s = sample_hands_weighted(tracker.range(1), n_hands, seed ^ 0x2222);
-        if p0_s.len() < n_hands / 2 || p1_s.len() < n_hands / 2 { fails += 1; continue; }
+        if p0_s.len() < n_hands / 2 || p1_s.len() < n_hands / 2 {
+            fails += 1;
+            continue;
+        }
 
         let cfg_cfr = POCConfig {
             root: tracker.state().clone(),
@@ -151,19 +202,31 @@ fn turn_real_range_sweep() {
         let delta = bp_val - r_cfr.br_v1_vs_cfr;
         deltas.push(delta);
 
-        println!("{:>6} {:>20} {:>10.4} {:>10.4} {:>+10.4}",
-                 seed, format!("{:?}", b),
-                 r_cfr.br_v1_vs_cfr, bp_val, delta);
+        println!(
+            "{:>6} {:>20} {:>10.4} {:>10.4} {:>+10.4}",
+            seed,
+            format!("{:?}", b),
+            r_cfr.br_v1_vs_cfr,
+            bp_val,
+            delta
+        );
     }
 
     println!("{}", "-".repeat(60));
     println!();
-    if deltas.is_empty() { println!("  NO VALID BOARDS (fails={})", fails); return; }
+    if deltas.is_empty() {
+        println!("  NO VALID BOARDS (fails={})", fails);
+        return;
+    }
 
     deltas.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = deltas.len();
     let mean = deltas.iter().sum::<f64>() / n as f64;
-    let med = if n % 2 == 1 { deltas[n/2] } else { (deltas[n/2-1] + deltas[n/2]) / 2.0 };
+    let med = if n % 2 == 1 {
+        deltas[n / 2]
+    } else {
+        (deltas[n / 2 - 1] + deltas[n / 2]) / 2.0
+    };
     let wins = deltas.iter().filter(|&&d| d > 0.0).count();
 
     println!("=== SUMMARY (n={}, fails={}) ===", n, fails);
@@ -171,7 +234,7 @@ fn turn_real_range_sweep() {
     println!("  mean delta:    {:+.4} chips", mean);
     println!("  median delta:  {:+.4} chips", med);
     println!("  min delta:     {:+.4}", deltas[0]);
-    println!("  max delta:     {:+.4}", deltas[n-1]);
+    println!("  max delta:     {:+.4}", deltas[n - 1]);
     println!();
     println!("  Compare to river sweep: median +42.96 chips (tracked)");
     if med > 15.0 {

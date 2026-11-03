@@ -11,7 +11,7 @@
 //! run records the value without failing. Once the value is captured,
 //! remove `#[ignore]` and hard-code it.
 
-use pkr_subgame::vector::{Solver, Spec, Act};
+use pkr_subgame::vector::{Act, Solver, Spec};
 
 /// Deterministic evaluator that ignores the actual cards and uses the
 /// sum of the two hole-card ids as the hand strength. Fast, no deps,
@@ -22,11 +22,16 @@ fn det_eval(hole: &[u8; 2], _board: &[u8]) -> u32 {
 
 fn build_river_solver(seed: u64) -> Solver<'static> {
     // Board: Ah Kd 7c 2h 9d (arbitrary five distinct cards).
-    let board: Vec<u8> = vec![12, 13 + 11, 39 + 5, 13 + 0, 26 + 7];
+    let board: Vec<u8> = vec![12, 13 + 11, 39 + 5, 13, 26 + 7];
     // Deterministic ranges weighted over all 1326 hands with a cheap
     // LCG; ~55% of hands are "in range".
     let mut s = seed;
-    let mut lcg = || { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); ((s >> 33) as f32) / ((1u64 << 31) as f32) };
+    let mut lcg = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 33) as f32) / ((1u64 << 31) as f32)
+    };
     let mut r0 = vec![0.0f32; 1326];
     let mut r1 = vec![0.0f32; 1326];
     for h in 0..1326 {
@@ -74,12 +79,21 @@ fn vector_exploitability_golden_50_iters() {
          The M-31 arena refactor must be behaviour-preserving."
     );
     assert_eq!(
-        s.n_root_actions(), 4,
+        s.n_root_actions(),
+        4,
         "root action count changed -- tree shape drifted"
     );
     // Sample one root action for shape.
-    let acts: Vec<Act> = s.root_strategy([12, 13]).into_iter().map(|(a, _)| a).collect();
-    assert_eq!(acts.len(), 4, "root_strategy returned the wrong action count");
+    let acts: Vec<Act> = s
+        .root_strategy([12, 13])
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect();
+    assert_eq!(
+        acts.len(),
+        4,
+        "root_strategy returned the wrong action count"
+    );
 }
 
 #[test]
@@ -105,7 +119,9 @@ fn vector_turn_golden_exercises_chance_nodes() {
     let board: Vec<u8> = vec![12, 24, 37, 50]; // 4-card turn board
     let mut s = 7u64;
     let mut lcg = || {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((s >> 33) as f32) / ((1u64 << 31) as f32)
     };
     let mut r0 = vec![0.0f32; 1326];

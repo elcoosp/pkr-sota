@@ -3,14 +3,32 @@ use pkr_subgame::{run_poc, POCConfig, Range};
 
 fn turn_root(board_4: &[u8; 4]) -> GameState {
     let mut s = GameState::new(200.0, 1.0, 2.0);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&board_4[0..3]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&board_4[3..4]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s
 }
 
@@ -18,9 +36,11 @@ fn make_range(pool: &[u8], excl: &[u8], n: usize) -> Vec<[u8; 2]> {
     let avail: Vec<u8> = pool.iter().copied().filter(|c| !excl.contains(c)).collect();
     let mut hands = Vec::new();
     'outer: for i in 0..avail.len() {
-        for j in (i+1)..avail.len() {
+        for j in (i + 1)..avail.len() {
             hands.push([avail[i], avail[j]]);
-            if hands.len() >= n { break 'outer; }
+            if hands.len() >= n {
+                break 'outer;
+            }
         }
     }
     hands
@@ -63,5 +83,9 @@ fn turn_solver_builds_chance_tree_and_solves() {
 
     assert!(r.br_v1_vs_cfr.is_finite());
     assert!(r.nodes_visited > 0);
-    assert!(r.nodes_visited > 50_000, "chance tree should be large, got {}", r.nodes_visited);
+    assert!(
+        r.nodes_visited > 50_000,
+        "chance tree should be large, got {}",
+        r.nodes_visited
+    );
 }

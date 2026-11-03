@@ -17,7 +17,10 @@ fn ws() -> std::path::PathBuf {
     m.parent().unwrap().parent().unwrap().to_path_buf()
 }
 fn out(rel: &str) -> String {
-    ws().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    ws().join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[test]
@@ -32,7 +35,9 @@ fn tracker_is_nonuniform_at_river() {
 
     let table = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    table
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
 
     let ev = pkr_eval::NlheEvaluator;
     let root = GameState::new(200.0, 1.0, 2.0);
@@ -66,7 +71,10 @@ fn tracker_is_nonuniform_at_river() {
     let mut checked_river = false;
 
     for (i, (_actor, kind)) in line.iter().enumerate() {
-        let action = Action { player: 0, kind: *kind };
+        let action = Action {
+            player: 0,
+            kind: *kind,
+        };
         let _ = tracker.apply_action(action);
 
         // Advance the street after each completed street, using a fixed
@@ -98,9 +106,7 @@ fn tracker_is_nonuniform_at_river() {
             pending_street_advance = false;
         }
 
-        if matches!(tracker.state().street, pkr_core::state::Street::River)
-            && !checked_river
-        {
+        if matches!(tracker.state().street, pkr_core::state::Street::River) && !checked_river {
             checked_river = true;
         }
     }

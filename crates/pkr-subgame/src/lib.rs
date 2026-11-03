@@ -19,8 +19,8 @@ use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
-use std::sync::atomic::{AtomicU64, Ordering};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAX_ACTIONS: usize = 8;
 pub const ABSTRACT_BUCKETS: usize = pkr_core::abstraction::NUM_ACTION_BUCKETS;
@@ -187,11 +187,14 @@ fn normalize_or_uniform(s: [f64; ABSTRACT_BUCKETS]) -> [f64; ABSTRACT_BUCKETS] {
 /// Use the constants below as `mult` for "the opponent mostly folds /
 /// calls / raises past the depth limit" leaves. Passing all-ones is the
 /// identity (returns `p` renormalized).
-pub fn bias_strategy(p: &[f32; ABSTRACT_BUCKETS], mult: &[f32; ABSTRACT_BUCKETS]) -> [f32; ABSTRACT_BUCKETS] {
+pub fn bias_strategy(
+    p: &[f32; ABSTRACT_BUCKETS],
+    mult: &[f32; ABSTRACT_BUCKETS],
+) -> [f32; ABSTRACT_BUCKETS] {
     let mut out = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
     let mut sum = 0.0f32;
     for k in 0..ABSTRACT_BUCKETS {
-        let v = (p[k] as f32 * mult[k]).max(0.0);
+        let v = (p[k] * mult[k]).max(0.0);
         out[k] = v;
         sum += v;
     }
@@ -381,9 +384,7 @@ pub fn safe_resolve_gadget(cfg: &POCConfig) -> Option<[f64; ABSTRACT_BUCKETS]> {
         gv[d] = -solver.blueprint_value_p0(solver.tree.root, d as u32, &bp);
     }
     solver.gadget_v1 = gv;
-    solver.gadget_reg = (0..solver.n_deals * 2)
-        .map(|_| AtomicU64::new(0))
-        .collect();
+    solver.gadget_reg = (0..solver.n_deals * 2).map(|_| AtomicU64::new(0)).collect();
     let t_gv = t1.elapsed();
     solver.use_gadget = true;
     let t2 = std::time::Instant::now();
@@ -465,12 +466,16 @@ pub fn adversarial_safety_test(cfg: &POCConfig) -> AdversarialResult {
     }
 }
 
-fn p95(v: &[f64]) -> f64 { p95_of(v) }
+fn p95(v: &[f64]) -> f64 {
+    p95_of(v)
+}
 
 fn p95_of(v: &[f64]) -> f64 {
-    if v.is_empty() { return 0.0; }
+    if v.is_empty() {
+        return 0.0;
+    }
     let mut s = v.to_vec();
-    s.sort_by(|a, b| a.total_cmp(b));  // M-37: NaN-safe
+    s.sort_by(|a, b| a.total_cmp(b)); // M-37: NaN-safe
     let idx = ((s.len() as f64) * 0.95) as usize;
     s[idx.min(s.len() - 1)]
 }
@@ -492,7 +497,9 @@ pub fn root_strategies(cfg: &POCConfig) -> RootStrategies {
         PublicNode::Decision { bucket_child, .. } => {
             let mut l = [false; ABSTRACT_BUCKETS];
             for b in 0..ABSTRACT_BUCKETS {
-                if bucket_child[b] >= 0 { l[b] = true; }
+                if bucket_child[b] >= 0 {
+                    l[b] = true;
+                }
             }
             l
         }
@@ -530,10 +537,12 @@ pub fn diagnose_strategy_variance(cfg: &POCConfig) -> StrategyDiagnostics {
         Some((_, s)) => {
             let mut uniq: Vec<[f64; ABSTRACT_BUCKETS]> = Vec::new();
             for st in s {
-                let is_new = !uniq.iter().any(|o| {
-                    o.iter().zip(st.iter()).all(|(a, b)| (a - b).abs() < 1e-4)
-                });
-                if is_new { uniq.push(*st); }
+                let is_new = !uniq
+                    .iter()
+                    .any(|o| o.iter().zip(st.iter()).all(|(a, b)| (a - b).abs() < 1e-4));
+                if is_new {
+                    uniq.push(*st);
+                }
             }
             uniq.len()
         }
@@ -576,7 +585,11 @@ pub fn run_poc(cfg: &POCConfig) -> POCResult {
         br_v1_vs_blueprint,
         br_v1_vs_blueprint_wide,
         iterations: cfg.iterations,
-        nodes_visited: solver.nodes_visited.iter().map(|a| a.load(Ordering::Relaxed)).sum(),
+        nodes_visited: solver
+            .nodes_visited
+            .iter()
+            .map(|a| a.load(Ordering::Relaxed))
+            .sum(),
     }
 }
 
@@ -606,9 +619,7 @@ enum PublicNode {
     /// At flop-complete, `children` are the 47 turn cards.
     /// At turn-complete, `children` are the 46 river cards.
     /// Walk samples one child uniformly over the non-blocked children.
-    Chance {
-        children: Vec<(u8, u32)>,
-    },
+    Chance { children: Vec<(u8, u32)> },
 }
 
 struct PublicTree {
@@ -653,9 +664,7 @@ postflop-only (see docs/roadmap/subgame-solving-plan.md)"
     // Flop OR turn betting complete: insert a chance node over the
     // next street's cards. Flop -> 47 turns; turn -> 46 rivers.
     // Recursion naturally nests flop chance over turn chance over river.
-    if state.is_street_complete()
-        && matches!(state.street, Street::Flop | Street::Turn)
-    {
+    if state.is_street_complete() && matches!(state.street, Street::Flop | Street::Turn) {
         let board_len = state.board_len as usize;
         let mut remaining: Vec<u8> = Vec::with_capacity(46);
         for c in 0..52u8 {
@@ -673,8 +682,7 @@ postflop-only (see docs/roadmap/subgame-solving-plan.md)"
             // Seeded partial Fisher-Yates gives a uniform sample that is
             // still reproducible.
             let n = remaining.len();
-            let mut rng = SmallRng::seed_from_u64(
-                0x5EED_2026 ^ (n as u64) ^ (cap as u64));
+            let mut rng = SmallRng::seed_from_u64(0x5EED_2026 ^ (n as u64) ^ (cap as u64));
             for i in 0..cap {
                 let j = i + rng.random_range(0..(n - i));
                 remaining.swap(i, j);
@@ -694,7 +702,10 @@ postflop-only (see docs/roadmap/subgame-solving-plan.md)"
 
     // Regular decision node.
     let actor = state.actor;
-    let mut buf = [Action { player: 0, kind: ActionKind::Fold }; MAX_ACTIONS];
+    let mut buf = [Action {
+        player: 0,
+        kind: ActionKind::Fold,
+    }; MAX_ACTIONS];
     let n = state.legal_actions_into(&mut buf);
     if n == 0 {
         // Defensive: no actions and not terminal is a bug; emit fold.
@@ -716,7 +727,10 @@ postflop-only (see docs/roadmap/subgame-solving-plan.md)"
             bucket_child[b] = child as i32;
         }
     }
-    nodes[idx as usize] = PublicNode::Decision { actor: actor as u8, bucket_child };
+    nodes[idx as usize] = PublicNode::Decision {
+        actor: actor as u8,
+        bucket_child,
+    };
     idx
 }
 
@@ -823,7 +837,8 @@ impl<'a> Solver<'a> {
                 // -> turn read out of range -> EHS fallback).
                 let board = &cfg.root.board[..cfg.root.board_len as usize];
                 if incompatible(&h0, &h1)
-                    || h0[0] == h0[1] || h1[0] == h1[1]
+                    || h0[0] == h0[1]
+                    || h1[0] == h1[1]
                     || h0.iter().any(|c| board.contains(c))
                     || h1.iter().any(|c| board.contains(c))
                 {
@@ -862,7 +877,12 @@ impl<'a> Solver<'a> {
                         term_val[node_id * n_deals + deal_idx] = *to_p0;
                     }
                 }
-                PublicNode::Showdown { board, board_len, pot, invested_p0 } => {
+                PublicNode::Showdown {
+                    board,
+                    board_len,
+                    pot,
+                    invested_p0,
+                } => {
                     if lazy_skip_showdown {
                         continue;
                     }
@@ -883,7 +903,7 @@ impl<'a> Solver<'a> {
                 PublicNode::Decision { .. } | PublicNode::Chance { .. } => {}
             }
         }
-        let _ = &rank0;  // kept for potential future use
+        let _ = &rank0; // kept for potential future use
         let _ = &rank1;
 
         Solver {
@@ -892,15 +912,26 @@ impl<'a> Solver<'a> {
             deals,
             n_nodes,
             n_deals,
-            reg0: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
-            reg1: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
-            sum0: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
-            sum1: (0..n_nodes*n_deals*ABSTRACT_BUCKETS).map(|_| AtomicU64::new(0)).collect(),
+            reg0: (0..n_nodes * n_deals * ABSTRACT_BUCKETS)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+            reg1: (0..n_nodes * n_deals * ABSTRACT_BUCKETS)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+            sum0: (0..n_nodes * n_deals * ABSTRACT_BUCKETS)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+            sum1: (0..n_nodes * n_deals * ABSTRACT_BUCKETS)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
             term_val,
             iter_weight: AtomicU64::new(1.0f64.to_bits()),
             nodes_visited: (0..n_deals).map(|_| AtomicU64::new(0)).collect(),
-            seed: cfg.root.board[..cfg.root.board_len as usize].iter()
-                .fold(0x5EED_2026u64, |h, &c| h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c as u64),
+            seed: cfg.root.board[..cfg.root.board_len as usize]
+                .iter()
+                .fold(0x5EED_2026u64, |h, &c| {
+                    h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c as u64
+                }),
             full_chance: std::env::var("PKR_SUBGAME_FULL_CHANCE")
                 .map(|v| v != "0")
                 .unwrap_or(true),
@@ -939,9 +970,12 @@ impl<'a> Solver<'a> {
         }
         // Compute on the fly.
         let (board, board_len, pot, invested_p0) = match &self.tree.nodes[node_id as usize] {
-            PublicNode::Showdown { board, board_len, pot, invested_p0 } => {
-                (*board, *board_len, *pot, *invested_p0)
-            }
+            PublicNode::Showdown {
+                board,
+                board_len,
+                pot,
+                invested_p0,
+            } => (*board, *board_len, *pot, *invested_p0),
             PublicNode::Fold { to_p0 } => return *to_p0,
             _ => return 0.0,
         };
@@ -983,9 +1017,7 @@ impl<'a> Solver<'a> {
                 let valid: Vec<u32> = match &self.tree.nodes[node_id as usize] {
                     PublicNode::Chance { children } => children
                         .iter()
-                        .filter(|(c, _)| {
-                            *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1]
-                        })
+                        .filter(|(c, _)| *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1])
                         .map(|(_, id)| *id)
                         .collect(),
                     _ => unreachable!(),
@@ -1006,7 +1038,9 @@ impl<'a> Solver<'a> {
                         self.seed
                             .wrapping_add(deal_idx as u64)
                             .wrapping_mul(0x9E3779B97F4A7C15)
-                            .wrapping_add(self.nodes_visited[deal_idx as usize].load(Ordering::Relaxed)),
+                            .wrapping_add(
+                                self.nodes_visited[deal_idx as usize].load(Ordering::Relaxed),
+                            ),
                     );
                     let pick = valid[rng.random_range(0..valid.len())];
                     self.walk(pick, deal_idx, reach0, reach1, depth + 1)
@@ -1014,7 +1048,10 @@ impl<'a> Solver<'a> {
             }
             2 => {
                 let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
-                    PublicNode::Decision { actor, bucket_child } => (*actor, *bucket_child),
+                    PublicNode::Decision {
+                        actor,
+                        bucket_child,
+                    } => (*actor, *bucket_child),
                     _ => unreachable!(),
                 };
                 let i = self.idx(node_id, deal_idx) * ABSTRACT_BUCKETS;
@@ -1031,7 +1068,9 @@ impl<'a> Solver<'a> {
                 let mut avg_p0 = 0.0f64;
                 let mut avg_actor = 0.0f64;
                 for b in 0..ABSTRACT_BUCKETS {
-                    if bucket_child[b] < 0 { continue; }
+                    if bucket_child[b] < 0 {
+                        continue;
+                    }
                     let child = bucket_child[b] as u32;
                     let v_p0 = if actor == 0 {
                         self.walk(child, deal_idx, reach0 * strat[b], reach1, depth + 1)
@@ -1046,19 +1085,27 @@ impl<'a> Solver<'a> {
                 let rcell = if actor == 0 { &self.reg0 } else { &self.reg1 };
                 let reach_opp = if actor == 0 { reach1 } else { reach0 };
                 for b in 0..ABSTRACT_BUCKETS {
-                    if bucket_child[b] < 0 { continue; }
+                    if bucket_child[b] < 0 {
+                        continue;
+                    }
                     let old = f64::from_bits(rcell[i + b].load(Ordering::Relaxed));
                     let r = old + reach_opp * prior * (cfv[b] - avg_actor);
-                    rcell[i + b].store((if r > 0.0 { r } else { 0.0 }).to_bits(), Ordering::Relaxed);
+                    rcell[i + b]
+                        .store((if r > 0.0 { r } else { 0.0 }).to_bits(), Ordering::Relaxed);
                 }
 
                 let scell = if actor == 0 { &self.sum0 } else { &self.sum1 };
                 let reach_self = if actor == 0 { reach0 } else { reach1 };
                 let w = f64::from_bits(self.iter_weight.load(Ordering::Relaxed));
                 for b in 0..ABSTRACT_BUCKETS {
-                    if bucket_child[b] < 0 { continue; }
+                    if bucket_child[b] < 0 {
+                        continue;
+                    }
                     let old = f64::from_bits(scell[i + b].load(Ordering::Relaxed));
-                    scell[i + b].store((old + w * reach_self * strat[b]).to_bits(), Ordering::Relaxed);
+                    scell[i + b].store(
+                        (old + w * reach_self * strat[b]).to_bits(),
+                        Ordering::Relaxed,
+                    );
                 }
 
                 avg_p0
@@ -1072,7 +1119,8 @@ impl<'a> Solver<'a> {
         let n_deals = self.n_deals;
         let iters = self.cfg.iterations;
         for iter in 0..iters {
-            self.iter_weight.store(((iter + 1) as f64).to_bits(), Ordering::Relaxed);
+            self.iter_weight
+                .store(((iter + 1) as f64).to_bits(), Ordering::Relaxed);
 
             // Each deal is walked by exactly one thread. All mutable
             // state is atomic and indexed by (node, deal, bucket), so
@@ -1093,7 +1141,11 @@ impl<'a> Solver<'a> {
     fn p0_strategy(&self) -> Vec<Option<[f64; ABSTRACT_BUCKETS]>> {
         let mut out = vec![None; self.n_nodes * self.n_deals];
         for node_id in 0..self.n_nodes {
-            if let PublicNode::Decision { actor: 0, bucket_child } = &self.tree.nodes[node_id] {
+            if let PublicNode::Decision {
+                actor: 0,
+                bucket_child,
+            } = &self.tree.nodes[node_id]
+            {
                 for deal_idx in 0..self.n_deals {
                     let i = node_id * self.n_deals + deal_idx;
                     let base = i * ABSTRACT_BUCKETS;
@@ -1105,7 +1157,8 @@ impl<'a> Solver<'a> {
                         let mut s = [0.0; ABSTRACT_BUCKETS];
                         for b in 0..ABSTRACT_BUCKETS {
                             if (*bucket_child)[b] >= 0 {
-                                s[b] = f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed)) / sum;
+                                s[b] = f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed))
+                                    / sum;
                             }
                         }
                         out[i] = Some(s);
@@ -1151,10 +1204,7 @@ impl<'a> Solver<'a> {
     /// Per-deal P1 BR value against a fixed P0 strategy. The max of this
     /// vec is the "adversarial" value: what P1 achieves if they could pick
     /// which deal to play.
-    pub fn br_per_deal(
-        &self,
-        p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>],
-    ) -> Vec<f64> {
+    pub fn br_per_deal(&self, p0_strategy: &[Option<[f64; ABSTRACT_BUCKETS]>]) -> Vec<f64> {
         let root = self.tree.root;
         (0..self.n_deals)
             .into_par_iter()
@@ -1185,7 +1235,8 @@ impl<'a> Solver<'a> {
                 if sum > 1e-12 {
                     for b in 0..ABSTRACT_BUCKETS {
                         if bucket_child[b] >= 0 {
-                            out[b] = f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed)) / sum;
+                            out[b] =
+                                f64::from_bits(self.sum0[base + b].load(Ordering::Relaxed)) / sum;
                         }
                     }
                 }
@@ -1214,19 +1265,28 @@ impl<'a> Solver<'a> {
             PublicNode::Chance { children } => {
                 let h0 = self.deals[deal_idx as usize].h0;
                 let h1 = self.deals[deal_idx as usize].h1;
-                let valid: Vec<u32> = children.iter()
+                let valid: Vec<u32> = children
+                    .iter()
                     .filter(|(c, _)| *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1])
-                    .map(|(_, id)| *id).collect();
-                if valid.is_empty() { return 0.0; }
+                    .map(|(_, id)| *id)
+                    .collect();
+                if valid.is_empty() {
+                    return 0.0;
+                }
                 let w = 1.0 / valid.len() as f64;
-                valid.iter().map(|&ch| w * self.blueprint_value_p0(ch, deal_idx, bp)).sum()
+                valid
+                    .iter()
+                    .map(|&ch| w * self.blueprint_value_p0(ch, deal_idx, bp))
+                    .sum()
             }
             PublicNode::Decision { bucket_child, .. } => {
                 let i = self.idx(node_id, deal_idx);
                 let strat = bp[i].unwrap_or_else(|| uniform_over_legal(bucket_child));
                 let mut v = 0.0f64;
                 for b in 0..ABSTRACT_BUCKETS {
-                    if bucket_child[b] < 0 { continue; }
+                    if bucket_child[b] < 0 {
+                        continue;
+                    }
                     v += strat[b] * self.blueprint_value_p0(bucket_child[b] as u32, deal_idx, bp);
                 }
                 v
@@ -1277,19 +1337,18 @@ impl<'a> Solver<'a> {
     /// First P0 decision node (tree order) with non-zero strategy for at
     /// least one deal. Returns (node_id, per-deal normalized strategies).
     /// `None` if P0 has no reachable decision node with learning.
-    pub fn first_p0_decision_strategies(
-        &self,
-    ) -> Option<(u32, Vec<[f64; ABSTRACT_BUCKETS]>)> {
+    pub fn first_p0_decision_strategies(&self) -> Option<(u32, Vec<[f64; ABSTRACT_BUCKETS]>)> {
         let full = self.p0_strategy();
         for node_id in 0..self.n_nodes {
-            if let PublicNode::Decision { actor: 0, bucket_child } =
-                self.tree.nodes[node_id]
+            if let PublicNode::Decision {
+                actor: 0,
+                bucket_child,
+            } = self.tree.nodes[node_id]
             {
                 let mut any_nonzero = false;
                 let mut out = Vec::with_capacity(self.n_deals);
                 for d in 0..self.n_deals {
-                    let s = full[node_id * self.n_deals + d]
-                        .unwrap_or([0.0; ABSTRACT_BUCKETS]);
+                    let s = full[node_id * self.n_deals + d].unwrap_or([0.0; ABSTRACT_BUCKETS]);
                     if s.iter().any(|&p| p > 1e-9) {
                         any_nonzero = true;
                     }
@@ -1329,10 +1388,12 @@ impl<'a> Solver<'a> {
                             vals.push(s[b]);
                         }
                     }
-                    if vals.is_empty() { continue; }
+                    if vals.is_empty() {
+                        continue;
+                    }
                     let mean = vals.iter().sum::<f64>() / vals.len() as f64;
-                    let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
-                        / vals.len() as f64;
+                    let var =
+                        vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
                     total += var;
                 }
             }
@@ -1376,8 +1437,14 @@ impl<'a> Solver<'a> {
             (0.5, 0.5)
         };
         let avg_p1 = st * term_p1 + se * enter_p1;
-        self.gadget_reg[base].store((r0 + (term_p1 - avg_p1)).max(0.0).to_bits(), Ordering::Relaxed);
-        self.gadget_reg[base + 1].store((r1 + (enter_p1 - avg_p1)).max(0.0).to_bits(), Ordering::Relaxed);
+        self.gadget_reg[base].store(
+            (r0 + (term_p1 - avg_p1)).max(0.0).to_bits(),
+            Ordering::Relaxed,
+        );
+        self.gadget_reg[base + 1].store(
+            (r1 + (enter_p1 - avg_p1)).max(0.0).to_bits(),
+            Ordering::Relaxed,
+        );
         // value to P0
         st * (-term_p1) + se * enter_p0
     }
@@ -1405,9 +1472,7 @@ impl<'a> Solver<'a> {
                 let h1 = self.deals[deal_idx as usize].h1;
                 let valid: Vec<u32> = children
                     .iter()
-                    .filter(|(c, _)| {
-                        *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1]
-                    })
+                    .filter(|(c, _)| *c != h0[0] && *c != h0[1] && *c != h1[0] && *c != h1[1])
                     .map(|(_, id)| *id)
                     .collect();
                 if valid.is_empty() {
@@ -1450,7 +1515,10 @@ impl<'a> Solver<'a> {
             }
             2 => {
                 let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
-                    PublicNode::Decision { actor, bucket_child } => (*actor, *bucket_child),
+                    PublicNode::Decision {
+                        actor,
+                        bucket_child,
+                    } => (*actor, *bucket_child),
                     _ => unreachable!(),
                 };
                 if actor == 0 {
@@ -1461,23 +1529,29 @@ impl<'a> Solver<'a> {
                     };
                     let mut v = 0.0f64;
                     for b in 0..ABSTRACT_BUCKETS {
-                        if bucket_child[b] < 0 { continue; }
-                        v += strat[b]
-                            * self.br_walk(bucket_child[b] as u32, deal_idx, p0_strategy);
+                        if bucket_child[b] < 0 {
+                            continue;
+                        }
+                        v += strat[b] * self.br_walk(bucket_child[b] as u32, deal_idx, p0_strategy);
                     }
                     v
                 } else {
                     let mut best = f64::NEG_INFINITY;
                     for b in 0..ABSTRACT_BUCKETS {
-                        if bucket_child[b] < 0 { continue; }
-                        let v_p0 =
-                            self.br_walk(bucket_child[b] as u32, deal_idx, p0_strategy);
+                        if bucket_child[b] < 0 {
+                            continue;
+                        }
+                        let v_p0 = self.br_walk(bucket_child[b] as u32, deal_idx, p0_strategy);
                         let v_p1 = -v_p0;
                         if v_p1 > best {
                             best = v_p1;
                         }
                     }
-                    if best.is_finite() { -best } else { 0.0 }
+                    if best.is_finite() {
+                        -best
+                    } else {
+                        0.0
+                    }
                 }
             }
             _ => 0.0,
@@ -1522,7 +1596,10 @@ impl<'a> Solver<'a> {
 
         // Borrow the node data we need, drop the borrow before mutating `state`.
         let (actor, bucket_child) = match &self.tree.nodes[node_id as usize] {
-            PublicNode::Decision { actor, bucket_child } => (*actor, *bucket_child),
+            PublicNode::Decision {
+                actor,
+                bucket_child,
+            } => (*actor, *bucket_child),
             _ => return,
         };
         {
@@ -1540,12 +1617,8 @@ impl<'a> Solver<'a> {
                     } else {
                         self.deals[deal_idx].h1
                     };
-                    let hash = abs.get_infoset_hash(
-                        &hole,
-                        board,
-                        &sig_buf[..sig_len],
-                        state.street as u8,
-                    );
+                    let hash =
+                        abs.get_infoset_hash(&hole, board, &sig_buf[..sig_len], state.street as u8);
                     let mut cluster = [0.0f32; ABSTRACT_BUCKETS];
                     tbl.get_average_strategy_into(hash, &mut cluster);
                     let mut s = [0.0; ABSTRACT_BUCKETS];
@@ -1565,10 +1638,15 @@ impl<'a> Solver<'a> {
                     }
                 }
             }
-            let mut buf = [Action { player: 0, kind: ActionKind::Fold }; MAX_ACTIONS];
+            let mut buf = [Action {
+                player: 0,
+                kind: ActionKind::Fold,
+            }; MAX_ACTIONS];
             let n = state.legal_actions_into(&mut buf);
             for b in 0..ABSTRACT_BUCKETS {
-                if bucket_child[b] < 0 { continue; }
+                if bucket_child[b] < 0 {
+                    continue;
+                }
                 let pick = buf
                     .iter()
                     .take(n)
@@ -1576,13 +1654,7 @@ impl<'a> Solver<'a> {
                     .copied();
                 if let Some(act) = pick {
                     state.apply_action_in_place(&act);
-                    self.fill_blueprint_strat(
-                        bucket_child[b] as u32,
-                        state,
-                        strat,
-                        abs,
-                        tbl,
-                    );
+                    self.fill_blueprint_strat(bucket_child[b] as u32, state, strat, abs, tbl);
                     state.undo_action();
                 }
             }
@@ -1646,16 +1718,14 @@ pub fn blueprint_p0_strategy(
     let mut sig_buf = [0u8; 8];
     let sig_len = state.infoset_signature_into(&mut sig_buf);
     let board = &state.board[..state.board_len as usize];
-    let hash = abstraction.get_infoset_hash(
-        hole,
-        board,
-        &sig_buf[..sig_len],
-        state.street as u8,
-    );
+    let hash = abstraction.get_infoset_hash(hole, board, &sig_buf[..sig_len], state.street as u8);
     let mut cluster = [0.0f32; ABSTRACT_BUCKETS];
     table.get_average_strategy_into(hash, &mut cluster);
     let _actor = state.actor;
-    let mut buf = [Action { player: 0, kind: ActionKind::Fold }; MAX_ACTIONS];
+    let mut buf = [Action {
+        player: 0,
+        kind: ActionKind::Fold,
+    }; MAX_ACTIONS];
     let n = state.legal_actions_into(&mut buf);
     let mut out = [0.0; MAX_ACTIONS];
     for a in 0..n {
@@ -1804,10 +1874,13 @@ mod gadget_safety_tests {
                 ws.join("outputs/v8-fixture/train.ckpt"),
             ),
         };
-        if !ck.exists() { return None; }
+        if !ck.exists() {
+            return None;
+        }
         let store = load_centroids(t.join("centroids.bin").to_str()?).ok()?;
         let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
-        abs.init_table(0, t.join("preflop_abstraction.bin").to_str()?).ok()?;
+        abs.init_table(0, t.join("preflop_abstraction.bin").to_str()?)
+            .ok()?;
         // flop table name varies by run: new = abstraction.bin, old = flop_abstraction.bin
         let flop = if t.join("abstraction.bin").exists() {
             t.join("abstraction.bin")
@@ -1815,13 +1888,18 @@ mod gadget_safety_tests {
             t.join("flop_abstraction.bin")
         };
         abs.init_table(1, flop.to_str()?).ok()?;
-        abs.init_table(2, t.join("turn_abstraction.bin").to_str()?).ok()?;
-        abs.init_table(3, t.join("river_buckets.bin").to_str()?).ok()?;
+        abs.init_table(2, t.join("turn_abstraction.bin").to_str()?)
+            .ok()?;
+        abs.init_table(3, t.join("river_buckets.bin").to_str()?)
+            .ok()?;
         let tbl = CompactRegretTable::with_capacity(60_000_000);
         let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(abs.k() as u32);
         match tbl.load_checkpoint(ck.to_str()?, &fp) {
             Ok(_) => Some((abs, tbl)),
-            Err(e) => { eprintln!("fixture load failed: {e}"); None }
+            Err(e) => {
+                eprintln!("fixture load failed: {e}");
+                None
+            }
         }
     }
 
@@ -1833,7 +1911,8 @@ mod gadget_safety_tests {
     /// tree's BR machinery: is its opponent-BR <= the blueprint's?
     fn gadget_not_more_exploitable_than_blueprint() {
         let Some((abs, tbl)) = fixture() else {
-            eprintln!("SKIP: fixture or tables missing"); return;
+            eprintln!("SKIP: fixture or tables missing");
+            return;
         };
         let ev = pkr_eval::NlheEvaluator;
 
@@ -1843,24 +1922,47 @@ mod gadget_safety_tests {
         let b: [u8; 5] = [20, 21, 38, 39, 40]; // disjoint from holes/ranges, no flush
         let mut root = GameState::new(200.0, 1.0, 2.0);
         root.set_hole_cards([0, 1], [2, 3]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&b[0..3]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&b[3..4]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&b[4..5]);
         // Postflop first actor is P1 (1 - dealer); have P1 check so the
         // root is P0's decision (matching production, where decide() is
         // called on our turn).
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
 
         // Two 8-hand ranges.
         // Ranges disjoint from the board (44..48) and from each other.
-        let p0h: Vec<[u8;2]> = (0..8).map(|i| [4 + i as u8 * 2, 5 + i as u8 * 2]).collect();
-        let p1h: Vec<[u8;2]> = (0..8).map(|i| [22 + i as u8 * 2, 23 + i as u8 * 2]).collect();
+        let p0h: Vec<[u8; 2]> = (0..8).map(|i| [4 + i as u8 * 2, 5 + i as u8 * 2]).collect();
+        let p1h: Vec<[u8; 2]> = (0..8)
+            .map(|i| [22 + i as u8 * 2, 23 + i as u8 * 2])
+            .collect();
 
         let cfg = POCConfig {
             root,
@@ -1880,9 +1982,7 @@ mod gadget_safety_tests {
         // Gadget resolve.
         let br = s.br_per_deal(&bp);
         let mut gv = vec![0.0f64; s.n_deals];
-        for d in 0..s.n_deals {
-            gv[d] = br[d];
-        }
+        gv[..s.n_deals].copy_from_slice(&br[..s.n_deals]);
         s.gadget_v1 = gv;
         s.gadget_reg = (0..s.n_deals * 2).map(|_| AtomicU64::new(0)).collect();
         s.use_gadget = true;
@@ -1906,28 +2006,52 @@ mod gadget_safety_tests {
     #[ignore]
     fn gadget_diagnostic() {
         let Some((abs, tbl)) = fixture() else {
-            eprintln!("SKIP: fixture missing"); return;
+            eprintln!("SKIP: fixture missing");
+            return;
         };
         let ev = pkr_eval::NlheEvaluator;
         let b: [u8; 5] = [20, 21, 38, 39, 40]; // disjoint from holes/ranges, no flush
         let mut root = GameState::new(200.0, 1.0, 2.0);
         root.set_hole_cards([0, 1], [2, 3]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&b[0..3]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&b[3..4]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&b[4..5]);
         // Postflop first actor is P1 (1 - dealer); have P1 check so the
         // root is P0's decision (matching production, where decide() is
         // called on our turn).
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
 
-        let p0h: Vec<[u8;2]> = (0..8).map(|i| [4 + i as u8 * 2, 5 + i as u8 * 2]).collect();
-        let p1h: Vec<[u8;2]> = (0..8).map(|i| [22 + i as u8 * 2, 23 + i as u8 * 2]).collect();
+        let p0h: Vec<[u8; 2]> = (0..8).map(|i| [4 + i as u8 * 2, 5 + i as u8 * 2]).collect();
+        let p1h: Vec<[u8; 2]> = (0..8)
+            .map(|i| [22 + i as u8 * 2, 23 + i as u8 * 2])
+            .collect();
         let cfg = POCConfig {
             root,
             p0_range: Range::uniform(p0h),
@@ -1940,23 +2064,39 @@ mod gadget_safety_tests {
         let bp = s.build_blueprint_strategy(&abs, &tbl);
         let br = s.br_per_deal(&bp);
         let mut gv = vec![0.0f64; s.n_deals];
-        for d in 0..s.n_deals { gv[d] = br[d]; }
+        gv[..s.n_deals].copy_from_slice(&br[..s.n_deals]);
         s.gadget_v1 = gv.clone();
         s.gadget_reg = (0..s.n_deals * 2).map(|_| AtomicU64::new(0)).collect();
         s.use_gadget = true;
         s.solve();
         // terminate prob per deal at the END
-        let mut st_sum = 0.0; let mut n = 0;
+        let mut st_sum = 0.0;
+        let mut n = 0;
         for d in 0..s.n_deals {
-            let r0 = f64::from_bits(s.gadget_reg[d*2].load(Ordering::Relaxed));
-            let r1 = f64::from_bits(s.gadget_reg[d*2+1].load(Ordering::Relaxed));
-            let p0 = r0.max(0.0); let p1 = r1.max(0.0); let t = p0+p1;
-            let st = if t > 1e-12 { p0/t } else { 0.5 };
-            st_sum += st; n += 1;
+            let r0 = f64::from_bits(s.gadget_reg[d * 2].load(Ordering::Relaxed));
+            let r1 = f64::from_bits(s.gadget_reg[d * 2 + 1].load(Ordering::Relaxed));
+            let p0 = r0.max(0.0);
+            let p1 = r1.max(0.0);
+            let t = p0 + p1;
+            let st = if t > 1e-12 { p0 / t } else { 0.5 };
+            st_sum += st;
+            n += 1;
         }
-        eprintln!("avg terminate prob = {:.3} (1.0 = degenerate)", st_sum / n as f64);
-        eprintln!("gadget_v1 range: [{:.3}, {:.3}]", gv.iter().cloned().fold(f64::INFINITY, f64::min), gv.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+        eprintln!(
+            "avg terminate prob = {:.3} (1.0 = degenerate)",
+            st_sum / n as f64
+        );
+        eprintln!(
+            "gadget_v1 range: [{:.3}, {:.3}]",
+            gv.iter().cloned().fold(f64::INFINITY, f64::min),
+            gv.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        );
         let agg = s.root_p0_strategy_aggregated().unwrap();
-        eprintln!("resolved root P0 = {:?}", agg.iter().map(|x| (x*1000.0).round()/1000.0).collect::<Vec<_>>());
+        eprintln!(
+            "resolved root P0 = {:?}",
+            agg.iter()
+                .map(|x| (x * 1000.0).round() / 1000.0)
+                .collect::<Vec<_>>()
+        );
     }
 }

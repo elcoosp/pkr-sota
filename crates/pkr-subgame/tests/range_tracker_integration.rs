@@ -22,13 +22,18 @@ fn workspace_root() -> std::path::PathBuf {
     manifest.parent().unwrap().parent().unwrap().to_path_buf()
 }
 fn out(rel: &str) -> String {
-    workspace_root().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    workspace_root()
+        .join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn build_abstraction() -> Arc<KMeansAbstraction> {
     let centroids_store = load_centroids(&out("centroids.bin")).expect("centroids");
     let abs = KMeansAbstraction::from_store(centroids_store, Arc::new(pkr_eval::NlheEvaluator));
-    abs.init_table(0, &out("preflop_abstraction.bin")).expect("t0");
+    abs.init_table(0, &out("preflop_abstraction.bin"))
+        .expect("t0");
     abs.init_table(1, &out("abstraction.bin")).expect("t1");
     abs.init_table(2, &out("turn_abstraction.bin")).expect("t2");
     abs.init_table(3, &out("river_buckets.bin")).expect("t3");
@@ -63,7 +68,8 @@ fn range_tracker_preflop_sanity() {
 
     tracker.assert_normalized().expect("initial normalized");
     println!("=== preflop tracker sanity ===");
-    println!("  initial range sum: p0={:.6} p1={:.6}",
+    println!(
+        "  initial range sum: p0={:.6} p1={:.6}",
         tracker.range(0).iter().sum::<f64>(),
         tracker.range(1).iter().sum::<f64>(),
     );
@@ -74,15 +80,24 @@ fn range_tracker_preflop_sanity() {
     println!("  P0 initial P(AA) = {:.6}", p_aa_init);
 
     // P0 raises preflop. AA should be upweighted relative to uniform.
-    let raise = Action { player: 0, kind: ActionKind::Bet(6.0) };
+    let raise = Action {
+        player: 0,
+        kind: ActionKind::Bet(6.0),
+    };
     tracker.apply_action(raise).expect("apply raise");
     tracker.assert_normalized().expect("after P0 raise");
 
     let p_aa_raise = tracker.prob_of(0, aa);
-    println!("  P0 post-raise P(AA) = {:.6}  (was {:.6})", p_aa_raise, p_aa_init);
+    println!(
+        "  P0 post-raise P(AA) = {:.6}  (was {:.6})",
+        p_aa_raise, p_aa_init
+    );
 
     // P1 calls.
-    let call = Action { player: 1, kind: ActionKind::Call };
+    let call = Action {
+        player: 1,
+        kind: ActionKind::Call,
+    };
     tracker.apply_action(call).expect("apply call");
     tracker.assert_normalized().expect("after P1 call");
 
@@ -139,11 +154,21 @@ fn range_concentrates_after_actions() {
     println!("  initial: {:.4}", h0);
 
     // Raise, call, then advance street and continue with checks.
-    tracker.apply_action(Action { player: 0, kind: ActionKind::Bet(6.0) }).unwrap();
+    tracker
+        .apply_action(Action {
+            player: 0,
+            kind: ActionKind::Bet(6.0),
+        })
+        .unwrap();
     let h1 = entropy(tracker.range(0));
     println!("  after raise: {:.4}", h1);
 
-    tracker.apply_action(Action { player: 1, kind: ActionKind::Call }).unwrap();
+    tracker
+        .apply_action(Action {
+            player: 1,
+            kind: ActionKind::Call,
+        })
+        .unwrap();
 
     // Advance to flop with a specific board.
     let flop: [u8; 3] = [4, 20, 36];
@@ -154,10 +179,20 @@ fn range_concentrates_after_actions() {
     println!("  after flop (board restricts): {:.4}", h2);
 
     // Check/check on flop.
-    tracker.apply_action(Action { player: 0, kind: ActionKind::Check }).unwrap();
+    tracker
+        .apply_action(Action {
+            player: 0,
+            kind: ActionKind::Check,
+        })
+        .unwrap();
     let h3 = entropy(tracker.range(0));
     println!("  after flop check: {:.4}", h3);
-    tracker.apply_action(Action { player: 1, kind: ActionKind::Check }).unwrap();
+    tracker
+        .apply_action(Action {
+            player: 1,
+            kind: ActionKind::Check,
+        })
+        .unwrap();
     tracker.assert_normalized().expect("after flop cc");
 
     // Board restriction is monotone-ish: entropy should decrease or stay

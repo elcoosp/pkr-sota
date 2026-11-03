@@ -3,7 +3,7 @@ use pkr_cfr::Trainer;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::abstraction::AbstractionFingerprint;
 use pkr_core::state::{Action, ActionKind, GameState};
-use pkr_subgame::range_tracker::{RangeTracker, sample_hands_weighted};
+use pkr_subgame::range_tracker::{sample_hands_weighted, RangeTracker};
 use pkr_subgame::{run_poc, POCConfig, Range};
 use std::sync::Arc;
 
@@ -12,27 +12,52 @@ fn ws() -> std::path::PathBuf {
     m.parent().unwrap().parent().unwrap().to_path_buf()
 }
 fn out(rel: &str) -> String {
-    ws().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    ws().join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
-fn board() -> [u8; 5] { [48, 37, 19, 26, 12] }
+fn board() -> [u8; 5] {
+    [48, 37, 19, 26, 12]
+}
 
 fn forced<'a>(
-    b: &[u8; 5], abs: &'a dyn AbstractionBuilder,
+    b: &[u8; 5],
+    abs: &'a dyn AbstractionBuilder,
     tbl: &'a pkr_cfr::table::CompactRegretTable,
     ev: &'a dyn pkr_contracts::Evaluator,
 ) -> Option<RangeTracker<'a>> {
     let mut t = RangeTracker::new(GameState::new(200.0, 1.0, 2.0), abs, tbl, ev);
-    let bet = |s: &GameState| Action { player: s.actor, kind: ActionKind::Bet(s.pot * 0.75) };
+    let bet = |s: &GameState| Action {
+        player: s.actor,
+        kind: ActionKind::Bet(s.pot * 0.75),
+    };
     let s0 = t.state().clone();
     t.apply_action(bet(&s0)).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Call,
+    })
+    .ok()?;
     t.advance_street(&b[0..3]).ok()?;
     let s1 = t.state().clone();
     t.apply_action(bet(&s1)).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Call }).ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Call,
+    })
+    .ok()?;
     t.advance_street(&b[3..4]).ok()?;
-    t.apply_action(Action { player: 0, kind: ActionKind::Check }).ok()?;
-    t.apply_action(Action { player: 1, kind: ActionKind::Check }).ok()?;
+    t.apply_action(Action {
+        player: 0,
+        kind: ActionKind::Check,
+    })
+    .ok()?;
+    t.apply_action(Action {
+        player: 1,
+        kind: ActionKind::Check,
+    })
+    .ok()?;
     t.advance_street(&b[4..5]).ok()?;
     Some(t)
 }
@@ -53,7 +78,9 @@ fn cfr_strategy_varies_by_hand() {
     let abs_dyn: Arc<dyn AbstractionBuilder> = abs_a.clone();
     let trainer = Trainer::with_capacity(abs_dyn, evaluator.clone(), 60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    trainer.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    trainer
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
 
     let abs_ref: &dyn AbstractionBuilder = abs_a.as_ref();
     let ev_ref: &dyn pkr_contracts::Evaluator = evaluator.as_ref();
@@ -88,7 +115,7 @@ fn cfr_strategy_varies_by_hand() {
     //
     // We'll add a public diagnostics entrypoint below.
     let _ = run_poc(&cfg); // ensure cfg works
-    // Direct approach: use the exposed diagnostics fn (below).
+                           // Direct approach: use the exposed diagnostics fn (below).
 
     let diag = pkr_subgame::diagnose_strategy_variance(&cfg);
     println!();
@@ -104,11 +131,20 @@ fn cfr_strategy_varies_by_hand() {
         println!("  {}", "-".repeat(70));
         for (i, (h0, s)) in diag.p0_hands.iter().zip(strategies.iter()).enumerate() {
             let rank = evaluator.evaluate_hand(h0, &b);
-            let ss: String = s.iter().enumerate()
+            let ss: String = s
+                .iter()
+                .enumerate()
                 .filter(|(_, &p)| p > 1e-6)
                 .map(|(bi, p)| format!("b{}:{:.3}", bi, p))
-                .collect::<Vec<_>>().join(" ");
-            println!("  {:>4} {:>12} {:>16}  {}", i, rank, format!("{:?}", h0), ss);
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!(
+                "  {:>4} {:>12} {:>16}  {}",
+                i,
+                rank,
+                format!("{:?}", h0),
+                ss
+            );
         }
     }
     println!();

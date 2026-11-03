@@ -13,7 +13,9 @@
 
 use pkr_subgame::vector::{Solver, Spec};
 
-fn det_eval(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+fn det_eval(_h: &[u8; 2], _b: &[u8]) -> u32 {
+    0
+}
 
 fn lcg(seed: &mut u64) -> f32 {
     *seed = seed
@@ -66,14 +68,22 @@ fn main() {
     let t0 = std::time::Instant::now();
     let s = build(vec![12, 24, 37, 50, 3], n_hands, 1);
     let dt = t0.elapsed();
-    println!("  RIVER (5 cards): build={:?}  root_acts={}", dt, s.n_root_actions());
+    println!(
+        "  RIVER (5 cards): build={:?}  root_acts={}",
+        dt,
+        s.n_root_actions()
+    );
     drop(s);
 
     // Turn (4-card) build — the Phase-5 leaf shape (46 rivers).
     let t0 = std::time::Instant::now();
     let s = build(vec![12, 24, 37, 50], n_hands, 2);
     let dt = t0.elapsed();
-    println!("  TURN  (4 cards): build={:?}  root_acts={}", dt, s.n_root_actions());
+    println!(
+        "  TURN  (4 cards): build={:?}  root_acts={}",
+        dt,
+        s.n_root_actions()
+    );
     let turn_build_ms = dt.as_secs_f64() * 1000.0;
     drop(s);
 
@@ -83,9 +93,14 @@ fn main() {
     println!();
     println!("  phase5 step-1 numbers:");
     println!("    turn build       = {:.1} ms", turn_build_ms);
-    println!("    flop build (est) = {:.1} ms  (= turn x 47)", flop_build_ms_est);
-    println!("    1.29M flops x flop build = {:.1} hours  (build only)",
-             flop_build_ms_est * 1_290_000.0 / 1000.0 / 3600.0);
+    println!(
+        "    flop build (est) = {:.1} ms  (= turn x 47)",
+        flop_build_ms_est
+    );
+    println!(
+        "    1.29M flops x flop build = {:.1} hours  (build only)",
+        flop_build_ms_est * 1_290_000.0 / 1000.0 / 3600.0
+    );
     println!();
     if flop_build_ms_est > 1.0 {
         println!("  VERDICT: flop leaf cost > 1 ms -> Phase 5 at this");

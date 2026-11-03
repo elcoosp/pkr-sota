@@ -16,14 +16,32 @@ use pkr_subgame::{solve_root_p0_strategy, POCConfig, Range};
 fn river_root() -> GameState {
     let b: [u8; 5] = [0, 14, 28, 42, 7];
     let mut s = GameState::new(200.0, 1.0, 2.0);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[0..3]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[3..4]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[4..5]);
     s
 }
@@ -34,7 +52,9 @@ fn make_range(pool: &[u8], excl: &[u8], n: usize) -> Vec<[u8; 2]> {
     'outer: for i in 0..avail.len() {
         for j in (i + 1)..avail.len() {
             hands.push([avail[i], avail[j]]);
-            if hands.len() >= n { break 'outer; }
+            if hands.len() >= n {
+                break 'outer;
+            }
         }
     }
     hands

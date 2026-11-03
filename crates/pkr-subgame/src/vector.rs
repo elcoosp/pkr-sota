@@ -5,19 +5,27 @@
 //! sampled-hand solver). Exact river enumeration; turn via chance nodes.
 
 use std::cell::{Cell, RefCell};
-use std::time::Instant;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub const N: usize = 1326;
 
 pub fn index_of(h: [u8; 2]) -> usize {
-    let (hi, lo) = if h[0] > h[1] { (h[0] as usize, h[1] as usize) } else { (h[1] as usize, h[0] as usize) };
+    let (hi, lo) = if h[0] > h[1] {
+        (h[0] as usize, h[1] as usize)
+    } else {
+        (h[1] as usize, h[0] as usize)
+    };
     hi * (hi - 1) / 2 + lo
 }
 pub fn hole_table() -> Vec<[u8; 2]> {
     let mut t = vec![[0u8; 2]; N];
-    for hi in 1..52usize { for lo in 0..hi { t[hi * (hi - 1) / 2 + lo] = [hi as u8, lo as u8]; } }
+    for hi in 1..52usize {
+        for lo in 0..hi {
+            t[hi * (hi - 1) / 2 + lo] = [hi as u8, lo as u8];
+        }
+    }
     t
 }
 
@@ -36,29 +44,71 @@ pub struct Spec {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Act { Fold, Check, Call, Bet(f32) }
+pub enum Act {
+    Fold,
+    Check,
+    Call,
+    Bet(f32),
+}
 
-struct ActNode { player: usize, acts: Vec<Act>, kids: Vec<u32>, regret: Vec<f32>, ssum: Vec<f32>, sig: [u8; 8], sig_len: u8, buckets: Vec<u8> }
+struct ActNode {
+    player: usize,
+    acts: Vec<Act>,
+    kids: Vec<u32>,
+    regret: Vec<f32>,
+    ssum: Vec<f32>,
+    sig: [u8; 8],
+    sig_len: u8,
+    buckets: Vec<u8>,
+}
 /// Per-board showdown table, shared by every Show node with the
 /// same board. Computing it once instead of per node is the win.
-struct ShowTable { worst_first: Vec<u16>, rank: Vec<u32> }
-struct ShowNode { inv: f32, table: Arc<ShowTable> }
-struct ChanceNode { cards: Vec<u8>, kids: Vec<u32>, n_deck: f32 }
+struct ShowTable {
+    worst_first: Vec<u16>,
+    rank: Vec<u32>,
+}
+struct ShowNode {
+    inv: f32,
+    table: Arc<ShowTable>,
+}
+struct ChanceNode {
+    cards: Vec<u8>,
+    kids: Vec<u32>,
+    n_deck: f32,
+}
 enum Node {
     Act(ActNode),
-    Fold { folder: usize, inv: [f32; 2] },
+    Fold {
+        folder: usize,
+        inv: [f32; 2],
+    },
     Show(ShowNode),
     Chance(ChanceNode),
     /// Terminal paying a fixed per-hand value to P0 (before
     /// opponent-reach weighting). The CFR-D gadget's Terminate leaf.
-    Const { vals_p0: Vec<f32> },
+    /// 2026-11-03 re-audit: currently no builder constructs this
+    /// variant (the shipped gadget uses `TermGadget`); kept as
+    /// documented scaffolding for the alternative terminate encoding.
+    #[allow(dead_code)]
+    Const {
+        vals_p0: Vec<f32>,
+    },
     /// CFR-D gadget Terminate leaf: pays `payee` (0 or 1) the
     /// per-hand value `cbv[h]`; the other player gets its negation.
-    TermGadget { cbv: Vec<f32>, payee: u8 },
+    TermGadget {
+        cbv: Vec<f32>,
+        payee: u8,
+    },
 }
 
 #[derive(Clone, Copy)]
-struct St { inv: [f32; 2], actor: usize, n_act: u8, raises: u8, last_raise: f32 }
+struct St {
+    inv: [f32; 2],
+    actor: usize,
+    n_act: u8,
+    raises: u8,
+    last_raise: f32,
+}
 
 pub struct Solver<'a> {
     spec: Spec,
@@ -97,12 +147,48 @@ pub struct Solver<'a> {
 impl<'a> Solver<'a> {
     pub fn new(spec: Spec, eval: &'a (dyn Fn(&[u8; 2], &[u8]) -> u32 + Sync)) -> Self {
         let holes = hole_table();
-        let mut s = Solver { spec, holes, eval, arena: Vec::new(), root_idx: 0, iters: 0, valid_root: vec![], gadget_player: None, root_state: None, show_cache: RefCell::new(HashMap::new()), deadline: Cell::new(None), timed_out: Cell::new(false) };
-        s.valid_root = (0..N).map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c))).collect();
-        for p in 0..2 { for h in 0..N { if !s.valid_root[h] { s.spec.ranges[p][h] = 0.0; } } }
-        let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
+        let mut s = Solver {
+            spec,
+            holes,
+            eval,
+            arena: Vec::new(),
+            root_idx: 0,
+            iters: 0,
+            valid_root: vec![],
+            gadget_player: None,
+            root_state: None,
+            show_cache: RefCell::new(HashMap::new()),
+            deadline: Cell::new(None),
+            timed_out: Cell::new(false),
+        };
+        s.valid_root = (0..N)
+            .map(|h| !s.holes[h].iter().any(|c| s.spec.board.contains(c)))
+            .collect();
+        for p in 0..2 {
+            for h in 0..N {
+                if !s.valid_root[h] {
+                    s.spec.ranges[p][h] = 0.0;
+                }
+            }
+        }
+        let st = St {
+            inv: s.spec.root_inv,
+            actor: s.spec.root_actor as usize,
+            n_act: 0,
+            raises: 0,
+            last_raise: 0.0,
+        };
         let mut board = s.spec.board.clone();
-        let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 { St { raises: 1, last_raise: (st.inv[0] - st.inv[1]).abs(), n_act: 1, ..st } } else { st };
+        let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 {
+            St {
+                raises: 1,
+                last_raise: (st.inv[0] - st.inv[1]).abs(),
+                n_act: 1,
+                ..st
+            }
+        } else {
+            st
+        };
         let mut hist = s.root_state.clone();
         s.root_idx = s.build(st, &mut board, &mut hist);
         s
@@ -118,15 +204,32 @@ impl<'a> Solver<'a> {
         let mut s = Self::new(spec, eval);
         // rebuild the tree with history threaded
         s.root_state = Some(root_state.clone());
-        let st = St { inv: s.spec.root_inv, actor: s.spec.root_actor as usize, n_act: 0, raises: 0, last_raise: 0.0 };
+        let st = St {
+            inv: s.spec.root_inv,
+            actor: s.spec.root_actor as usize,
+            n_act: 0,
+            raises: 0,
+            last_raise: 0.0,
+        };
         let mut board = s.spec.board.clone();
-        let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 { St { raises: 1, last_raise: (st.inv[0] - st.inv[1]).abs(), n_act: 1, ..st } } else { st };
+        let st = if (st.inv[0] - st.inv[1]).abs() > 1e-6 {
+            St {
+                raises: 1,
+                last_raise: (st.inv[0] - st.inv[1]).abs(),
+                n_act: 1,
+                ..st
+            }
+        } else {
+            st
+        };
         let mut hist = Some(root_state);
         s.root_idx = s.build(st, &mut board, &mut hist);
         s
     }
 
-    fn pot(&self, inv: [f32; 2]) -> f32 { self.spec.dead + inv[0] + inv[1] }
+    fn pot(&self, inv: [f32; 2]) -> f32 {
+        self.spec.dead + inv[0] + inv[1]
+    }
 
     /// M-31 (audit 2026-10-10): push a node into the arena, return its
     /// index. Replaces the old "`Node` owns its `Vec<Node>` kids"
@@ -139,6 +242,8 @@ impl<'a> Solver<'a> {
 
     /// Read a node by index. Panics if the index is out of range --
     /// that would be a bug in the tree builder, not user input.
+    /// 2026-11-03 re-audit: diagnostic accessor, no current caller.
+    #[allow(dead_code)]
     #[inline]
     fn node(&self, idx: u32) -> &Node {
         &self.arena[idx as usize]
@@ -149,6 +254,8 @@ impl<'a> Solver<'a> {
         &self.arena[self.root_idx as usize]
     }
     #[inline]
+    /// 2026-11-03 re-audit: diagnostic accessor, no current caller.
+    #[allow(dead_code)]
     fn root_mut(&mut self) -> &mut Node {
         &mut self.arena[self.root_idx as usize]
     }
@@ -250,9 +357,7 @@ impl<'a> Solver<'a> {
     /// P1's average probability of TERMINATING at the gadget root,
     /// averaged over hands. `None` if no gadget. Diagnostic.
     pub fn gadget_terminate_prob(&self) -> Option<f32> {
-        if self.gadget_player.is_none() {
-            return None;
-        }
+        self.gadget_player?;
         match self.root() {
             Node::Act(an) if an.acts.len() >= 2 => {
                 let n = an.acts.len();
@@ -261,7 +366,9 @@ impl<'a> Solver<'a> {
                 let mut s = 0.0f32;
                 let mut c = 0u32;
                 for h in 0..N {
-                    if !self.valid_root[h] { continue; }
+                    if !self.valid_root[h] {
+                        continue;
+                    }
                     s += st[h]; // action 0 = Terminate
                     c += 1;
                 }
@@ -271,8 +378,14 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn build(&mut self, st: St, board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> u32 {
-        let a = st.actor; let o = 1 - a;
+    fn build(
+        &mut self,
+        st: St,
+        board: &mut Vec<u8>,
+        hist: &mut Option<pkr_core::state::GameState>,
+    ) -> u32 {
+        let a = st.actor;
+        let o = 1 - a;
         // M-31: `sp` is borrowed immutably, but this fn now calls
         // `self.push_node(&mut self)` inside the loop. Copy the
         // scalars we need out of `self.spec` so the borrow is not held
@@ -285,78 +398,175 @@ impl<'a> Solver<'a> {
         let pot = self.pot(st.inv);
         let facing = st.inv[o] > st.inv[a] + 1e-6;
         let (sig, sig_len) = match hist.as_ref() {
-            Some(h) => { let mut b = [0u8; 8]; let l = h.infoset_signature_into(&mut b); (b, l as u8) }
+            Some(h) => {
+                let mut b = [0u8; 8];
+                let l = h.infoset_signature_into(&mut b);
+                (b, l as u8)
+            }
             None => ([0u8; 8], 0),
         };
         let mut acts: Vec<Act> = Vec::new();
         let mut kids: Vec<u32> = Vec::new();
         let can_raise = st.raises < max_raises && stack > st.inv[o] + 1e-6;
-        if facing { acts.push(Act::Fold); acts.push(Act::Call); } else { acts.push(Act::Check); }
+        if facing {
+            acts.push(Act::Fold);
+            acts.push(Act::Call);
+        } else {
+            acts.push(Act::Check);
+        }
         if can_raise {
             let to_call = (st.inv[o] - st.inv[a]).max(0.0);
             let min_to = st.inv[o] + st.last_raise.max(min_bet);
             let mut tos: Vec<f32> = Vec::new();
             for &f in &bet_fracs {
                 let mut t = st.inv[o] + f * (pot + to_call);
-                if t < min_to { t = min_to; }
+                if t < min_to {
+                    t = min_to;
+                }
                 let pot_after = pot + (t - st.inv[a]);
-                if t >= stack - 1e-6 || stack - t < allin_snap * pot_after { t = stack; }
-                if t > st.inv[o] + 1e-6 { tos.push(t); }
+                if t >= stack - 1e-6 || stack - t < allin_snap * pot_after {
+                    t = stack;
+                }
+                if t > st.inv[o] + 1e-6 {
+                    tos.push(t);
+                }
             }
             tos.push(stack);
-            tos.sort_by(|x, y| x.total_cmp(y));  // M-37: NaN-safe
+            tos.sort_by(|x, y| x.total_cmp(y)); // M-37: NaN-safe
             tos.dedup_by(|x, y| (*x - *y).abs() < 1e-4);
-            for t in tos { acts.push(Act::Bet(t)); }
+            for t in tos {
+                acts.push(Act::Bet(t));
+            }
         }
         for act in &acts {
-            let mut ni = st.inv; let kid;
-            if let Some(h) = hist.as_mut() { h.apply_action_in_place(&Self::to_action(act, a)); }
+            let mut ni = st.inv;
+            let kid;
+            if let Some(h) = hist.as_mut() {
+                h.apply_action_in_place(&Self::to_action(act, a));
+            }
             match *act {
-                Act::Fold => { kid = self.push_node(Node::Fold { folder: a, inv: st.inv }); }
-                Act::Call => { ni[a] = st.inv[o]; kid = self.end_street(ni, board, hist); }
+                Act::Fold => {
+                    kid = self.push_node(Node::Fold {
+                        folder: a,
+                        inv: st.inv,
+                    });
+                }
+                Act::Call => {
+                    ni[a] = st.inv[o];
+                    kid = self.end_street(ni, board, hist);
+                }
                 Act::Check => {
-                    if st.n_act >= 1 { kid = self.end_street(ni, board, hist); }
-                    else { kid = self.build(St { inv: ni, actor: o, n_act: 1, raises: st.raises, last_raise: st.last_raise }, board, hist); }
+                    if st.n_act >= 1 {
+                        kid = self.end_street(ni, board, hist);
+                    } else {
+                        kid = self.build(
+                            St {
+                                inv: ni,
+                                actor: o,
+                                n_act: 1,
+                                raises: st.raises,
+                                last_raise: st.last_raise,
+                            },
+                            board,
+                            hist,
+                        );
+                    }
                 }
                 Act::Bet(t) => {
                     ni[a] = t;
                     let lr = t - st.inv[o];
-                    kid = self.build(St { inv: ni, actor: o, n_act: st.n_act + 1, raises: st.raises + 1, last_raise: lr }, board, hist);
+                    kid = self.build(
+                        St {
+                            inv: ni,
+                            actor: o,
+                            n_act: st.n_act + 1,
+                            raises: st.raises + 1,
+                            last_raise: lr,
+                        },
+                        board,
+                        hist,
+                    );
                 }
             }
-            if let Some(h) = hist.as_mut() { let _ = h.undo_action(); }
+            if let Some(h) = hist.as_mut() {
+                h.undo_action();
+            }
             kids.push(kid);
         }
-        let buckets: Vec<u8> = acts.iter().map(|act| {
-            let kind = match act {
-                Act::Fold => pkr_core::state::ActionKind::Fold,
-                Act::Check => pkr_core::state::ActionKind::Check,
-                Act::Call => pkr_core::state::ActionKind::Call,
-                Act::Bet(t) => pkr_core::state::ActionKind::Bet(*t),
-            };
-            let stacks_a = (stack - st.inv[a]).max(0.0);
-            pkr_core::abstraction::action_bucket(&kind, stacks_a, st.inv[a], st.inv[o], pot)
-        }).collect();
+        let buckets: Vec<u8> = acts
+            .iter()
+            .map(|act| {
+                let kind = match act {
+                    Act::Fold => pkr_core::state::ActionKind::Fold,
+                    Act::Check => pkr_core::state::ActionKind::Check,
+                    Act::Call => pkr_core::state::ActionKind::Call,
+                    Act::Bet(t) => pkr_core::state::ActionKind::Bet(*t),
+                };
+                let stacks_a = (stack - st.inv[a]).max(0.0);
+                pkr_core::abstraction::action_bucket(&kind, stacks_a, st.inv[a], st.inv[o], pot)
+            })
+            .collect();
         let n = acts.len();
-        self.push_node(Node::Act(ActNode { player: a, acts, kids, regret: vec![0.0; n * N], ssum: vec![0.0; n * N], sig, sig_len, buckets }))
+        self.push_node(Node::Act(ActNode {
+            player: a,
+            acts,
+            kids,
+            regret: vec![0.0; n * N],
+            ssum: vec![0.0; n * N],
+            sig,
+            sig_len,
+            buckets,
+        }))
     }
 
-    fn end_street(&mut self, inv: [f32; 2], board: &mut Vec<u8>, hist: &mut Option<pkr_core::state::GameState>) -> u32 {
-        if board.len() == 5 { return self.showdown(inv[0], board); }
+    fn end_street(
+        &mut self,
+        inv: [f32; 2],
+        board: &mut Vec<u8>,
+        hist: &mut Option<pkr_core::state::GameState>,
+    ) -> u32 {
+        if board.len() == 5 {
+            return self.showdown(inv[0], board);
+        }
         let n_deck = (52 - board.len() - 4) as f32;
         let allin = inv[0] >= self.spec.stack - 1e-6 || inv[1] >= self.spec.stack - 1e-6;
-        let mut cards = Vec::new(); let mut kids = Vec::new();
+        let mut cards = Vec::new();
+        let mut kids = Vec::new();
         for c in 0..52u8 {
-            if board.contains(&c) { continue; }
+            if board.contains(&c) {
+                continue;
+            }
             board.push(c);
-            if let Some(h) = hist.as_mut() { h.advance_street_in_place(&[c]); }
-            let kid = if allin { self.end_street(inv, board, hist) }
-                      else { self.build(St { inv, actor: 0, n_act: 0, raises: 0, last_raise: 0.0 }, board, hist) };
-            if let Some(h) = hist.as_mut() { let _ = h.undo_action(); }
+            if let Some(h) = hist.as_mut() {
+                h.advance_street_in_place(&[c]);
+            }
+            let kid = if allin {
+                self.end_street(inv, board, hist)
+            } else {
+                self.build(
+                    St {
+                        inv,
+                        actor: 0,
+                        n_act: 0,
+                        raises: 0,
+                        last_raise: 0.0,
+                    },
+                    board,
+                    hist,
+                )
+            };
+            if let Some(h) = hist.as_mut() {
+                h.undo_action();
+            }
             board.pop();
-            cards.push(c); kids.push(kid);
+            cards.push(c);
+            kids.push(kid);
         }
-        self.push_node(Node::Chance(ChanceNode { cards, kids, n_deck }))
+        self.push_node(Node::Chance(ChanceNode {
+            cards,
+            kids,
+            n_deck,
+        }))
     }
 
     fn showdown(&mut self, inv: f32, board: &[u8]) -> u32 {
@@ -370,12 +580,17 @@ impl<'a> Solver<'a> {
             let mut rank = vec![0u32; N];
             let mut ids: Vec<u16> = Vec::new();
             for h in 0..N {
-                if self.holes[h].iter().any(|c| board.contains(c)) { continue; }
+                if self.holes[h].iter().any(|c| board.contains(c)) {
+                    continue;
+                }
                 rank[h] = (self.eval)(&self.holes[h], board);
                 ids.push(h as u16);
             }
             ids.sort_by(|&x, &y| rank[y as usize].cmp(&rank[x as usize]));
-            let t = Arc::new(ShowTable { worst_first: ids, rank });
+            let t = Arc::new(ShowTable {
+                worst_first: ids,
+                rank,
+            });
             self.show_cache.borrow_mut().insert(key, t.clone());
             t
         };
@@ -394,39 +609,76 @@ fn board_key(board: &[u8]) -> u64 {
 }
 
 fn compat_sums(holes: &[[u8; 2]], r: &[f32], out_total: &mut f32, card: &mut [f32; 52]) {
-    *out_total = 0.0; *card = [0.0; 52];
-    for h in 0..N { let w = r[h]; if w == 0.0 { continue; } *out_total += w; card[holes[h][0] as usize] += w; card[holes[h][1] as usize] += w; }
+    *out_total = 0.0;
+    *card = [0.0; 52];
+    for h in 0..N {
+        let w = r[h];
+        if w == 0.0 {
+            continue;
+        }
+        *out_total += w;
+        card[holes[h][0] as usize] += w;
+        card[holes[h][1] as usize] += w;
+    }
 }
 
 fn fold_cfv(holes: &[[u8; 2]], r_opp: &[f32], value: f32, valid: &[bool]) -> Vec<f32> {
-    let mut tot = 0.0; let mut card = [0.0f32; 52];
+    let mut tot = 0.0;
+    let mut card = [0.0f32; 52];
     compat_sums(holes, r_opp, &mut tot, &mut card);
     let mut out = vec![0.0; N];
-    for h in 0..N { if !valid[h] { continue; }
+    for h in 0..N {
+        if !valid[h] {
+            continue;
+        }
         let c = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize] + r_opp[h];
-        out[h] = value * c; }
+        out[h] = value * c;
+    }
     out
 }
 
 fn show_cfv(holes: &[[u8; 2]], sn: &ShowNode, r_opp: &[f32], v: f32) -> Vec<f32> {
-    let mut below = vec![0.0f32; N]; let mut above = vec![0.0f32; N];
+    let mut below = vec![0.0f32; N];
+    let mut above = vec![0.0f32; N];
     for pass in 0..2 {
-        let mut tot = 0.0f32; let mut card = [0.0f32; 52];
-        let ids: Vec<u16> = if pass == 0 { sn.table.worst_first.clone() } else { sn.table.worst_first.iter().rev().cloned().collect() };
+        let mut tot = 0.0f32;
+        let mut card = [0.0f32; 52];
+        let ids: Vec<u16> = if pass == 0 {
+            sn.table.worst_first.clone()
+        } else {
+            sn.table.worst_first.iter().rev().cloned().collect()
+        };
         let mut i = 0;
         while i < ids.len() {
-            let rk = sn.table.rank[ids[i] as usize]; let mut j = i;
-            while j < ids.len() && sn.table.rank[ids[j] as usize] == rk { j += 1; }
-            for k in i..j { let h = ids[k] as usize;
+            let rk = sn.table.rank[ids[i] as usize];
+            let mut j = i;
+            while j < ids.len() && sn.table.rank[ids[j] as usize] == rk {
+                j += 1;
+            }
+            for k in i..j {
+                let h = ids[k] as usize;
                 let s = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize];
-                if pass == 0 { below[h] = s } else { above[h] = s } }
-            for k in i..j { let h = ids[k] as usize; let w = r_opp[h]; tot += w;
-                card[holes[h][0] as usize] += w; card[holes[h][1] as usize] += w; }
+                if pass == 0 {
+                    below[h] = s
+                } else {
+                    above[h] = s
+                }
+            }
+            for k in i..j {
+                let h = ids[k] as usize;
+                let w = r_opp[h];
+                tot += w;
+                card[holes[h][0] as usize] += w;
+                card[holes[h][1] as usize] += w;
+            }
             i = j;
         }
     }
     let mut out = vec![0.0; N];
-    for &h in &sn.table.worst_first { let h = h as usize; out[h] = v * (below[h] - above[h]); }
+    for &h in &sn.table.worst_first {
+        let h = h as usize;
+        out[h] = v * (below[h] - above[h]);
+    }
     out
 }
 
@@ -458,14 +710,23 @@ fn const_cfv(
 /// CFV of the CFR-D `TermP1` leaf. `cbv[h]` is P1's value for hand `h`;
 /// P0's value is its negation. Returns the TRAVERSER's counterfactual
 /// value, reach-weighted by the opponent.
-fn cbv_cfv(holes: &[[u8; 2]], cbv: &[f32], opp_reach: &[f32], p: usize, valid: &[bool], payee: u8) -> Vec<f32> {
+fn cbv_cfv(
+    holes: &[[u8; 2]],
+    cbv: &[f32],
+    opp_reach: &[f32],
+    p: usize,
+    valid: &[bool],
+    payee: u8,
+) -> Vec<f32> {
     let mut tot = 0.0f32;
     let mut card = [0.0f32; 52];
     compat_sums(holes, opp_reach, &mut tot, &mut card);
     let mut out = vec![0.0f32; N];
     if p as u8 == payee {
         for h in 0..N {
-            if !valid[h] { continue; }
+            if !valid[h] {
+                continue;
+            }
             let c = tot - card[holes[h][0] as usize] - card[holes[h][1] as usize] + opp_reach[h];
             out[h] = cbv[h] * c;
         }
@@ -474,14 +735,19 @@ fn cbv_cfv(holes: &[[u8; 2]], cbv: &[f32], opp_reach: &[f32], p: usize, valid: &
         let mut card_c = [0.0f32; 52];
         for h in 0..N {
             let w = opp_reach[h] * cbv[h];
-            if w == 0.0 { continue; }
+            if w == 0.0 {
+                continue;
+            }
             tot_c += w;
             card_c[holes[h][0] as usize] += w;
             card_c[holes[h][1] as usize] += w;
         }
         for h in 0..N {
-            if !valid[h] { continue; }
-            let s = tot_c - card_c[holes[h][0] as usize] - card_c[holes[h][1] as usize] + opp_reach[h] * cbv[h];
+            if !valid[h] {
+                continue;
+            }
+            let s = tot_c - card_c[holes[h][0] as usize] - card_c[holes[h][1] as usize]
+                + opp_reach[h] * cbv[h];
             out[h] = -s;
         }
     }
@@ -490,16 +756,36 @@ fn cbv_cfv(holes: &[[u8; 2]], cbv: &[f32], opp_reach: &[f32], p: usize, valid: &
 
 fn rm_plus(regret: &[f32], n: usize, strat: &mut [f32]) {
     for h in 0..N {
-        let mut s = 0.0; for a in 0..n { s += regret[a * N + h].max(0.0); }
-        if s > 1e-12 { for a in 0..n { strat[a * N + h] = regret[a * N + h].max(0.0) / s; } }
-        else { for a in 0..n { strat[a * N + h] = 1.0 / n as f32; } }
+        let mut s = 0.0;
+        for a in 0..n {
+            s += regret[a * N + h].max(0.0);
+        }
+        if s > 1e-12 {
+            for a in 0..n {
+                strat[a * N + h] = regret[a * N + h].max(0.0) / s;
+            }
+        } else {
+            for a in 0..n {
+                strat[a * N + h] = 1.0 / n as f32;
+            }
+        }
     }
 }
 fn avg_strat(ssum: &[f32], n: usize, strat: &mut [f32]) {
     for h in 0..N {
-        let mut s = 0.0; for a in 0..n { s += ssum[a * N + h]; }
-        if s > 1e-20 { for a in 0..n { strat[a * N + h] = ssum[a * N + h] / s; } }
-        else { for a in 0..n { strat[a * N + h] = 1.0 / n as f32; } }
+        let mut s = 0.0;
+        for a in 0..n {
+            s += ssum[a * N + h];
+        }
+        if s > 1e-20 {
+            for a in 0..n {
+                strat[a * N + h] = ssum[a * N + h] / s;
+            }
+        } else {
+            for a in 0..n {
+                strat[a * N + h] = 1.0 / n as f32;
+            }
+        }
     }
 }
 
@@ -511,14 +797,20 @@ impl<'a> Solver<'a> {
         let sp = &self.spec;
         match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
-                let val = if *folder == p { -(sp.dead * 0.5 + inv[p]) } else { sp.dead * 0.5 + inv[1 - p] };
+                let val = if *folder == p {
+                    -(sp.dead * 0.5 + inv[p])
+                } else {
+                    sp.dead * 0.5 + inv[1 - p]
+                };
                 fold_cfv(&self.holes, reach[1 - p], val, &self.valid_root)
             }
             Node::Show(sn) => show_cfv(&self.holes, sn, reach[1 - p], sp.dead * 0.5 + sn.inv),
             Node::Const { vals_p0 } => {
                 const_cfv(&self.holes, vals_p0, reach[1 - p], p, &self.valid_root)
             }
-            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, reach[1 - p], p, &self.valid_root, *payee),
+            Node::TermGadget { cbv, payee } => {
+                cbv_cfv(&self.holes, cbv, reach[1 - p], p, &self.valid_root, *payee)
+            }
             Node::Chance(cn) => {
                 // Copy the small immutable data out of the arena so the
                 // recursion can take `&mut self`.
@@ -527,10 +819,20 @@ impl<'a> Solver<'a> {
                 let kid_ids: Vec<u32> = cn.kids.clone();
                 let mut out = vec![0.0f32; N];
                 for (i, &c) in cards.iter().enumerate() {
-                    let mut r0 = reach[0].to_vec(); let mut r1 = reach[1].to_vec();
-                    for h in 0..N { if self.holes[h][0] == c || self.holes[h][1] == c { r0[h] = 0.0; r1[h] = 0.0; } }
+                    let mut r0 = reach[0].to_vec();
+                    let mut r1 = reach[1].to_vec();
+                    for h in 0..N {
+                        if self.holes[h][0] == c || self.holes[h][1] == c {
+                            r0[h] = 0.0;
+                            r1[h] = 0.0;
+                        }
+                    }
                     let v = self.cfr(kid_ids[i], p, [&r0, &r1], t);
-                    for h in 0..N { if !(self.holes[h][0] == c || self.holes[h][1] == c) { out[h] += v[h] / n_deck; } }
+                    for h in 0..N {
+                        if !(self.holes[h][0] == c || self.holes[h][1] == c) {
+                            out[h] += v[h] / n_deck;
+                        }
+                    }
                 }
                 out
             }
@@ -545,29 +847,49 @@ impl<'a> Solver<'a> {
                     let mut vals: Vec<Vec<f32>> = Vec::with_capacity(n);
                     for a in 0..n {
                         let mut rp = reach[p].to_vec();
-                        for h in 0..N { rp[h] *= strat[a * N + h]; }
-                        let rr = if p == 0 { [&rp[..], reach[1]] } else { [reach[0], &rp[..]] };
+                        for h in 0..N {
+                            rp[h] *= strat[a * N + h];
+                        }
+                        let rr = if p == 0 {
+                            [&rp[..], reach[1]]
+                        } else {
+                            [reach[0], &rp[..]]
+                        };
                         vals.push(self.cfr(kid_ids[a], p, rr, t));
                     }
                     let mut node_v = vec![0.0f32; N];
-                    for a in 0..n { for h in 0..N { node_v[h] += strat[a * N + h] * vals[a][h]; } }
+                    for a in 0..n {
+                        for h in 0..N {
+                            node_v[h] += strat[a * N + h] * vals[a][h];
+                        }
+                    }
                     // Reacquire a mutable handle to write regrets.
                     if let Node::Act(an_mut) = &mut self.arena[idx as usize] {
-                        for a in 0..n { for h in 0..N {
-                            let r = &mut an_mut.regret[a * N + h];
-                            *r = (*r + vals[a][h] - node_v[h]).max(0.0);
-                            an_mut.ssum[a * N + h] += t * reach[p][h] * strat[a * N + h];
-                        } }
+                        for a in 0..n {
+                            for h in 0..N {
+                                let r = &mut an_mut.regret[a * N + h];
+                                *r = (*r + vals[a][h] - node_v[h]).max(0.0);
+                                an_mut.ssum[a * N + h] += t * reach[p][h] * strat[a * N + h];
+                            }
+                        }
                     }
                     node_v
                 } else {
                     let mut out = vec![0.0f32; N];
                     for a in 0..n {
                         let mut ro = reach[1 - p].to_vec();
-                        for h in 0..N { ro[h] *= strat[a * N + h]; }
-                        let rr = if p == 0 { [reach[0], &ro[..]] } else { [&ro[..], reach[1]] };
+                        for h in 0..N {
+                            ro[h] *= strat[a * N + h];
+                        }
+                        let rr = if p == 0 {
+                            [reach[0], &ro[..]]
+                        } else {
+                            [&ro[..], reach[1]]
+                        };
                         let v = self.cfr(kid_ids[a], p, rr, t);
-                        for h in 0..N { out[h] += v[h]; }
+                        for h in 0..N {
+                            out[h] += v[h];
+                        }
                     }
                     out
                 }
@@ -577,9 +899,11 @@ impl<'a> Solver<'a> {
 
     pub fn iterate(&mut self, n: u32) {
         for _ in 0..n {
-            self.iters += 1; let t = self.iters as f32;
+            self.iters += 1;
+            let t = self.iters as f32;
             for p in 0..2 {
-                let r0 = self.spec.ranges[0].clone(); let r1 = self.spec.ranges[1].clone();
+                let r0 = self.spec.ranges[0].clone();
+                let r1 = self.spec.ranges[1].clone();
                 let root = self.root_idx;
                 let _ = self.cfr(root, p, [&r0, &r1], t);
             }
@@ -596,22 +920,34 @@ impl<'a> Solver<'a> {
         let sp = &self.spec;
         match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
-                let val = if *folder == p { -(sp.dead * 0.5 + inv[p]) } else { sp.dead * 0.5 + inv[1 - p] };
+                let val = if *folder == p {
+                    -(sp.dead * 0.5 + inv[p])
+                } else {
+                    sp.dead * 0.5 + inv[1 - p]
+                };
                 fold_cfv(&self.holes, r_opp, val, &self.valid_root)
             }
             Node::Show(sn) => show_cfv(&self.holes, sn, r_opp, sp.dead * 0.5 + sn.inv),
-            Node::Const { vals_p0 } => {
-                const_cfv(&self.holes, vals_p0, r_opp, p, &self.valid_root)
+            Node::Const { vals_p0 } => const_cfv(&self.holes, vals_p0, r_opp, p, &self.valid_root),
+            Node::TermGadget { cbv, payee } => {
+                cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root, *payee)
             }
-            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root, *payee),
             Node::Chance(cn) => {
                 let n_deck = cn.n_deck;
                 let mut out = vec![0.0f32; N];
                 for (i, &c) in cn.cards.iter().enumerate() {
                     let mut ro = r_opp.to_vec();
-                    for h in 0..N { if self.holes[h][0] == c || self.holes[h][1] == c { ro[h] = 0.0; } }
+                    for h in 0..N {
+                        if self.holes[h][0] == c || self.holes[h][1] == c {
+                            ro[h] = 0.0;
+                        }
+                    }
                     let v = self.br(cn.kids[i], p, &ro);
-                    for h in 0..N { if !(self.holes[h][0] == c || self.holes[h][1] == c) { out[h] += v[h] / n_deck; } }
+                    for h in 0..N {
+                        if !(self.holes[h][0] == c || self.holes[h][1] == c) {
+                            out[h] += v[h] / n_deck;
+                        }
+                    }
                 }
                 out
             }
@@ -619,18 +955,33 @@ impl<'a> Solver<'a> {
                 let n = an.acts.len();
                 if an.player == p {
                     let mut best = vec![f32::NEG_INFINITY; N];
-                    for a in 0..n { let v = self.br(an.kids[a], p, r_opp);
-                        for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } } }
-                    for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
+                    for a in 0..n {
+                        let v = self.br(an.kids[a], p, r_opp);
+                        for h in 0..N {
+                            if v[h] > best[h] {
+                                best[h] = v[h];
+                            }
+                        }
+                    }
+                    for h in 0..N {
+                        if best[h] == f32::NEG_INFINITY {
+                            best[h] = 0.0;
+                        }
+                    }
                     best
                 } else {
-                    let mut st = vec![0.0f32; n * N]; avg_strat(&an.ssum, n, &mut st);
+                    let mut st = vec![0.0f32; n * N];
+                    avg_strat(&an.ssum, n, &mut st);
                     let mut out = vec![0.0f32; N];
                     for a in 0..n {
                         let mut ro = r_opp.to_vec();
-                        for h in 0..N { ro[h] *= st[a * N + h]; }
+                        for h in 0..N {
+                            ro[h] *= st[a * N + h];
+                        }
                         let v = self.br(an.kids[a], p, &ro);
-                        for h in 0..N { out[h] += v[h]; }
+                        for h in 0..N {
+                            out[h] += v[h];
+                        }
                     }
                     out
                 }
@@ -642,21 +993,40 @@ impl<'a> Solver<'a> {
         let mut tot = 0.0;
         for p in 0..2 {
             let cf = self.br(self.root_idx, p, &self.spec.ranges[1 - p]);
-            let mut z = 0.0f64; let mut v = 0.0f64;
-            let mut tot_o = 0.0; let mut card = [0.0f32; 52];
+            let mut z = 0.0f64;
+            let mut v = 0.0f64;
+            let mut tot_o = 0.0;
+            let mut card = [0.0f32; 52];
             compat_sums(&self.holes, &self.spec.ranges[1 - p], &mut tot_o, &mut card);
-            for h in 0..N { if !self.valid_root[h] { continue; }
-                let w = self.spec.ranges[p][h] as f64; if w == 0.0 { continue; }
-                let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + self.spec.ranges[1 - p][h];
-                z += w * comp as f64; v += w * cf[h] as f64; }
-            if z > 0.0 { tot += (v / z) as f32; }
+            for h in 0..N {
+                if !self.valid_root[h] {
+                    continue;
+                }
+                let w = self.spec.ranges[p][h] as f64;
+                if w == 0.0 {
+                    continue;
+                }
+                let comp =
+                    tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize]
+                        + self.spec.ranges[1 - p][h];
+                z += w * comp as f64;
+                v += w * cf[h] as f64;
+            }
+            if z > 0.0 {
+                tot += (v / z) as f32;
+            }
         }
         tot * 0.5
     }
 
     /// Street index from board length.
     fn street_of(board_len: usize) -> u8 {
-        match board_len { 0 => 0, 3 => 1, 4 => 2, _ => 3 }
+        match board_len {
+            0 => 0,
+            3 => 1,
+            4 => 2,
+            _ => 3,
+        }
     }
 
     /// Recursive walk where the BR player `p` best-responds and the OTHER
@@ -664,6 +1034,7 @@ impl<'a> Solver<'a> {
     /// stored signature), except at the root where `root_override` (if
     /// given) is used. Returns p's per-hand value vector, reach-weighted
     /// by `r_opp`.
+    #[allow(clippy::too_many_arguments)] // recursive walk carries the whole subgame context
     fn bp_walk(
         &self,
         idx: u32,
@@ -677,34 +1048,57 @@ impl<'a> Solver<'a> {
     ) -> Vec<f32> {
         match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
-                let val = if *folder == p { -(self.spec.dead * 0.5 + inv[p]) } else { self.spec.dead * 0.5 + inv[1 - p] };
+                let val = if *folder == p {
+                    -(self.spec.dead * 0.5 + inv[p])
+                } else {
+                    self.spec.dead * 0.5 + inv[1 - p]
+                };
                 fold_cfv(&self.holes, r_opp, val, &self.valid_root)
             }
             Node::Show(sn) => show_cfv(&self.holes, sn, r_opp, self.spec.dead * 0.5 + sn.inv),
             Node::Const { vals_p0 } => {
                 let mut v = vals_p0.clone();
-                if p == 1 { for x in v.iter_mut() { *x = -*x; } }
-                let mut tot = 0.0f32; let mut card = [0.0f32; 52];
+                if p == 1 {
+                    for x in v.iter_mut() {
+                        *x = -*x;
+                    }
+                }
+                let mut tot = 0.0f32;
+                let mut card = [0.0f32; 52];
                 compat_sums(&self.holes, r_opp, &mut tot, &mut card);
                 let mut out = vec![0.0f32; N];
                 for h in 0..N {
-                    if !self.valid_root[h] { continue; }
-                    let comp = tot - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + r_opp[h];
+                    if !self.valid_root[h] {
+                        continue;
+                    }
+                    let comp =
+                        tot - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize]
+                            + r_opp[h];
                     out[h] = v[h] * comp;
                 }
                 out
             }
-            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root, *payee),
+            Node::TermGadget { cbv, payee } => {
+                cbv_cfv(&self.holes, cbv, r_opp, p, &self.valid_root, *payee)
+            }
             Node::Chance(cn) => {
                 let n_deck = cn.n_deck;
                 let mut out = vec![0.0f32; N];
                 for (i, &cc) in cn.cards.iter().enumerate() {
                     board.push(cc);
                     let mut ro = r_opp.to_vec();
-                    for h in 0..N { if self.holes[h][0] == cc || self.holes[h][1] == cc { ro[h] = 0.0; } }
+                    for h in 0..N {
+                        if self.holes[h][0] == cc || self.holes[h][1] == cc {
+                            ro[h] = 0.0;
+                        }
+                    }
                     let v = self.bp_walk(cn.kids[i], board, p, &ro, abs, tbl, root_override, used);
                     board.pop();
-                    for h in 0..N { if !(self.holes[h][0] == cc || self.holes[h][1] == cc) { out[h] += v[h] / n_deck; } }
+                    for h in 0..N {
+                        if !(self.holes[h][0] == cc || self.holes[h][1] == cc) {
+                            out[h] += v[h] / n_deck;
+                        }
+                    }
                 }
                 out
             }
@@ -713,14 +1107,33 @@ impl<'a> Solver<'a> {
                 if an.player == p {
                     let mut best = vec![f32::NEG_INFINITY; N];
                     for a in 0..n {
-                        let v = self.bp_walk(an.kids[a], board, p, r_opp, abs, tbl, root_override, used);
-                        for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } }
+                        let v = self.bp_walk(
+                            an.kids[a],
+                            board,
+                            p,
+                            r_opp,
+                            abs,
+                            tbl,
+                            root_override,
+                            used,
+                        );
+                        for h in 0..N {
+                            if v[h] > best[h] {
+                                best[h] = v[h];
+                            }
+                        }
                     }
-                    for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
+                    for h in 0..N {
+                        if best[h] == f32::NEG_INFINITY {
+                            best[h] = 0.0;
+                        }
+                    }
                     best
                 } else {
-                    let strat: Vec<Vec<f32>> = if !*used && an.player == 0 && root_override.is_some() {
+                    let override_now = !*used && an.player == 0 && root_override.is_some();
+                    let strat: Vec<Vec<f32>> = if override_now {
                         *used = true;
+                        // Safe: `override_now` implies is_some().
                         root_override.unwrap().to_vec()
                     } else {
                         // M-32 (audit 2026-10-10): the previous mapping set
@@ -745,9 +1158,15 @@ impl<'a> Solver<'a> {
                             }
                         }
                         for h in 0..N {
-                            if !self.valid_root[h] { continue; }
+                            if !self.valid_root[h] {
+                                continue;
+                            }
                             let hash = abs.get_infoset_hash(
-                                &self.holes[h], board, &an.sig[..an.sig_len as usize], street);
+                                &self.holes[h],
+                                board,
+                                &an.sig[..an.sig_len as usize],
+                                street,
+                            );
                             let mut s = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
                             tbl.get_average_strategy_into(hash, &mut s);
                             let mut row_sum = 0.0f32;
@@ -763,12 +1182,16 @@ impl<'a> Solver<'a> {
                             }
                             if row_sum > 1e-9 {
                                 let inv = 1.0 / row_sum;
-                                for a in 0..n { per_act[a][h] *= inv; }
+                                for a in 0..n {
+                                    per_act[a][h] *= inv;
+                                }
                             } else {
                                 // Degenerate (all-zero blueprint mass):
                                 // uniform over the tree's actions.
                                 let u = 1.0 / n as f32;
-                                for a in 0..n { per_act[a][h] = u; }
+                                for a in 0..n {
+                                    per_act[a][h] = u;
+                                }
                             }
                         }
                         per_act
@@ -776,9 +1199,14 @@ impl<'a> Solver<'a> {
                     let mut out = vec![0.0f32; N];
                     for a in 0..n {
                         let mut ro = r_opp.to_vec();
-                        for h in 0..N { ro[h] *= strat[a][h]; }
-                        let v = self.bp_walk(an.kids[a], board, p, &ro, abs, tbl, root_override, used);
-                        for h in 0..N { out[h] += v[h]; }
+                        for h in 0..N {
+                            ro[h] *= strat[a][h];
+                        }
+                        let v =
+                            self.bp_walk(an.kids[a], board, p, &ro, abs, tbl, root_override, used);
+                        for h in 0..N {
+                            out[h] += v[h];
+                        }
                     }
                     out
                 }
@@ -789,42 +1217,58 @@ impl<'a> Solver<'a> {
     /// P0 plays its SOLVED strategy everywhere; P1 best-responds. This is
     /// the gadget's true exploitability (its continuation is the solved
     /// search, not the blueprint). Returns P1's reach-weighted value.
-    fn solved_br_p1(
-        &self,
-        idx: u32,
-        board: &mut Vec<u8>,
-        r_opp: &[f32],
-    ) -> Vec<f32> {
+    fn solved_br_p1(&self, idx: u32, board: &mut Vec<u8>, r_opp: &[f32]) -> Vec<f32> {
         match &self.arena[idx as usize] {
             Node::Fold { folder, inv } => {
-                let val = if *folder == 1 { -(self.spec.dead * 0.5 + inv[1]) } else { self.spec.dead * 0.5 + inv[0] };
+                let val = if *folder == 1 {
+                    -(self.spec.dead * 0.5 + inv[1])
+                } else {
+                    self.spec.dead * 0.5 + inv[0]
+                };
                 fold_cfv(&self.holes, r_opp, val, &self.valid_root)
             }
             Node::Show(sn) => show_cfv(&self.holes, sn, r_opp, self.spec.dead * 0.5 + sn.inv),
             Node::Const { vals_p0 } => {
                 let mut v = vals_p0.clone();
-                for x in v.iter_mut() { *x = -*x; }
-                let mut tot = 0.0f32; let mut card = [0.0f32; 52];
+                for x in v.iter_mut() {
+                    *x = -*x;
+                }
+                let mut tot = 0.0f32;
+                let mut card = [0.0f32; 52];
                 compat_sums(&self.holes, r_opp, &mut tot, &mut card);
                 let mut out = vec![0.0f32; N];
                 for h in 0..N {
-                    if !self.valid_root[h] { continue; }
-                    let comp = tot - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + r_opp[h];
+                    if !self.valid_root[h] {
+                        continue;
+                    }
+                    let comp =
+                        tot - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize]
+                            + r_opp[h];
                     out[h] = v[h] * comp;
                 }
                 out
             }
-            Node::TermGadget { cbv, payee } => cbv_cfv(&self.holes, cbv, r_opp, 1, &self.valid_root, *payee),
+            Node::TermGadget { cbv, payee } => {
+                cbv_cfv(&self.holes, cbv, r_opp, 1, &self.valid_root, *payee)
+            }
             Node::Chance(cn) => {
                 let n_deck = cn.n_deck;
                 let mut out = vec![0.0f32; N];
                 for (i, &cc) in cn.cards.iter().enumerate() {
                     board.push(cc);
                     let mut ro = r_opp.to_vec();
-                    for h in 0..N { if self.holes[h][0] == cc || self.holes[h][1] == cc { ro[h] = 0.0; } }
+                    for h in 0..N {
+                        if self.holes[h][0] == cc || self.holes[h][1] == cc {
+                            ro[h] = 0.0;
+                        }
+                    }
                     let v = self.solved_br_p1(cn.kids[i], board, &ro);
                     board.pop();
-                    for h in 0..N { if !(self.holes[h][0] == cc || self.holes[h][1] == cc) { out[h] += v[h] / n_deck; } }
+                    for h in 0..N {
+                        if !(self.holes[h][0] == cc || self.holes[h][1] == cc) {
+                            out[h] += v[h] / n_deck;
+                        }
+                    }
                 }
                 out
             }
@@ -835,9 +1279,17 @@ impl<'a> Solver<'a> {
                     let mut best = vec![f32::NEG_INFINITY; N];
                     for a in 0..n {
                         let v = self.solved_br_p1(an.kids[a], board, r_opp);
-                        for h in 0..N { if v[h] > best[h] { best[h] = v[h]; } }
+                        for h in 0..N {
+                            if v[h] > best[h] {
+                                best[h] = v[h];
+                            }
+                        }
                     }
-                    for h in 0..N { if best[h] == f32::NEG_INFINITY { best[h] = 0.0; } }
+                    for h in 0..N {
+                        if best[h] == f32::NEG_INFINITY {
+                            best[h] = 0.0;
+                        }
+                    }
                     best
                 } else {
                     // P0 plays the solved average strategy.
@@ -846,9 +1298,13 @@ impl<'a> Solver<'a> {
                     let mut out = vec![0.0f32; N];
                     for a in 0..n {
                         let mut ro = r_opp.to_vec();
-                        for h in 0..N { ro[h] *= st[a * N + h]; }
+                        for h in 0..N {
+                            ro[h] *= st[a * N + h];
+                        }
                         let v = self.solved_br_p1(an.kids[a], board, &ro);
-                        for h in 0..N { out[h] += v[h]; }
+                        for h in 0..N {
+                            out[h] += v[h];
+                        }
                     }
                     out
                 }
@@ -860,18 +1316,29 @@ impl<'a> Solver<'a> {
     pub fn solved_exploitability_p1(&self) -> f32 {
         let mut board = self.spec.board.clone();
         let cf = self.solved_br_p1(self.real_root_idx(), &mut board, &self.spec.ranges[0]);
-        let mut z = 0.0f64; let mut v = 0.0f64;
-        let mut tot_o = 0.0f32; let mut card = [0.0f32; 52];
+        let mut z = 0.0f64;
+        let mut v = 0.0f64;
+        let mut tot_o = 0.0f32;
+        let mut card = [0.0f32; 52];
         compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
         for h in 0..N {
-            if !self.valid_root[h] { continue; }
+            if !self.valid_root[h] {
+                continue;
+            }
             let w = self.spec.ranges[1][h] as f64;
-            if w == 0.0 { continue; }
-            let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + self.spec.ranges[0][h];
+            if w == 0.0 {
+                continue;
+            }
+            let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize]
+                + self.spec.ranges[0][h];
             z += w * comp as f64;
             v += w * cf[h] as f64;
         }
-        if z > 0.0 { (v / z) as f32 } else { 0.0 }
+        if z > 0.0 {
+            (v / z) as f32
+        } else {
+            0.0
+        }
     }
 
     /// P1's best-response value (reach-weighted) against P0 following the
@@ -885,19 +1352,39 @@ impl<'a> Solver<'a> {
     ) -> f32 {
         let mut board = self.spec.board.clone();
         let mut used = false;
-        let cf = self.bp_walk(self.root_idx, &mut board, 1, &self.spec.ranges[0], abs, tbl, root_override, &mut used);
-        let mut z = 0.0f64; let mut v = 0.0f64;
-        let mut tot_o = 0.0f32; let mut card = [0.0f32; 52];
+        let cf = self.bp_walk(
+            self.root_idx,
+            &mut board,
+            1,
+            &self.spec.ranges[0],
+            abs,
+            tbl,
+            root_override,
+            &mut used,
+        );
+        let mut z = 0.0f64;
+        let mut v = 0.0f64;
+        let mut tot_o = 0.0f32;
+        let mut card = [0.0f32; 52];
         compat_sums(&self.holes, &self.spec.ranges[0], &mut tot_o, &mut card);
         for h in 0..N {
-            if !self.valid_root[h] { continue; }
+            if !self.valid_root[h] {
+                continue;
+            }
             let w = self.spec.ranges[1][h] as f64;
-            if w == 0.0 { continue; }
-            let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize] + self.spec.ranges[0][h];
+            if w == 0.0 {
+                continue;
+            }
+            let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize]
+                + self.spec.ranges[0][h];
             z += w * comp as f64;
             v += w * cf[h] as f64;
         }
-        if z > 0.0 { (v / z) as f32 } else { 0.0 }
+        if z > 0.0 {
+            (v / z) as f32
+        } else {
+            0.0
+        }
     }
     /// The REAL root node: with a gadget installed this is the Follow
     /// child (the subgame); otherwise the root itself. Used for the
@@ -913,18 +1400,26 @@ impl<'a> Solver<'a> {
         self.root_idx
     }
 
+    /// 2026-11-03 re-audit: diagnostic accessor, no current caller.
+    #[allow(dead_code)]
     fn real_root_node(&self) -> &Node {
         &self.arena[self.real_root_idx() as usize]
     }
 
     pub fn root_strategy(&self, hand: [u8; 2]) -> Vec<(Act, f32)> {
         if let Some(an) = self.p0_root() {
-            let n = an.acts.len(); let mut st = vec![0.0; n * N]; avg_strat(&an.ssum, n, &mut st);
+            let n = an.acts.len();
+            let mut st = vec![0.0; n * N];
+            avg_strat(&an.ssum, n, &mut st);
             let h = index_of(hand);
             (0..n).map(|a| (an.acts[a], st[a * N + h])).collect()
-        } else { vec![] }
+        } else {
+            vec![]
+        }
     }
-    pub fn n_root_actions(&self) -> usize { self.p0_root().map(|an| an.acts.len()).unwrap_or(0) }
+    pub fn n_root_actions(&self) -> usize {
+        self.p0_root().map(|an| an.acts.len()).unwrap_or(0)
+    }
 
     /// M-4.3: the root action list, if the root is a decision node.
     /// Index-aligned with `root_strategy_all`'s outer dimension (both
@@ -942,12 +1437,16 @@ impl<'a> Solver<'a> {
         self.timed_out.set(false);
     }
 
-    pub fn timed_out(&self) -> bool { self.timed_out.get() }
+    pub fn timed_out(&self) -> bool {
+        self.timed_out.get()
+    }
 
     /// True if the current walk should abort.
     #[inline]
     fn budget_exceeded(&self) -> bool {
-        if self.timed_out.get() { return true; }
+        if self.timed_out.get() {
+            return true;
+        }
         if let Some(d) = self.deadline.get() {
             if Instant::now() >= d {
                 self.timed_out.set(true);
@@ -1047,9 +1546,7 @@ impl<'a> Solver<'a> {
             if w == 0.0 {
                 continue;
             }
-            let comp = tot_o
-                - card[self.holes[h][0] as usize]
-                - card[self.holes[h][1] as usize]
+            let comp = tot_o - card[self.holes[h][0] as usize] - card[self.holes[h][1] as usize]
                 + opp_range[h];
             z += w * comp as f64;
             v += w * cf[h] as f64;
@@ -1131,26 +1628,71 @@ impl<'a> Solver<'a> {
     }
 }
 
+/// Build a `Spec` from a real `GameState` at our decision, plus the two
+/// players' hole-card ranges (indexed by `index_of`). Postflop, solver
+/// player 0 = OOP (acts first = `1 - dealer`), player 1 = IP.
+///
+/// `ranges` is `[oop_range, ip_range]` already ordered to solver seats.
+pub fn spec_from_state(
+    st: &pkr_core::state::GameState,
+    ranges: [Vec<f32>; 2],
+    bet_fracs: Vec<f32>,
+    max_raises: u8,
+) -> Spec {
+    let board: Vec<u8> = st.board[..st.board_len as usize].to_vec();
+    let dead = (st.pot - st.street_bets[0] - st.street_bets[1]).max(0.0);
+    let stack = (st.stacks[0] + st.street_bets[0]).min(st.stacks[1] + st.street_bets[1]);
+    // OOP is the non-dealer postflop.
+    let oop = 1 - st.dealer;
+    let root_actor = if st.actor == oop { 0 } else { 1 };
+    let root_inv = [st.street_bets[oop], st.street_bets[1 - oop]];
+    Spec {
+        board,
+        dead,
+        stack,
+        root_actor: root_actor as u8,
+        root_inv,
+        bet_fracs,
+        max_raises,
+        min_bet: 2.0,
+        allin_snap: 0.2,
+        ranges,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pkr_contracts::Evaluator;
     use pkr_eval::NlheEvaluator;
 
-    fn eval_fn(h: &[u8; 2], b: &[u8]) -> u32 { NlheEvaluator.evaluate_hand(h, b) }
+    fn eval_fn(h: &[u8; 2], b: &[u8]) -> u32 {
+        NlheEvaluator.evaluate_hand(h, b)
+    }
 
     fn river_spec() -> Spec {
         // Board: As Kd 7c 2h 9d (suit*13+rank).
-        let board = vec![12u8, 13 + 11, 39 + 5, 13 + 0, 26 + 7];
+        let board = vec![12u8, 13 + 11, 39 + 5, 13, 26 + 7];
         // Uniform-ish ranges over board-free hands.
         let holes = hole_table();
         let mut r = vec![0.0f32; N];
         for h in 0..N {
-            if !holes[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+            if !holes[h].iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
         }
-        Spec { board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
-               bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
-               ranges: [r.clone(), r] }
+        Spec {
+            board,
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
+            ranges: [r.clone(), r],
+        }
     }
 
     #[test]
@@ -1158,12 +1700,21 @@ mod tests {
         let s = river_spec();
         let mut solver = Solver::new(s, &eval_fn);
         assert!(solver.n_root_actions() >= 2, "river root must have actions");
-        let e1 = { solver.iterate(10); solver.exploitability() };
-        let e2 = { solver.iterate(190); solver.exploitability() };
+        let e1 = {
+            solver.iterate(10);
+            solver.exploitability()
+        };
+        let e2 = {
+            solver.iterate(190);
+            solver.exploitability()
+        };
         eprintln!("river exploitability: 10 iters={e1:.4} 200 iters={e2:.4} chips");
         assert!(e2.is_finite() && e2 >= 0.0);
         assert!(e2 < e1.max(1e-3), "exploitability must fall: {e1} -> {e2}");
-        assert!(e2 < 1.0, "200-iter river solve should be < 1 chip exploitable, got {e2}");
+        assert!(
+            e2 < 1.0,
+            "200-iter river solve should be < 1 chip exploitable, got {e2}"
+        );
     }
 
     #[test]
@@ -1173,11 +1724,18 @@ mod tests {
         solver.iterate(50);
         // Any board-free hand.
         let holes = hole_table();
-        let hand = holes.iter().find(|h| !river_spec().board.contains(&h[0]) && !river_spec().board.contains(&h[1])).copied().unwrap();
+        let hand = holes
+            .iter()
+            .find(|h| !river_spec().board.contains(&h[0]) && !river_spec().board.contains(&h[1]))
+            .copied()
+            .unwrap();
         let strat = solver.root_strategy(hand);
         assert!(!strat.is_empty());
         let sum: f32 = strat.iter().map(|(_, p)| *p).sum();
-        assert!((sum - 1.0).abs() < 1e-3, "root strategy must sum to 1, got {sum}");
+        assert!(
+            (sum - 1.0).abs() < 1e-3,
+            "root strategy must sum to 1, got {sum}"
+        );
     }
 
     #[test]
@@ -1212,7 +1770,12 @@ mod tests {
                 }
                 s += opp[o] * cbv[o];
             }
-            assert!((got0[h] + s).abs() < 1e-1, "p0 h={h}: got {} want {}", got0[h], -s);
+            assert!(
+                (got0[h] + s).abs() < 1e-1,
+                "p0 h={h}: got {} want {}",
+                got0[h],
+                -s
+            );
         }
     }
 
@@ -1223,21 +1786,34 @@ mod tests {
     /// comparison is meaningful.
     #[test]
     fn gadget_br_le_blueprint_br() {
-        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 {
+            0
+        }
         let board: Vec<u8> = vec![20, 25, 30, 35, 44];
         let mut r = vec![0.0f32; N];
         for h in 0..N {
-            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+            if !hole_table()[h].iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
         }
         let mk_spec = || Spec {
-            board: board.clone(), dead: 100.0, stack: 150.0, root_actor: 0,
-            root_inv: [0.0, 0.0], bet_fracs: vec![0.5, 1.0], max_raises: 2,
-            min_bet: 2.0, allin_snap: 0.2, ranges: [r.clone(), r.clone()],
+            board: board.clone(),
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
+            ranges: [r.clone(), r.clone()],
         };
 
         // A non-trivial cbv: P1's value rises with hand index.
         let mut cbv = vec![0.0f32; N];
-        for h in 0..N { cbv[h] = (h as f32) * 0.01 - 6.0; }
+        for h in 0..N {
+            cbv[h] = (h as f32) * 0.01 - 6.0;
+        }
 
         // Blueprint-free gadget: solve, then compare P1's BR at the
         // gadget root (with Terminate) to P1's BR at a plain tree with
@@ -1249,7 +1825,9 @@ mod tests {
         // P1 BR at the gadget root includes Terminate -> at least the
         // per-hand cbv. Weighted mean must be >= the cbv mean.
         let br = g.br(g.root_idx, 1, &g.spec.ranges[0]);
-        let mut br_w = 0.0f64; let mut cbv_w = 0.0f64; let mut den = 0.0f64;
+        let mut br_w = 0.0f64;
+        let mut cbv_w = 0.0f64;
+        let mut den = 0.0f64;
         for h in 0..N {
             let w = g.spec.ranges[1][h] as f64;
             br_w += w * br[h] as f64;
@@ -1277,15 +1855,26 @@ mod tests {
         // must therefore be at least as safe as a value-0 guarantee,
         // i.e. P1's best response at the gadget root cannot exceed 0
         // when P1 can always terminate for 0.
-        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 {
+            0
+        }
         let board: Vec<u8> = vec![20, 25, 30, 35, 44];
         let mut r = vec![0.0f32; N];
         for h in 0..N {
-            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+            if !hole_table()[h].iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
         }
         let spec = Spec {
-            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
-            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            board,
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
             ranges: [r.clone(), r],
         };
         let mut s = Solver::new(spec, &triv);
@@ -1296,14 +1885,18 @@ mod tests {
         // Terminate option) must be >= 0 — P1 can always take the 0.
         let p1_br = s.br(s.root_idx, 1, &s.spec.ranges[0]);
         // Weighted mean over P1's range.
-        let mut num = 0.0f64; let mut den = 0.0f64;
+        let mut num = 0.0f64;
+        let mut den = 0.0f64;
         for h in 0..N {
             let w = s.spec.ranges[1][h] as f64;
             num += w * p1_br[h] as f64;
             den += w;
         }
         let mean = if den > 0.0 { num / den } else { 0.0 };
-        assert!(mean >= -1e-3, "P1 BR {mean} < 0 despite a 0-value Terminate");
+        assert!(
+            mean >= -1e-3,
+            "P1 BR {mean} < 0 despite a 0-value Terminate"
+        );
     }
 
     /// Gadget with payee=0 (the OTHER seat): the chooser node must be
@@ -1311,13 +1904,26 @@ mod tests {
     /// terminate with a valid probability.
     #[test]
     fn install_gadget_payee0() {
-        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 {
+            0
+        }
         let board: Vec<u8> = vec![20, 25, 30, 35, 44];
         let mut r = vec![0.0f32; N];
-        for h in 0..N { if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; } }
+        for h in 0..N {
+            if !hole_table()[h].iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
+        }
         let spec = Spec {
-            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
-            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            board,
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
             ranges: [r.clone(), r],
         };
         let mut s = Solver::new(spec, &triv);
@@ -1340,15 +1946,26 @@ mod tests {
     /// against the blueprint root. This is what makes --search-bound safe.
     #[test]
     fn bounded_root_never_worse_than_blueprint() {
-        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 {
+            0
+        }
         let board: Vec<u8> = vec![20, 25, 30, 35, 44];
         let mut r = vec![0.0f32; N];
         for h in 0..N {
-            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+            if !hole_table()[h].iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
         }
         let spec = Spec {
-            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
-            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            board,
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
             ranges: [r.clone(), r],
         };
         let mut s = Solver::new(spec, &triv);
@@ -1375,16 +1992,21 @@ mod tests {
                 let mixed = Solver::blend_root(&search, &bp, mid);
                 s.set_root_strategy(&mixed);
                 let br = s.opp_br_value().unwrap();
-                if br <= bp_br { best = mixed; lo = mid; } else { hi = mid; }
-                if hi - lo < 1e-3 { break; }
+                if br <= bp_br {
+                    best = mixed;
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+                if hi - lo < 1e-3 {
+                    break;
+                }
             }
             best
         };
         s.set_root_strategy(&final_root);
         let final_br = s.opp_br_value().unwrap();
-        eprintln!(
-            "bound safety: bp_br={bp_br:.4} search_br={search_br:.4} final_br={final_br:.4}"
-        );
+        eprintln!("bound safety: bp_br={bp_br:.4} search_br={search_br:.4} final_br={final_br:.4}");
         assert!(
             final_br <= bp_br + 1e-3,
             "bound final_br {final_br} exceeds blueprint {bp_br}"
@@ -1393,15 +2015,26 @@ mod tests {
 
     #[test]
     fn install_gadget_wraps_root_and_p0_reads_follow() {
-        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 {
+            0
+        }
         let board: Vec<u8> = vec![20, 25, 30, 35, 44];
         let mut r = vec![0.0f32; N];
         for h in 0..N {
-            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+            if !hole_table()[h].iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
         }
         let spec = Spec {
-            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
-            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            board,
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
             ranges: [r.clone(), r],
         };
         let mut s = Solver::new(spec, &triv);
@@ -1449,7 +2082,8 @@ mod tests {
                 assert!(
                     (got[h] - want).abs() < 1e-3,
                     "p={p} h={h}: got {} want {}",
-                    got[h], want
+                    got[h],
+                    want
                 );
             }
         }
@@ -1462,28 +2096,51 @@ mod tests {
     #[test]
     fn sig_threading_matches_gamestate() {
         use pkr_core::state::{Action, ActionKind, GameState};
-        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        fn triv(_h: &[u8; 2], _b: &[u8]) -> u32 {
+            0
+        }
         // A turn root so the tree spans turn+river and exercises
         // street-advance signature state.
         let mut root = GameState::new(200.0, 1.0, 2.0);
         root.dealer = 1; // seat 0 = OOP = first to act
         root.set_hole_cards([0, 5], [10, 15]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&[20, 25, 30]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&[35]);
         assert_eq!(root.street as u8, 2, "turn");
 
         let board: Vec<u8> = root.board[..root.board_len as usize].to_vec();
         let mut r = vec![0.0f32; N];
         for h in 0..N {
-            if !hole_table()[h].iter().any(|c| board.contains(c)) { r[h] = 1.0; }
+            if !hole_table()[h].iter().any(|c| board.contains(c)) {
+                r[h] = 1.0;
+            }
         }
         let spec = Spec {
-            board, dead: 100.0, stack: 150.0, root_actor: 0, root_inv: [0.0, 0.0],
-            bet_fracs: vec![0.5, 1.0], max_raises: 2, min_bet: 2.0, allin_snap: 0.2,
+            board,
+            dead: 100.0,
+            stack: 150.0,
+            root_actor: 0,
+            root_inv: [0.0, 0.0],
+            bet_fracs: vec![0.5, 1.0],
+            max_raises: 2,
+            min_bet: 2.0,
+            allin_snap: 0.2,
             ranges: [r.clone(), r],
         };
         let s = Solver::new_with_root_state(spec, &triv, root.clone());
@@ -1510,27 +2167,39 @@ mod tests {
                         if *mismatches <= 3 {
                             eprintln!(
                                 "SIG MISMATCH: tree={:?} (len {}) state={:?} (len {})",
-                                &an.sig[..an.sig_len as usize], an.sig_len, &buf[..l], l
+                                &an.sig[..an.sig_len as usize],
+                                an.sig_len,
+                                &buf[..l],
+                                l
                             );
                         }
                     }
                     for (act, kid) in an.acts.iter().zip(an.kids.iter()) {
                         state.apply_action_in_place(&Solver::to_action(act, an.player));
                         walk(arena, *kid, state, checked, mismatches);
-                        let _ = state.undo_action();
+                        state.undo_action();
                     }
                 }
                 Node::Chance(cn) => {
                     for (card, kid) in cn.cards.iter().zip(cn.kids.iter()) {
                         state.advance_street_in_place(&[*card]);
                         walk(arena, *kid, state, checked, mismatches);
-                        let _ = state.undo_action();
+                        state.undo_action();
                     }
                 }
-                Node::Fold { .. } | Node::Show(_) | Node::Const { .. } | Node::TermGadget { .. } => {}
+                Node::Fold { .. }
+                | Node::Show(_)
+                | Node::Const { .. }
+                | Node::TermGadget { .. } => {}
             }
         }
-        walk(&s.arena, s.root_idx, &mut state, &mut checked, &mut mismatches);
+        walk(
+            &s.arena,
+            s.root_idx,
+            &mut state,
+            &mut checked,
+            &mut mismatches,
+        );
         eprintln!("sig check: checked={checked} mismatches={mismatches}");
         assert!(checked > 50, "expected many decision nodes, got {checked}");
         assert_eq!(mismatches, 0, "{mismatches} signature mismatches");
@@ -1545,21 +2214,35 @@ mod tests {
         use pkr_cfr::table::CompactRegretTable;
         use pkr_core::state::{Action, ActionKind, GameState};
         use std::sync::Arc;
-        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
-        let tdir = std::env::var("PKR_TEST_TABLES").map(std::path::PathBuf::from)
+        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let tdir = std::env::var("PKR_TEST_TABLES")
+            .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| ws.join("outputs/v42-post-audit"));
-        let ck = std::env::var("PKR_TEST_CKPT").map(std::path::PathBuf::from)
+        let ck = std::env::var("PKR_TEST_CKPT")
+            .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| ws.join("outputs/ab-v5/train.ckpt"));
-        if !ck.exists() { eprintln!("SKIP: missing"); return; }
+        if !ck.exists() {
+            eprintln!("SKIP: missing");
+            return;
+        }
         std::env::set_var("PKR_SIG_V5", "1");
         std::env::set_var("PKR_SIG_V4", "0");
         std::env::set_var("PKR_SIG_V3", "1");
         let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap()).unwrap();
         let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
-        abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap()).unwrap();
-        abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap()).unwrap();
-        abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap()).unwrap();
-        abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap()).unwrap();
+        abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap())
+            .unwrap();
+        abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap())
+            .unwrap();
+        abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap())
+            .unwrap();
+        abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap())
+            .unwrap();
         let tbl = CompactRegretTable::with_capacity(60_000_000);
         let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(abs.k() as u32);
         tbl.load_checkpoint(ck.to_str().unwrap(), &fp).unwrap();
@@ -1567,7 +2250,9 @@ mod tests {
         let ev = pkr_eval::NlheEvaluator;
 
         // (flop3, turn, river, our0, our1, opp0, opp1) — disjoint card sets.
-        let cases: [([u8; 3], u8, u8, u8, u8, u8, u8); 4] = [
+        // 2026-11-03 re-audit: tuple aliased to satisfy clippy::type_complexity.
+        type RiverCase = ([u8; 3], u8, u8, u8, u8, u8, u8);
+        let cases: [RiverCase; 4] = [
             ([20, 25, 30], 35, 44, 0, 1, 2, 3),
             ([4, 9, 12], 33, 47, 5, 7, 6, 8),
             ([14, 19, 22], 27, 40, 10, 11, 13, 15),
@@ -1578,14 +2263,32 @@ mod tests {
             let mut root = GameState::new(200.0, 1.0, 2.0);
             root.dealer = 1;
             root.set_hole_cards([*o0, *o1], [*x0, *x1]);
-            root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-            root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+            root.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Call,
+            });
+            root.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
             root.advance_street_in_place(b3);
-            root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-            root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+            root.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Check,
+            });
+            root.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
             root.advance_street_in_place(&[*tn]);
-            root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-            root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+            root.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Check,
+            });
+            root.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Check,
+            });
             root.advance_street_in_place(&[*rv]);
 
             let board: Vec<u8> = root.board[..root.board_len as usize].to_vec();
@@ -1595,16 +2298,31 @@ mod tests {
             let mut opp_r = vec![0.0f32; N];
             let mut n = 0usize;
             for h in 0..N {
-                if hole_table()[h].iter().any(|cc| board.contains(cc)) { continue; }
-                if hole_table()[h].iter().any(|cc| our.contains(cc)) { continue; }
-                opp_r[h] = 1.0; n += 1;
+                if hole_table()[h].iter().any(|cc| board.contains(cc)) {
+                    continue;
+                }
+                if hole_table()[h].iter().any(|cc| our.contains(cc)) {
+                    continue;
+                }
+                opp_r[h] = 1.0;
+                n += 1;
             }
             let u = 1.0 / n as f32;
-            for x in opp_r.iter_mut() { if *x > 0.0 { *x = u; } }
+            for x in opp_r.iter_mut() {
+                if *x > 0.0 {
+                    *x = u;
+                }
+            }
 
             let to_hp = |r: &[f32]| {
-                let mut hs = Vec::new(); let mut ps = Vec::new();
-                for h in 0..N { if r[h] > 0.0 { hs.push(hole_table()[h]); ps.push(r[h] as f64); } }
+                let mut hs = Vec::new();
+                let mut ps = Vec::new();
+                for h in 0..N {
+                    if r[h] > 0.0 {
+                        hs.push(hole_table()[h]);
+                        ps.push(r[h] as f64);
+                    }
+                }
                 (hs, ps)
             };
             let (h0, p0) = to_hp(&our_r);
@@ -1613,10 +2331,16 @@ mod tests {
                 root: root.clone(),
                 p0_range: crate::Range::weighted(h0, p0),
                 p1_range: crate::Range::weighted(h1, p1),
-                iterations: 1, evaluator: &ev, blueprint: Some((abs_dyn, &tbl)),
+                iterations: 1,
+                evaluator: &ev,
+                blueprint: Some((abs_dyn, &tbl)),
             };
-            let cbv: Vec<f32> = crate::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
-            let mk_spec = || spec_from_state(&root, [our_r.clone(), opp_r.clone()], vec![0.5, 1.0], 2);
+            let cbv: Vec<f32> = crate::p1_cbv_per_hand(&poc)
+                .iter()
+                .map(|&x| x as f32)
+                .collect();
+            let mk_spec =
+                || spec_from_state(&root, [our_r.clone(), opp_r.clone()], vec![0.5, 1.0], 2);
             let eval = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
             let base = Solver::new_with_root_state(mk_spec(), &eval, root.clone());
             let bp_br = base.blueprint_p1_br(abs_dyn, &tbl, None);
@@ -1631,7 +2355,9 @@ mod tests {
                 "case {i}: blueprint_br={bp_br:.4} raw_br={raw_br:.4} gadget_br={g_br:.4} (gadget-bp={:.4})",
                 g_br - bp_br
             );
-            if g_br - bp_br > worst { worst = g_br - bp_br; }
+            if g_br - bp_br > worst {
+                worst = g_br - bp_br;
+            }
         }
         eprintln!("WORST gadget - blueprint = {worst:.4}");
         assert!(worst <= 0.5, "worst gadget excess {worst:.4} exceeds 0.5");
@@ -1647,21 +2373,35 @@ mod tests {
         use pkr_cfr::table::CompactRegretTable;
         use pkr_core::state::{Action, ActionKind, GameState};
         use std::sync::Arc;
-        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
-        let tdir = std::env::var("PKR_TEST_TABLES").map(std::path::PathBuf::from)
+        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let tdir = std::env::var("PKR_TEST_TABLES")
+            .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| ws.join("outputs/v42-post-audit"));
-        let ck = std::env::var("PKR_TEST_CKPT").map(std::path::PathBuf::from)
+        let ck = std::env::var("PKR_TEST_CKPT")
+            .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| ws.join("outputs/ab-v5/train.ckpt"));
-        if !ck.exists() { eprintln!("SKIP: {} missing", ck.display()); return; }
+        if !ck.exists() {
+            eprintln!("SKIP: {} missing", ck.display());
+            return;
+        }
         std::env::set_var("PKR_SIG_V5", "1");
         std::env::set_var("PKR_SIG_V4", "0");
         std::env::set_var("PKR_SIG_V3", "1");
         let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap()).unwrap();
         let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
-        abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap()).unwrap();
-        abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap()).unwrap();
-        abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap()).unwrap();
-        abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap()).unwrap();
+        abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap())
+            .unwrap();
+        abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap())
+            .unwrap();
+        abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap())
+            .unwrap();
+        abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap())
+            .unwrap();
         let tbl = CompactRegretTable::with_capacity(60_000_000);
         let fp = pkr_core::abstraction::AbstractionFingerprint::from_constants(abs.k() as u32);
         tbl.load_checkpoint(ck.to_str().unwrap(), &fp).unwrap();
@@ -1671,14 +2411,32 @@ mod tests {
         let mut root = GameState::new(200.0, 1.0, 2.0);
         root.dealer = 1;
         root.set_hole_cards([0, 1], [2, 3]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&[20, 25, 30]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&[35]);
-        root.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        root.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        root.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        root.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         root.advance_street_in_place(&[44]);
 
         let our = root.hole[root.actor];
@@ -1688,17 +2446,32 @@ mod tests {
         let mut opp_r = vec![0.0f32; N];
         let mut n = 0usize;
         for h in 0..N {
-            if hole_table()[h].iter().any(|cc| board.contains(cc)) { continue; }
-            if hole_table()[h].iter().any(|cc| our.contains(cc)) { continue; }
-            opp_r[h] = 1.0; n += 1;
+            if hole_table()[h].iter().any(|cc| board.contains(cc)) {
+                continue;
+            }
+            if hole_table()[h].iter().any(|cc| our.contains(cc)) {
+                continue;
+            }
+            opp_r[h] = 1.0;
+            n += 1;
         }
         let u = 1.0 / n as f32;
-        for x in opp_r.iter_mut() { if *x > 0.0 { *x = u; } }
+        for x in opp_r.iter_mut() {
+            if *x > 0.0 {
+                *x = u;
+            }
+        }
 
         // cbv via the sampled machinery.
         let to_hp = |r: &[f32]| {
-            let mut hs = Vec::new(); let mut ps = Vec::new();
-            for h in 0..N { if r[h] > 0.0 { hs.push(hole_table()[h]); ps.push(r[h] as f64); } }
+            let mut hs = Vec::new();
+            let mut ps = Vec::new();
+            for h in 0..N {
+                if r[h] > 0.0 {
+                    hs.push(hole_table()[h]);
+                    ps.push(r[h] as f64);
+                }
+            }
             (hs, ps)
         };
         let (h0, p0) = to_hp(&our_r);
@@ -1707,9 +2480,14 @@ mod tests {
             root: root.clone(),
             p0_range: crate::Range::weighted(h0, p0),
             p1_range: crate::Range::weighted(h1, p1),
-            iterations: 1, evaluator: &ev, blueprint: Some((abs_dyn, &tbl)),
+            iterations: 1,
+            evaluator: &ev,
+            blueprint: Some((abs_dyn, &tbl)),
         };
-        let cbv: Vec<f32> = crate::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
+        let cbv: Vec<f32> = crate::p1_cbv_per_hand(&poc)
+            .iter()
+            .map(|&x| x as f32)
+            .collect();
 
         let mk_spec = || spec_from_state(&root, [our_r.clone(), opp_r.clone()], vec![0.5, 1.0], 2);
         let eval = |h: &[u8; 2], b: &[u8]| pkr_eval::NlheEvaluator.evaluate_hand(h, b);
@@ -1755,7 +2533,9 @@ mod tests {
     fn root_strategy_all_sums_to_one_and_set_roundtrips() {
         // Trivial evaluator: every hand ties. Keeps the test independent
         // of pkr-eval and fast.
-        fn trivial_eval(_h: &[u8; 2], _b: &[u8]) -> u32 { 0 }
+        fn trivial_eval(_h: &[u8; 2], _b: &[u8]) -> u32 {
+            0
+        }
         let board: Vec<u8> = vec![20, 25, 30, 35, 44];
         let mut r = vec![0.0f32; N];
         for h in 0..N {
@@ -1781,7 +2561,9 @@ mod tests {
 
         let full = s.root_strategy_all().expect("root is a decision node");
         for h in 0..N {
-            if !s.valid_root[h] { continue; }
+            if !s.valid_root[h] {
+                continue;
+            }
             let sum: f32 = full.iter().map(|a| a[h]).sum();
             assert!((sum - 1.0).abs() < 1e-3, "hand {h} sums to {sum}");
         }
@@ -1800,8 +2582,14 @@ mod tests {
         s.set_root_strategy(&forced);
         let after = s.root_strategy_all().expect("still a decision node");
         for h in 0..N {
-            if !s.valid_root[h] { continue; }
-            assert!((after[0][h] - 1.0).abs() < 1e-3, "h={h} after[0]={}", after[0][h]);
+            if !s.valid_root[h] {
+                continue;
+            }
+            assert!(
+                (after[0][h] - 1.0).abs() < 1e-3,
+                "h={h} after[0]={}",
+                after[0][h]
+            );
             for a in 1..n_actions {
                 assert!(after[a][h].abs() < 1e-3, "h={h} a={a} = {}", after[a][h]);
             }
@@ -1824,38 +2612,5 @@ mod tests {
             assert_eq!(index_of(holes[h]), h);
             assert!(holes[h][0] > holes[h][1], "hole must be sorted hi,lo");
         }
-    }
-}
-
-/// Build a `Spec` from a real `GameState` at our decision, plus the two
-/// players' hole-card ranges (indexed by `index_of`). Postflop, solver
-/// player 0 = OOP (acts first = `1 - dealer`), player 1 = IP.
-///
-/// `ranges` is `[oop_range, ip_range]` already ordered to solver seats.
-pub fn spec_from_state(
-    st: &pkr_core::state::GameState,
-    ranges: [Vec<f32>; 2],
-    bet_fracs: Vec<f32>,
-    max_raises: u8,
-) -> Spec {
-    let board: Vec<u8> = st.board[..st.board_len as usize].to_vec();
-    let dead = (st.pot - st.street_bets[0] - st.street_bets[1]).max(0.0);
-    let stack = (st.stacks[0] + st.street_bets[0])
-        .min(st.stacks[1] + st.street_bets[1]);
-    // OOP is the non-dealer postflop.
-    let oop = 1 - st.dealer;
-    let root_actor = if st.actor == oop { 0 } else { 1 };
-    let root_inv = [st.street_bets[oop], st.street_bets[1 - oop]];
-    Spec {
-        board,
-        dead,
-        stack,
-        root_actor: root_actor as u8,
-        root_inv,
-        bet_fracs,
-        max_raises,
-        min_bet: 2.0,
-        allin_snap: 0.2,
-        ranges,
     }
 }

@@ -30,8 +30,11 @@ fn workspace_root() -> std::path::PathBuf {
 }
 
 fn out(rel: &str) -> String {
-    workspace_root().join("outputs/v34long").join(rel)
-        .to_string_lossy().into_owned()
+    workspace_root()
+        .join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn board() -> [u8; 5] {
@@ -39,12 +42,18 @@ fn board() -> [u8; 5] {
 }
 
 fn make_range(pool: &[u8], exclude: &[u8], n: usize) -> Vec<[u8; 2]> {
-    let available: Vec<u8> = pool.iter().copied().filter(|c| !exclude.contains(c)).collect();
+    let available: Vec<u8> = pool
+        .iter()
+        .copied()
+        .filter(|c| !exclude.contains(c))
+        .collect();
     let mut hands = Vec::new();
     'outer: for i in 0..available.len() {
         for j in (i + 1)..available.len() {
             hands.push([available[i], available[j]]);
-            if hands.len() >= n { break 'outer; }
+            if hands.len() >= n {
+                break 'outer;
+            }
         }
     }
     hands
@@ -52,14 +61,32 @@ fn make_range(pool: &[u8], exclude: &[u8], n: usize) -> Vec<[u8; 2]> {
 
 fn river_root(b: &[u8; 5]) -> GameState {
     let mut s = GameState::new(200.0, 1.0, 2.0);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[0..3]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[3..4]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[4..5]);
     s
 }
@@ -77,13 +104,16 @@ fn poc_river_vs_blueprint() {
     println!("P1 range = {} hands", p1_hands.len());
 
     // ---- Build the abstraction ----
-    let centroids_store = load_centroids(&out("centroids.bin"))
-        .expect("load centroids");
+    let centroids_store = load_centroids(&out("centroids.bin")).expect("load centroids");
     let abs = KMeansAbstraction::from_store(centroids_store, Arc::new(pkr_eval::NlheEvaluator));
-    abs.init_table(0, &out("preflop_abstraction.bin")).expect("preflop table");
-    abs.init_table(1, &out("abstraction.bin")).expect("flop table");
-    abs.init_table(2, &out("turn_abstraction.bin")).expect("turn table");
-    abs.init_table(3, &out("river_buckets.bin")).expect("river table");
+    abs.init_table(0, &out("preflop_abstraction.bin"))
+        .expect("preflop table");
+    abs.init_table(1, &out("abstraction.bin"))
+        .expect("flop table");
+    abs.init_table(2, &out("turn_abstraction.bin"))
+        .expect("turn table");
+    abs.init_table(3, &out("river_buckets.bin"))
+        .expect("river table");
     let abs_arc: Arc<dyn AbstractionBuilder> = Arc::new(abs);
 
     // ---- Load the checkpoint ----
@@ -122,7 +152,7 @@ fn poc_river_vs_blueprint() {
         root: river_root(&b),
         p0_range: Range::uniform(p0_hands),
         p1_range: Range::uniform(p1_hands),
-        iterations: 0,  // no CFR solve
+        iterations: 0, // no CFR solve
         evaluator: ev_ref,
         blueprint: Some((abs_ref, tbl_ref)),
     };
@@ -132,7 +162,10 @@ fn poc_river_vs_blueprint() {
     println!();
     println!("=== Blueprint (v34long 100M-iter) ===");
     println!("  wall time:    {:.2}s", dt_bp.as_secs_f64());
-    println!("  BR_v1:        {:.4} chips", r_bp.br_v1_vs_blueprint.unwrap_or(f64::NAN));
+    println!(
+        "  BR_v1:        {:.4} chips",
+        r_bp.br_v1_vs_blueprint.unwrap_or(f64::NAN)
+    );
 
     // ---- Compare ----
     let bp_val = r_bp.br_v1_vs_blueprint.unwrap_or(f64::NAN);
