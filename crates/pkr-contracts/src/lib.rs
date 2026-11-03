@@ -93,7 +93,11 @@ pub struct SoftHash {
 impl SoftHash {
     #[inline]
     pub fn hard(primary: u64) -> Self {
-        Self { primary, secondary: primary, weight_primary: 1.0 }
+        Self {
+            primary,
+            secondary: primary,
+            weight_primary: 1.0,
+        }
     }
 
     #[inline]
@@ -122,3 +126,63 @@ pub fn fnv1a(state: &mut u64, bytes: &[u8]) {
 /// 1 = legacy DefaultHasher (rejected at load); 2 = FNV-1a 64-bit.
 pub const HASH_ALGO_FNV1A64_INFOSET: u8 = 2;
 pub const HASH_ALGO_LEGACY_DEFAULT: u8 = 1;
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    //! Known-answer vectors for the FNV-1a-64 core. The infoset hash is
+    //! the compatibility contract between trainer and runtime (blueprint
+    //! keys are these hashes), so the primitive gets standard test
+    //! vectors pinning it against every other FNV implementation.
+
+    use super::*;
+
+    #[test]
+    fn fnv1a_known_answer_vectors() {
+        let mut h = FNV_OFFSET;
+        // Empty input leaves the offset basis untouched.
+        assert_eq!(h, 0xcbf29ce484222325);
+        fnv1a(&mut h, b"");
+        assert_eq!(h, 0xcbf29ce484222325, "empty input is the identity");
+
+        // Standard FNV-1a 64 test vectors.
+        let mut h = FNV_OFFSET;
+        fnv1a(&mut h, b"a");
+        assert_eq!(h, 0xaf63dc4c8601ec8c);
+
+        let mut h = FNV_OFFSET;
+        fnv1a(&mut h, b"foobar");
+        assert_eq!(h, 0x85944171f73967e8);
+
+        let mut h = FNV_OFFSET;
+        fnv1a(&mut h, b"hello");
+        assert_eq!(h, 0xa430d84680aabd0b);
+    }
+
+    /// The hash is sequential: hashing a then b equals hashing the
+    /// concatenation, and byte order matters.
+    #[test]
+    fn fnv1a_streaming_and_order_sensitivity() {
+        let mut whole = FNV_OFFSET;
+        fnv1a(&mut whole, b"street1sigcluster");
+
+        let mut split = FNV_OFFSET;
+        fnv1a(&mut split, b"street1");
+        fnv1a(&mut split, b"sigcluster");
+        assert_eq!(whole, split, "streaming must equal one-shot");
+
+        let mut swapped = FNV_OFFSET;
+        fnv1a(&mut swapped, b"1street");
+        fnv1a(&mut swapped, b"sigcluster");
+        assert_ne!(whole, swapped, "byte order must matter");
+    }
+
+    /// The constants are the FNV-1a 64 spec values — pin them so an
+    /// accidental "tweak" breaks loudly here instead of silently
+    /// invalidating every blueprint.
+    #[test]
+    fn fnv_constants_are_spec_values() {
+        assert_eq!(FNV_OFFSET, 0xcbf29ce484222325);
+        assert_eq!(FNV_PRIME, 0x100000001b3);
+        assert_eq!(HASH_ALGO_FNV1A64_INFOSET, 2);
+    }
+}
