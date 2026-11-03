@@ -647,10 +647,7 @@ mod f5_grid_tests {
 
         // Both modes should converge. Kuhn's exact Nash is
         // -1/18, exploitability of the converged strategy tends to 0.
-        assert!(
-            e6 < 1e-2,
-            "Kuhn should converge below 1e-2, got {e6}"
-        );
+        assert!(e6 < 1e-2, "Kuhn should converge below 1e-2, got {e6}");
     }
 }
 
