@@ -24,6 +24,10 @@ cargo build --release -p pkr-trainer 2>&1 | tail -1
 
 for T in $THREADS_LIST; do
     echo "--- threads=$T ---"
+    # 2026-11-03 re-audit (M10): a fixed /tmp name collided between
+    # concurrent bench invocations (and across threads in parallel runs);
+    # use mktemp per config instead.
+    LOG_T="$(mktemp "/tmp/pkr-bench-t${T}.XXXXXX.log")"
     # Allow this config to fail without killing the whole bench.
     set +e
     PKR_PHASE_PROFILE=1 cargo run --release -p pkr-trainer -- \
@@ -37,17 +41,22 @@ for T in $THREADS_LIST; do
         --turn-table "$BENCH_DIR_ABS/turn_abstraction.bin" \
         --river-table "$BENCH_DIR_ABS/river_buckets.bin" \
         --rank-table "$BENCH_DIR_ABS/hand_ranks.bin" \
-        --output "$BENCH_DIR_ABS/bench_blueprint.bin" > /tmp/pkr-bench-t$T.log 2>&1
-    grep -E "(Running with|iter .*infosets|it_per_s|\[phase\])" /tmp/pkr-bench-t$T.log || true
+        --output "$BENCH_DIR_ABS/bench_blueprint.bin" > "$LOG_T" 2>&1
+    grep -E "(Running with|iter .*infosets|it_per_s|\[phase\])" "$LOG_T" || true
     # Machine-readable summary for ci/scripts/parse-bench-scaling.py:
     # last "RATE it/s" figure from the trainer's progress lines.
-    RATE=$(grep -oE "[0-9]+\.[0-9]+ it/s" /tmp/pkr-bench-t$T.log | tail -1 | awk '{print $1}')
+    # 2026-11-03 re-audit (M10): under `set -o pipefail`, grep exits 1
+    # when the log has no rate line, which aborted the script before the
+    # intended fallback branch could run. `|| true` keeps the fallback
+    # reachable (RATE stays empty).
+    RATE=$(grep -oE "[0-9]+\.[0-9]+ it/s" "$LOG_T" | tail -1 | awk '{print $1}' || true)
     if [ -n "${RATE:-}" ]; then
         echo "BENCH threads=$T it_per_s=$RATE"
     else
         echo "BENCH threads=$T it_per_s=0  # WARNING: no it/s line parsed"
     fi
     echo ""
+    rm -f "$LOG_T"
     set -e
 done
 
