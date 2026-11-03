@@ -5,6 +5,15 @@ on:
     workflows: [bench]
     types: [completed]
 
+# 2026-11-03 re-audit (M9): least-privilege permissions. This job
+# downloads another workflow's artifact (actions: read) and pushes to
+# the perf-history branch (contents: write). Without the block the
+# default token permissions apply, and artifact download from another
+# workflow run is denied outright.
+permissions:
+  actions: read
+  contents: write
+
 jobs:
   commit:
     runs-on: ubuntu-22.04
@@ -13,8 +22,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: perf-history
           fetch-depth: 0
+
+      # 2026-11-03 re-audit (M9): `checkout ref: perf-history` hard-fails
+      # the whole job when the branch does not exist yet (first ever
+      # nightly). Fetch main, then switch to perf-history only if it
+      # exists; otherwise start an orphan branch so the first run seeds it.
+      - name: Check out perf-history (orphan on first run)
+        run: |
+          if git ls-remote --exit-code --heads origin perf-history >/dev/null 2>&1; then
+            git fetch origin perf-history
+            git checkout perf-history
+          else
+            echo "perf-history does not exist yet; starting an orphan branch"
+            git checkout --orphan perf-history
+            git rm -rf --quiet . || true
+          fi
 
       - name: Download bench artifact
         uses: actions/download-artifact@v4
@@ -36,4 +59,6 @@ jobs:
           git config user.name "ci-bot"
           git add nightly/
           git commit -m "nightly bench $(date -u +%Y-%m-%d)" || true
-          git push
+          # -u makes the very first push (orphan branch) publish and set
+          # the upstream; subsequent runs push the existing branch.
+          git push -u origin perf-history
