@@ -126,12 +126,15 @@ pub fn preflop_class(hole: &[u8; 2]) -> u8 {
         return hi;
     }
     let tri = hi * (hi - 1) / 2 + lo;
-    if s0 == s1 { 13 + tri } else { 91 + tri }
+    if s0 == s1 {
+        13 + tri
+    } else {
+        91 + tri
+    }
 }
 
 #[cfg(test)]
 mod v3_coarse_tests {
-    use super::*;
     use crate::state::{Action, ActionKind, GameState};
 
     /// The ONLY difference between these two states is the size of the
@@ -142,8 +145,14 @@ mod v3_coarse_tests {
     fn v3_distinguishes_faced_bet_size() {
         let mk = |bet_to: f32| {
             let mut s = GameState::new(200.0, 1.0, 2.0);
-            s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-            s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(bet_to) });
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Call,
+            });
+            s.apply_action_in_place(&Action {
+                player: 1,
+                kind: ActionKind::Bet(bet_to),
+            });
             s
         };
         let small = mk(4.0);
@@ -161,13 +170,17 @@ mod v3_coarse_tests {
     fn v3_is_deterministic() {
         let mk = || {
             let mut s = GameState::new(200.0, 1.0, 2.0);
-            s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+            s.apply_action_in_place(&Action {
+                player: 0,
+                kind: ActionKind::Call,
+            });
             s
         };
         assert_eq!(mk().history_signature_v3(), mk().history_signature_v3());
     }
 }
 
+#[cfg(test)]
 mod preflop_class_tests {
     use super::*;
 
@@ -197,7 +210,7 @@ mod preflop_class_tests {
         assert_eq!(aa, 12, "AA -> 12");
         // AKs: same suit, ranks 12 and 11.
         let aks = preflop_class(&[12, 11]); // Ac, Kc (both suit 0)
-        // tri = 12*11/2 + 11 = 77; suited -> 13+77 = 90
+                                            // tri = 12*11/2 + 11 = 77; suited -> 13+77 = 90
         assert_eq!(aks, 90, "AKs -> 90");
         // AKo: different suits.
         let ako = preflop_class(&[12, 24]); // Ac, Kd (suits 0,1)
@@ -205,6 +218,7 @@ mod preflop_class_tests {
     }
 }
 
+#[cfg(test)]
 mod c3_tests {
     use super::*;
 
@@ -478,9 +492,17 @@ impl AbstractionFingerprint {
             // change the legal action set, so a checkpoint trained with
             // them must not load into a loose run and vice versa. Value
             // 3 = strict mode; 2 = the shipped loose rules.
-            action_legal_v: if crate::state::strict_min_raise() { 3 } else { 2 },
+            action_legal_v: if crate::state::strict_min_raise() {
+                3
+            } else {
+                2
+            },
             centroid_feature_v,
-            bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") { 2 } else { 1 },
+            bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") {
+                2
+            } else {
+                1
+            },
             stack_bb_div2: crate::state::stack_bb_div2(),
             _pad: [0; 1],
         }
@@ -509,7 +531,11 @@ impl AbstractionFingerprint {
         // checkpoint written before the field has stored==0. Normalise
         // that to legacy u8 (1) and compare, so old checkpoints load while
         // a genuine u8-vs-u16 disagreement still aborts.
-        let stored_w = if self.bucket_width == 0 { 1 } else { self.bucket_width };
+        let stored_w = if self.bucket_width == 0 {
+            1
+        } else {
+            self.bucket_width
+        };
         if stored_w != expected.bucket_width {
             return format!(
                 "bucket_width mismatch: stored={} current={} (1=u8/k<=255, \
@@ -519,13 +545,19 @@ impl AbstractionFingerprint {
         }
         // stack_bb_div2==0 is a pre-field checkpoint -> normalised to 50
         // (=100bb). A 200bb run writes 100, so a 100bb checkpoint rejects.
-        let stored_s = if self.stack_bb_div2 == 0 { 50 } else { self.stack_bb_div2 };
+        let stored_s = if self.stack_bb_div2 == 0 {
+            50
+        } else {
+            self.stack_bb_div2
+        };
         if stored_s != expected.stack_bb_div2 {
             return format!(
                 "stack_bb_div2 mismatch: stored={} current={} ({}bb vs {}bb; \
                  set PKR_STACK_BB to match the checkpoint)",
-                stored_s, expected.stack_bb_div2,
-                stored_s as u32 * 2, expected.stack_bb_div2 as u32 * 2,
+                stored_s,
+                expected.stack_bb_div2,
+                stored_s as u32 * 2,
+                expected.stack_bb_div2 as u32 * 2,
             );
         }
         // M-20 (audit 2026-10-10): flop_k and river_buckets were added to
@@ -729,7 +761,10 @@ mod fingerprint_tests {
         let stored = AbstractionFingerprint::from_constants_with(200, 512, 0);
         let current = AbstractionFingerprint::from_constants_with(200, 1024, 0);
         let msg = stored.describe_mismatch(&current);
-        assert!(msg.contains("flop_k"), "expected flop_k mismatch, got: {msg}");
+        assert!(
+            msg.contains("flop_k"),
+            "expected flop_k mismatch, got: {msg}"
+        );
     }
 
     #[test]
@@ -900,13 +935,7 @@ pub fn first_legal_by_bucket(
 ) -> [Option<u8>; NUM_ACTION_BUCKETS] {
     let mut out: [Option<u8>; NUM_ACTION_BUCKETS] = [None; NUM_ACTION_BUCKETS];
     for (i, a) in legal.iter().enumerate() {
-        let b = action_bucket(
-            &a.kind,
-            stacks,
-            street_bets,
-            opp_street_bets,
-            pot,
-        ) as usize;
+        let b = action_bucket(&a.kind, stacks, street_bets, opp_street_bets, pot) as usize;
         if b < NUM_ACTION_BUCKETS && out[b].is_none() {
             out[b] = Some(i as u8);
         }
@@ -945,7 +974,7 @@ pub fn sample_legal_index<P: Prob>(
         .filter(|&b| b2a[b].is_some())
         .map(|b| probs[b].into())
         .sum();
-    if !(total > 1e-12) {
+    if total <= 1e-12 {
         return None;
     }
     let target = r * total;
@@ -985,12 +1014,30 @@ mod bucket_decode_helper_tests {
         let opp_street_bets = 0.0_f32;
         let pot = 3.0_f32;
         let legal = [
-            Action { player: 0, kind: ActionKind::Fold },
-            Action { player: 0, kind: ActionKind::Check },
-            Action { player: 0, kind: ActionKind::Bet(1.5) },
-            Action { player: 0, kind: ActionKind::Bet(3.0) },
-            Action { player: 0, kind: ActionKind::Bet(6.0) },
-            Action { player: 0, kind: ActionKind::Bet(stacks) },
+            Action {
+                player: 0,
+                kind: ActionKind::Fold,
+            },
+            Action {
+                player: 0,
+                kind: ActionKind::Check,
+            },
+            Action {
+                player: 0,
+                kind: ActionKind::Bet(1.5),
+            },
+            Action {
+                player: 0,
+                kind: ActionKind::Bet(3.0),
+            },
+            Action {
+                player: 0,
+                kind: ActionKind::Bet(6.0),
+            },
+            Action {
+                player: 0,
+                kind: ActionKind::Bet(stacks),
+            },
         ];
         let b2a = first_legal_by_bucket(&legal, stacks, street_bets, opp_street_bets, pot);
         assert!(b2a[0].is_some(), "fold bucket must be present");
@@ -1034,7 +1081,7 @@ mod bucket_decode_helper_tests {
         b2a[2] = Some(2);
         b2a[3] = Some(3);
         let mut probs = [0.0_f32; NUM_ACTION_BUCKETS];
-        probs[0] = 100.0;   // illegal: no legal action maps to bucket 0
+        probs[0] = 100.0; // illegal: no legal action maps to bucket 0
         probs[2] = 0.25;
         probs[3] = 0.25;
         // Total present mass is 0.5; r=0.9 -> target=0.45 -> second bucket.

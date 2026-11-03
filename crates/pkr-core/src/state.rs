@@ -96,6 +96,52 @@ pub fn strict_min_raise() -> bool {
     *B.get_or_init(|| std::env::var("PKR_STRICT_MIN_RAISE").as_deref() == Ok("1"))
 }
 
+/// M-3: strict min-raise bookkeeping for a bet/raise whose new street
+/// level is `new_level`. Pure function (no env access) so the
+/// short-all-in-does-not-reopen rules are unit-testable without the
+/// process-wide `PKR_STRICT_MIN_RAISE` flag.
+#[inline]
+pub(crate) fn strict_raise_bookkeeping(
+    last_full_raise_to: &mut f32,
+    last_full_raise_delta: &mut f32,
+    betting_reopened: &mut bool,
+    new_level: f32,
+) {
+    let delta = new_level - *last_full_raise_to;
+    if delta >= *last_full_raise_delta - 1e-6 {
+        // A genuine full raise: updates the level and delta, and
+        // reopens betting.
+        *last_full_raise_to = new_level;
+        *last_full_raise_delta = delta;
+        *betting_reopened = true;
+    } else {
+        // A short all-in: does NOT update the level and does NOT
+        // reopen betting for a player who has already acted.
+        *betting_reopened = false;
+    }
+}
+
+/// F6/M-3: the legal minimum raise-to. Pure function so the strict
+/// (last-full-raise) and loose (2*opp − our) formulas are
+/// unit-testable side by side.
+#[inline]
+pub(crate) fn min_raise_to_for(
+    strict: bool,
+    raises_this_street: u8,
+    opp_bet: f32,
+    our_bet: f32,
+    last_full_raise_to: f32,
+    last_full_raise_delta: f32,
+) -> f32 {
+    if strict {
+        (last_full_raise_to + last_full_raise_delta).max(opp_bet + last_full_raise_delta)
+    } else if raises_this_street == 0 {
+        2.0 * opp_bet
+    } else {
+        2.0 * opp_bet - our_bet
+    }
+}
+
 pub fn sig_v5_size_aware() -> bool {
     use std::sync::OnceLock;
     static B: OnceLock<bool> = OnceLock::new();
@@ -268,6 +314,14 @@ impl GameState {
         debug_assert!(sb >= 0.0, "sb must be >= 0");
         debug_assert!(bb > 0.0, "bb must be > 0");
         debug_assert!(sb <= bb, "sb must be <= bb");
+        // 2026-11-03 re-audit: the BB stack is `start_stack - bb`; a
+        // start stack below the big blind makes it negative in release
+        // builds and poisons every downstream invariant. This is the
+        // one constructor check that must also hold in release.
+        assert!(
+            start_stack >= bb,
+            "start_stack {start_stack} must cover the big blind {bb}"
+        );
         Self {
             hole: [[0; 2]; 2],
             board: [0u8; 5],
@@ -318,11 +372,11 @@ impl GameState {
                 street_start_pot: 0.0,
                 prev_street_aggressor: 2,
                 street_aggressor: 2,
-                            // M-3: the strict-mode fields are restored by undo.
+                // M-3: the strict-mode fields are restored by undo.
                 last_full_raise_to: 0.0,
                 last_full_raise_delta: 0.0,
                 betting_reopened: true,
-}; 48],
+            }; 48],
             undo_len: 0,
         }
     }
@@ -336,8 +390,10 @@ impl GameState {
         debug_assert_ne!(hero[0], hero[1], "hero hole duplicate");
         debug_assert_ne!(villain[0], villain[1], "villain hole duplicate");
         debug_assert!(
-            hero[0] != villain[0] && hero[0] != villain[1]
-                && hero[1] != villain[0] && hero[1] != villain[1],
+            hero[0] != villain[0]
+                && hero[0] != villain[1]
+                && hero[1] != villain[0]
+                && hero[1] != villain[1],
             "hole cards collide"
         );
         self.hole[0] = hero;
@@ -398,9 +454,14 @@ impl GameState {
                     let chips_needed = bet - base;
                     if chips_needed <= self.stacks[self.actor] && self.opp_can_respond() {
                         // S7: two sizings can clamp to the same amount; skip dups.
-                        let dup = (0..n).any(|i| matches!(out[i].kind, ActionKind::Bet(b) if (b - bet).abs() < 1e-9));
+                        let dup = (0..n).any(
+                            |i| matches!(out[i].kind, ActionKind::Bet(b) if (b - bet).abs() < 1e-9),
+                        );
                         if !dup {
-                            out[n] = Action { player: self.actor, kind: ActionKind::Bet(bet) };
+                            out[n] = Action {
+                                player: self.actor,
+                                kind: ActionKind::Bet(bet),
+                            };
                             n += 1;
                         }
                     }
@@ -417,8 +478,7 @@ impl GameState {
                 // chips as Call but maps to JAM_BUCKET instead of bucket 1,
                 // splitting one physical decision across two abstract actions.
                 // Only offer it when it is a genuine raise.
-                let is_genuine_raise = all_in_amount
-                    > self.street_bets[1 - self.actor] + 1e-9;
+                let is_genuine_raise = all_in_amount > self.street_bets[1 - self.actor] + 1e-9;
                 if is_genuine_raise && !already_offered {
                     out[n] = Action {
                         player: self.actor,
@@ -441,8 +501,7 @@ impl GameState {
             // M-3: under strict rules, a short all-in does NOT reopen
             // betting -- a player who already acted may only
             // call or fold. Only consulted when strict mode is on.
-            let may_raise = can_raise
-                && (!strict_min_raise() || self.betting_reopened);
+            let may_raise = can_raise && (!strict_min_raise() || self.betting_reopened);
             if may_raise {
                 let pot = self.pot;
                 let opp_bet = self.street_bets[1 - self.actor];
@@ -467,14 +526,14 @@ impl GameState {
                 // (not the possibly-short current street bet). The loose
                 // formula is kept when the flag is off, so the default
                 // path is byte-identical.
-                let min_raise_to = if strict_min_raise() {
-                    (self.last_full_raise_to + self.last_full_raise_delta)
-                        .max(opp_bet + self.last_full_raise_delta)
-                } else if self.raises_this_street == 0 {
-                    2.0 * opp_bet
-                } else {
-                    2.0 * opp_bet - self.street_bets[self.actor]
-                };
+                let min_raise_to = min_raise_to_for(
+                    strict_min_raise(),
+                    self.raises_this_street,
+                    opp_bet,
+                    self.street_bets[self.actor],
+                    self.last_full_raise_to,
+                    self.last_full_raise_delta,
+                );
                 for &frac in &crate::abstraction::BET_SIZINGS {
                     if n >= 8 {
                         break;
@@ -485,7 +544,10 @@ impl GameState {
                         // S7: sizings can clamp to min_raise_to; skip dups.
                         let dup = (0..n).any(|i| matches!(out[i].kind, ActionKind::Bet(b) if (b - raise).abs() < 1e-9));
                         if !dup {
-                            out[n] = Action { player: self.actor, kind: ActionKind::Bet(raise) };
+                            out[n] = Action {
+                                player: self.actor,
+                                kind: ActionKind::Bet(raise),
+                            };
                             n += 1;
                         }
                     }
@@ -500,7 +562,18 @@ impl GameState {
                 let already_offered = (0..n).any(|i| {
                     matches!(out[i].kind, ActionKind::Bet(b) if (b - all_in_amount).abs() < 1e-9)
                 });
-                if !already_offered {
+                // M-1 (audit 2026-10-10, facing-bet branch fixed in the
+                // 2026-11-03 re-audit): when the actor's stack cannot
+                // get above the current call obligation, the all-in is
+                // a CALL, not a raise -- offering it also as Bet/jam
+                // moves identical chips under two abstract buckets,
+                // splits one physical decision across two infoset
+                // actions, and inflates raises_this_street. The guard
+                // used to live only in the to_call == 0 branch, where
+                // it is provably dead (street_bets[actor] already
+                // >= street_bets[opp] there).
+                let is_genuine_raise = all_in_amount > self.street_bets[1 - self.actor] + 1e-9;
+                if is_genuine_raise && !already_offered {
                     out[n] = Action {
                         player: self.actor,
                         kind: ActionKind::Bet(all_in_amount),
@@ -569,11 +642,11 @@ impl GameState {
             street_start_pot: self.street_start_pot,
             prev_street_aggressor: self.prev_street_aggressor,
             street_aggressor: self.street_aggressor,
-                    // M-3: save/restore the strict-mode fields.
+            // M-3: save/restore the strict-mode fields.
             last_full_raise_to: self.last_full_raise_to,
             last_full_raise_delta: self.last_full_raise_delta,
             betting_reopened: self.betting_reopened,
-};
+        };
         self.undo_stack[self.undo_len as usize] = record;
         self.undo_len += 1;
     }
@@ -673,20 +746,12 @@ impl GameState {
                 // bookkeeping ONLY when strict mode is on, so the loose
                 // (default) rules produce byte-identical state.
                 if strict_min_raise() {
-                    let new_level = current + chips;
-                    let delta = new_level - self.last_full_raise_to;
-                    if delta >= self.last_full_raise_delta - 1e-6 {
-                        // A genuine full raise: updates the level and
-                        // delta, and reopens betting.
-                        self.last_full_raise_to = new_level;
-                        self.last_full_raise_delta = delta;
-                        self.betting_reopened = true;
-                    } else {
-                        // A short all-in: does NOT update the level and
-                        // does NOT reopen betting for a player who has
-                        // already acted this street.
-                        self.betting_reopened = false;
-                    }
+                    strict_raise_bookkeeping(
+                        &mut self.last_full_raise_to,
+                        &mut self.last_full_raise_delta,
+                        &mut self.betting_reopened,
+                        current + chips,
+                    );
                 }
             }
         }
@@ -778,12 +843,26 @@ impl GameState {
             evaluator.evaluate_hand(&self.hole[1], &self.board[..self.board_len as usize]);
         let win = hero_rank < vill_rank;
         let tie = hero_rank == vill_rank;
-        if tie {
-            (self.pot / 2.0) - self.total_invested[player]
-        } else if (player == 0 && win) || (player == 1 && !win) {
-            self.pot - self.total_invested[player]
+        // Uncalled-bet return (2026-11-03 re-audit): if the two players'
+        // total investments differ at showdown, the excess of the
+        // higher-invested player was never matched and belongs back to
+        // them; only the matched (contested) part of the pot is won or
+        // split. With matched investments (the only state production
+        // play can reach today) `excess` is 0 and this is identical to
+        // the previous formula.
+        let excess = (self.total_invested[0] - self.total_invested[1]).abs();
+        let contested = self.pot - excess;
+        let my_excess = if self.total_invested[player] > self.total_invested[other] {
+            excess
         } else {
-            -self.total_invested[player]
+            0.0
+        };
+        if tie {
+            contested / 2.0 + my_excess - self.total_invested[player]
+        } else if (player == 0 && win) || (player == 1 && !win) {
+            contested + my_excess - self.total_invested[player]
+        } else {
+            my_excess - self.total_invested[player]
         }
     }
 
@@ -1048,10 +1127,18 @@ impl GameState {
             }
             seq << 10
         } else {
-            let eff = (self.stacks[0] + self.street_bets[0])
-                .min(self.stacks[1] + self.street_bets[1]);
+            let eff =
+                (self.stacks[0] + self.street_bets[0]).min(self.stacks[1] + self.street_bets[1]);
             let spr = eff / self.street_start_pot.max(1.0);
-            let c: u64 = if spr >= 8.0 { 0 } else if spr >= 3.0 { 1 } else if spr >= 1.0 { 2 } else { 3 };
+            let c: u64 = if spr >= 8.0 {
+                0
+            } else if spr >= 3.0 {
+                1
+            } else if spr >= 1.0 {
+                2
+            } else {
+                3
+            };
             let agg = (self.prev_street_aggressor == 1) as u64;
             (c << 10) | (agg << 12)
         };
@@ -1086,17 +1173,35 @@ impl GameState {
         // Resolution is 5 (v5), 4 (v4), 3 (v3), 2 (v2), 1 (legacy v1).
         // The precedence mirrors the previous cascade exactly.
         let version: u8 = *SIG_DISPATCH.get_or_init(|| {
-            if sig_v5_size_aware() { 5 }
-            else if sig_v4_size_aware() { 4 }
-            else if sig_v3_size_aware() { 3 }
-            else if SIG_V2_STREET_MONEY { 2 }
-            else { 1 }
+            if sig_v5_size_aware() {
+                5
+            } else if sig_v4_size_aware() {
+                4
+            } else if sig_v3_size_aware() {
+                3
+            } else if SIG_V2_STREET_MONEY {
+                2
+            } else {
+                1
+            }
         });
         match version {
-            5 => { out.copy_from_slice(&self.history_signature_v5().to_le_bytes()); 8 }
-            4 => { out.copy_from_slice(&self.history_signature_v4().to_le_bytes()); 8 }
-            3 => { out.copy_from_slice(&self.history_signature_v3().to_le_bytes()); 8 }
-            2 => { out.copy_from_slice(&self.history_signature_v2().to_le_bytes()); 8 }
+            5 => {
+                out.copy_from_slice(&self.history_signature_v5().to_le_bytes());
+                8
+            }
+            4 => {
+                out.copy_from_slice(&self.history_signature_v4().to_le_bytes());
+                8
+            }
+            3 => {
+                out.copy_from_slice(&self.history_signature_v3().to_le_bytes());
+                8
+            }
+            2 => {
+                out.copy_from_slice(&self.history_signature_v2().to_le_bytes());
+                8
+            }
             _ => {
                 // M-8: zero out[4..] defensively; the caller might read
                 // the whole array even though the returned length is 4.
@@ -2303,7 +2408,10 @@ mod p2_undo_size_tests {
     #[test]
     fn m3_loose_rules_unchanged_preflop() {
         let st = GameState::new(200.0, 1.0, 2.0);
-        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = st.legal_actions_into(&mut buf);
         assert!(n >= 2, "preflop SB must have at least fold + call");
         // First action: fold, call, raises, jam.
@@ -2316,10 +2424,20 @@ mod p2_undo_size_tests {
     #[test]
     fn m3_fields_roundtrip_through_undo() {
         let mut st = GameState::new(200.0, 1.0, 2.0);
-        let before = (st.last_full_raise_to, st.last_full_raise_delta, st.betting_reopened);
-        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        let before = (
+            st.last_full_raise_to,
+            st.last_full_raise_delta,
+            st.betting_reopened,
+        );
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
         // Bet(6.0) is a raise here (BB=2, so 6 > 2*2).
-        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(6.0),
+        });
         st.undo_action();
         st.undo_action();
         assert_eq!(st.last_full_raise_to, before.0);
@@ -2338,7 +2456,6 @@ mod p2_undo_size_tests {
         assert!(sz <= 56, "UndoRecord grew to {} bytes; revisit packing", sz);
     }
 }
-
 
 #[cfg(test)]
 mod f3_size_aware_tests {
@@ -2369,7 +2486,7 @@ mod f3_size_aware_tests {
     #[test]
     fn v3_distinguishes_street_start_pot_class() {
         let mut a = GameState::new(200.0, 1.0, 2.0);
-        a.street_start_pot = 4.0;   // pot_bb = 2.0  -> class 1
+        a.street_start_pot = 4.0; // pot_bb = 2.0  -> class 1
         let mut b = GameState::new(200.0, 1.0, 2.0);
         b.street_start_pot = 256.0; // pot_bb = 128 -> class 3
         assert_ne!(
@@ -2395,7 +2512,7 @@ mod f3_size_aware_tests {
     #[test]
     fn v3_half_octave_splits_adjacent_pots() {
         let mut a = GameState::new(200.0, 1.0, 2.0);
-        a.street_start_pot = 8.0;  // pot_bb = 4.0  -> floor(log2)/2 = 1
+        a.street_start_pot = 8.0; // pot_bb = 4.0  -> floor(log2)/2 = 1
         let mut b = GameState::new(200.0, 1.0, 2.0);
         b.street_start_pot = 32.0; // pot_bb = 16.0 -> floor(log2)/2 = 2
         assert_ne!(
@@ -2415,8 +2532,14 @@ mod f3_size_aware_tests {
         assert_eq!(s.street_start_pot, 3.0, "preflop start = SB + BB");
 
         // SB calls (pot 4), BB checks (pot 4 still 4: check adds nothing).
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         let pot_before = s.pot;
         s.advance_street_in_place(&[0, 4, 8]);
         assert_eq!(
@@ -2476,8 +2599,14 @@ mod f3_size_aware_tests {
     fn v3_aggressor_bit_flips_signature() {
         // Line A: SB opens to 6, BB calls. Aggressor = P0.
         let mut a = GameState::new(200.0, 1.0, 2.0);
-        a.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(6.0) });
-        a.apply_action_in_place(&Action { player: 1, kind: ActionKind::Call });
+        a.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(6.0),
+        });
+        a.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Call,
+        });
         assert!(a.is_street_complete());
         a.advance_street_in_place(&[0, 1, 2]);
         assert_eq!(a.prev_street_aggressor, 0);
@@ -2485,9 +2614,18 @@ mod f3_size_aware_tests {
 
         // Line B: SB limps, BB raises to 6, SB calls. Aggressor = P1.
         let mut b = GameState::new(200.0, 1.0, 2.0);
-        b.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        b.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
-        b.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        b.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        b.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(6.0),
+        });
+        b.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
         assert!(b.is_street_complete());
         b.advance_street_in_place(&[0, 1, 2]);
         assert_eq!(b.prev_street_aggressor, 1);
@@ -2512,9 +2650,15 @@ mod f3_size_aware_tests {
         assert_eq!(s.prev_street_aggressor, 2);
         assert_eq!(s.street_aggressor, 2);
 
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(6.0) });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(6.0),
+        });
         assert_eq!(s.street_aggressor, 0, "Bet records its actor");
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Call });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Call,
+        });
         assert_eq!(s.street_aggressor, 0, "Call does not move aggression");
 
         s.advance_street_in_place(&[0, 1, 2]);
@@ -2553,13 +2697,31 @@ mod f6_legal_action_tests {
         // Preflop SB calls, BB raises, SB re-raises, BB re-raises,
         // SB re-raises (that's 3 raises from the cap's perspective).
         // Then BB should still see the jam as an option.
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(14.0) });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(30.0) });
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Bet(62.0) });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(6.0),
+        });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(14.0),
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(30.0),
+        });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Bet(62.0),
+        });
 
-        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = s.legal_actions_into(&mut buf);
         let bets: Vec<f32> = buf[..n]
             .iter()
@@ -2587,7 +2749,10 @@ mod f6_legal_action_tests {
         // actor = 0 (SB) facing BB street_bet 2.0. pot = 3.0.
         // Pre-F6 the smallest offered raise would be
         //   2.0 + 3.0 * 0.5 = 3.5, which is below the legal min of 4.0.
-        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = s.legal_actions_into(&mut buf);
         let bb = s.street_bets[1];
         let legal_min = 2.0 * bb;
@@ -2609,12 +2774,21 @@ mod f6_legal_action_tests {
     fn facing_raise_min_raise_clears_legal_floor() {
         let mut s = GameState::new(200.0, 1.0, 2.0);
         // SB calls (2 total), BB raises to 6, actor = 0.
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Bet(6.0),
+        });
         // opp_bet = 6, our_bet = 2, raises_this_street = 1.
         // Legal min-raise-to = 6 + (6 - 2) = 10.
         let legal_min = 2.0 * s.street_bets[1] - s.street_bets[0];
-        let mut buf: [Action; 8] = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = s.legal_actions_into(&mut buf);
         for a in buf[..n].iter() {
             if let ActionKind::Bet(v) = a.kind {
@@ -2624,5 +2798,197 @@ mod f6_legal_action_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_fixes {
+    //! Regression tests from the 2026-11-03 full-codebase re-audit.
+    //! Each test pins one bug found by the audit; see CHANGELOG.md.
+
+    use super::*;
+
+    /// Minimal rank stub: lower hole-rank sum wins (matches the engine's
+    /// `hero_rank < vill_rank = win` convention: lower rank = stronger).
+    /// Board-independent, so showdown math can be tested without a real
+    /// evaluator. Aces (rank 0) are therefore the strongest hole.
+    struct RankSumEval;
+    impl pkr_contracts::Evaluator for RankSumEval {
+        fn evaluate_hand(&self, hole: &[u8], _board: &[u8]) -> u32 {
+            let r0 = (hole[0] % 13) as u32;
+            let r1 = (hole[1] % 13) as u32;
+            r0 + r1
+        }
+    }
+
+    /// Board: four nines + T♠ (cards 8, 21, 34, 47 are the four 9s).
+    /// Aces in the hole beat deuces/threes under RankSumEval; any pair
+    /// of aces ties any other pair of aces.
+    fn showdown_state() -> GameState {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        s.street = Street::River;
+        s.board = [8, 21, 34, 47, 9];
+        s.board_len = 5;
+        s.folded = [false; 2];
+        // River: P0 bets 50, P1 (30 behind) calls all-in. Both had put
+        // 10 in earlier streets: matched part is 40 each; P0's extra 20
+        // is uncalled and must come back at showdown.
+        s.street_bets = [50.0, 30.0];
+        s.total_invested = [60.0, 40.0];
+        s.pot = 100.0;
+        s
+    }
+
+    /// Audit finding: an uncalled bet excess must be returned to the
+    /// bettor before the pot is contested. P1 wins with the short
+    /// all-in call -> P1 nets exactly the matched pot, NOT P0's
+    /// uncalled 20.
+    #[test]
+    fn uncalled_bet_excess_returned_at_showdown_loser_side() {
+        let mut s = showdown_state();
+        s.hole = [[1, 14], [0, 13]]; // P0 threes (sum 2), P1 aces (sum 24) -> P1 wins
+        let ev = RankSumEval;
+        let p0 = s.terminal_payoff(0, &ev);
+        let p1 = s.terminal_payoff(1, &ev);
+        assert!(
+            (p1 - 40.0).abs() < 1e-3,
+            "P1 must net 40 (contested 80 - invested 40), got {p1}"
+        );
+        assert!(
+            (p0 + 40.0).abs() < 1e-3,
+            "P0 must lose exactly 40, got {p0}"
+        );
+        assert!((p0 + p1).abs() < 1e-3, "zero-sum violated: {p0} + {p1}");
+    }
+
+    /// Tie with an uncalled bet: the excess comes back and the
+    /// contested pot splits -> both players break even.
+    #[test]
+    fn uncalled_bet_excess_returned_at_showdown_tie() {
+        let mut s = showdown_state();
+        s.hole = [[0, 13], [26, 39]]; // both hold a pair of aces -> tie
+        let ev = RankSumEval;
+        let p0 = s.terminal_payoff(0, &ev);
+        let p1 = s.terminal_payoff(1, &ev);
+        assert!(
+            p0.abs() < 1e-3,
+            "P0 must break even on a tie with uncalled 20 back, got {p0}"
+        );
+        assert!(p1.abs() < 1e-3, "P1 must break even on a tie, got {p1}");
+        assert!((p0 + p1).abs() < 1e-3);
+    }
+
+    /// Winner WAS the bettor: uncalled excess already comes back
+    /// implicitly; the fix must not change this case.
+    #[test]
+    fn uncalled_bet_excess_winner_is_bettor_unchanged() {
+        let mut s = showdown_state();
+        s.hole = [[0, 13], [1, 14]]; // P0 aces, P1 threes -> P0 wins
+        let ev = RankSumEval;
+        let p0 = s.terminal_payoff(0, &ev);
+        let p1 = s.terminal_payoff(1, &ev);
+        assert!((p0 - 40.0).abs() < 1e-3, "P0 must net 40, got {p0}");
+        assert!((p1 + 40.0).abs() < 1e-3, "P1 must lose 40, got {p1}");
+        assert!((p0 + p1).abs() < 1e-3);
+    }
+
+    /// Audit finding: when facing a bet larger than our stack, the
+    /// all-in call must NOT also be offered as a Bet/jam (it moves the
+    /// same chips as Call, but maps to JAM_BUCKET, splitting one
+    /// physical decision across two abstract actions).
+    #[test]
+    fn facing_bet_short_allin_not_duplicated_as_jam() {
+        let mut s = GameState::new(200.0, 1.0, 2.0);
+        // Hand-built flop spot: P1 bet 10, P0 has only 5 behind.
+        s.street = Street::Flop;
+        s.actor = 0;
+        s.dealer = 0;
+        s.folded = [false; 2];
+        s.street_bets = [0.0, 10.0];
+        s.stacks = [5.0, 185.0];
+        s.pot = 20.0;
+        s.street_start_pot = 20.0;
+        s.total_invested = [10.0, 10.0];
+        s.raises_this_street = 1;
+        s.total_raises = 1;
+        s.actions_this_street = 1;
+        s.betting_reopened = true;
+        s.last_full_raise_to = 10.0;
+        s.last_full_raise_delta = 10.0;
+        s.board_len = 3;
+        s.board = [8, 21, 34, 0, 0];
+        s.hole = [[0, 13], [1, 14]];
+        s.street_aggressor = 1;
+
+        let mut buf: [Action; 8] = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = s.legal_actions_into(&mut buf);
+        let to_call = s.street_bets[1] - s.street_bets[0];
+        for a in buf[..n].iter() {
+            if let ActionKind::Bet(v) = a.kind {
+                assert!(
+                    v > to_call + 1e-9,
+                    "Bet({v}) with call obligation {to_call} duplicates Call; \
+                     a short all-in must not be offered as a jam"
+                );
+            }
+        }
+        assert!(
+            buf[..n].iter().any(|a| matches!(a.kind, ActionKind::Call)),
+            "Call must still be offered"
+        );
+    }
+
+    /// Audit hardening: `GameState::new` must reject a start stack that
+    /// cannot even cover the big blind (a negative BB stack corrupts
+    /// every downstream invariant). Previously debug-only.
+    #[test]
+    #[should_panic(expected = "start_stack")]
+    fn new_rejects_start_stack_below_big_blind() {
+        let _ = GameState::new(1.0, 1.0, 2.0);
+    }
+
+    /// Strict bookkeeping, pure form: a short all-in does not update
+    /// the last-full-raise level and does not reopen betting.
+    #[test]
+    fn strict_short_allin_does_not_reopen() {
+        let mut to = 10.0f32;
+        let mut delta = 10.0f32;
+        let mut reopened = true;
+        strict_raise_bookkeeping(&mut to, &mut delta, &mut reopened, 15.0);
+        assert!(!reopened, "short all-in must not reopen betting");
+        assert_eq!(to, 10.0, "level must stay at the last FULL raise");
+        assert_eq!(delta, 10.0);
+    }
+
+    /// Strict bookkeeping, pure form: a full raise updates level+delta
+    /// and reopens betting.
+    #[test]
+    fn strict_full_raise_reopens_and_updates_level() {
+        let mut to = 10.0f32;
+        let mut delta = 10.0f32;
+        let mut reopened = false;
+        strict_raise_bookkeeping(&mut to, &mut delta, &mut reopened, 30.0);
+        assert!(reopened);
+        assert_eq!(to, 30.0);
+        assert_eq!(delta, 20.0);
+    }
+
+    /// Strict min-raise-to uses the last FULL raise delta, not the
+    /// possibly-short current street bet; the loose formula is the
+    /// documented 2*opp - our.
+    #[test]
+    fn min_raise_to_strict_vs_loose() {
+        // Strict: last full raise to 10, delta 10; opp now at 15.
+        let strict = min_raise_to_for(true, 1, 15.0, 10.0, 10.0, 10.0);
+        assert_eq!(strict, 25.0, "strict floor = level + delta");
+        // Loose with a raise this street: 2*opp - our.
+        let loose = min_raise_to_for(false, 1, 15.0, 10.0, 10.0, 10.0);
+        assert_eq!(loose, 20.0);
+        // Loose with no raise this street: 2*opp.
+        let open = min_raise_to_for(false, 0, 2.0, 1.0, 0.0, 2.0);
+        assert_eq!(open, 4.0);
     }
 }
