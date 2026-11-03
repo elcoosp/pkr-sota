@@ -119,11 +119,28 @@ jobs:
           shared-key: bench-release
           cache-targets: true
 
-      - name: Restore smoke artifacts
+      # 2026-11-03 re-audit (M7): this job used a third cache key scheme
+      # (hashFiles of ci/cache-key.sh + smoke.sh), so it could never hit
+      # the shared smoke-abstractions cache and had no generation step on
+      # miss (the benches then ran against missing artifacts). Mirror the
+      # nightly `bench` job exactly: cache-key.sh-derived key + smoke on
+      # cache miss.
+      - name: Compute smoke cache key
+        id: key
+        run: echo "k=$(./ci/cache-key.sh)" >> $GITHUB_OUTPUT
+
+      - name: Cache smoke artifacts
+        id: cache-smoke
         uses: actions/cache@v4
         with:
           path: outputs/v0-smoke
-          key: smoke-abstractions-${{ runner.os }}-${{ hashFiles('ci/cache-key.sh', 'smoke.sh') }}
+          key: smoke-abstractions-${{ runner.os }}-${{ steps.key.outputs.k }}
+          restore-keys: |
+            smoke-abstractions-${{ runner.os }}-
+
+      - name: Run smoke to ensure artifacts exist
+        if: steps.cache-smoke.outputs.cache-hit != 'true'
+        run: ./smoke.sh
 
       - name: Run subset benches
         run: |
