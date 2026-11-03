@@ -11,6 +11,14 @@ CAPACITY="${CAPACITY:-5000000}"
 
 export PROF_DIR ITERATIONS THREADS CAPACITY
 
+# 2026-11-03 re-audit (M17): PROF_DIR is cached across scheduled runs and
+# the trainer APPENDS to metrics.csv on resume (proftest.sh passes no
+# --fresh and has no fresh flag), so the iter column restarted at 0
+# mid-file across scheduled runs and every parse downstream saw a
+# synthetic 0..50k..0..50k sequence. Clear the CSVs so each run starts
+# clean; precompute artifacts stay cached.
+rm -f "$PROF_DIR/metrics.csv" "$PROF_DIR/exploitability.csv"
+
 # Run the existing proftest.sh — it already does precompute-cache +
 # train + JSON validate + artifact listing.
 ./proftest.sh
