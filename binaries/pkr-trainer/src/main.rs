@@ -290,10 +290,10 @@ fn save_checkpoint_rolling(
     trainer.save_checkpoint(tmp.to_str().unwrap(), fingerprint)?;
     // Only rotate once the new file is confirmed on disk.
     if !tmp.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("save_checkpoint_rolling: {} was not written", tmp.display()),
-        ));
+        return Err(std::io::Error::other(format!(
+            "save_checkpoint_rolling: {} was not written",
+            tmp.display()
+        )));
     }
     if ckpt.exists() {
         std::fs::rename(ckpt, &prev)?;
@@ -304,6 +304,14 @@ fn save_checkpoint_rolling(
             let _ = std::fs::rename(&prev, ckpt);
         }
         return Err(e);
+    }
+    // Durability (2026-11-03 re-audit): sync the parent directory so
+    // the rename itself survives a power failure, not just the file
+    // content (the trainer fsyncs content before rename).
+    if let Some(parent) = ckpt.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
     }
     Ok(())
 }
@@ -354,6 +362,29 @@ fn eval_seed_for(iter: u32) -> u64 {
     iter as u64
 }
 
+/// C4 promote-gate re-seed: read the historical best `expl_mbb` from
+/// the exploitability CSV. 2026-11-03 re-audit: the reader used to look
+/// ONLY at `--exploitability-csv`, but the writer falls back to
+/// `<output_dir>/exploitability.csv` when the flag is absent — so a
+/// resumed run without the flag treated its first eval as "first ever"
+/// and auto-promoted regardless of the historical best. The path is
+/// resolved exactly like the writer's.
+fn reseed_best_expl(
+    csv_flag: &Option<std::path::PathBuf>,
+    output: &std::path::Path,
+) -> Option<f64> {
+    let path = csv_flag
+        .clone()
+        .unwrap_or_else(|| output.with_file_name("exploitability.csv"));
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    text.lines()
+        .skip(1)
+        .filter_map(|l| l.split(',').nth(1))
+        .filter_map(|v| v.trim().parse::<f64>().ok())
+        .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |m: f64| m.min(v))))
+}
+
 /// Resolve the eval seed: a fixed `override_seed` if the caller passed
 /// `--eval-seed`, else the raw iteration (the historical scheme, under
 /// which every eval point uses a different deal set).
@@ -370,6 +401,20 @@ fn resolve_eval_mode(cli_mode: &str) -> String {
         return cli_mode.to_string();
     }
     std::env::var("PKR_EVAL_MODE").unwrap_or_else(|_| cli_mode.to_string())
+}
+
+/// M5a (2026-11-03 re-audit): `--eval-mode` used to accept any string
+/// other than "insample" and silently run insample semantics for
+/// typos (`heldoutt`). Validate early and fail loud.
+fn validate_eval_mode(cli_mode: &str) -> Result<(), String> {
+    const MODES: [&str; 2] = ["insample", "heldout"];
+    if MODES.contains(&cli_mode) {
+        return Ok(());
+    }
+    Err(format!(
+        "invalid --eval-mode '{cli_mode}' (expected one of: {})",
+        MODES.join(", ")
+    ))
 }
 
 fn env_u32(name: &str) -> Option<u32> {
@@ -396,7 +441,7 @@ fn resolve_fit_score_deals(cli_fit: u32, cli_score: u32, eval_deals: u32) -> (u3
 /// None means no reading has been seen yet, so any reading is a new min.
 /// Extracted from the --save-best-reading path so it is unit-testable.
 fn is_new_raw_min(best: Option<f64>, reading: f64) -> bool {
-    best.map_or(true, |b| reading < b)
+    best.is_none_or(|b| reading < b)
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -408,6 +453,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "dhat-profiling")]
     let _dhat_profiler = dhat::Profiler::new_heap();
     let cli = Cli::parse();
+    validate_eval_mode(&cli.eval_mode).map_err(Box::<dyn std::error::Error>::from)?;
 
     let num_threads = cli.threads.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -600,7 +646,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!(
                     "FATAL: --fresh would overwrite existing checkpoint {} ({} bytes). \
                      Set PKR_FORCE_FRESH=1 to confirm, or pass a different --checkpoint.",
-                    ckpt.display(), sz,
+                    ckpt.display(),
+                    sz,
                 );
                 std::process::exit(3);
             }
@@ -620,7 +667,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => {
             let is_new = cli.fresh
                 || !path.exists()
-                || std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
+                || std::fs::metadata(path)
+                    .map(|m| m.len() == 0)
+                    .unwrap_or(true);
             let f = if cli.fresh {
                 std::fs::File::create(path)?
             } else {
@@ -685,26 +734,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         } else {
-        let br = pkr_exploit::best_response::sampled_exploitability(
-            trainer.get_table(),
-            abstraction_for_eval.as_ref(),
-            evaluator_for_eval.as_ref(),
-            cli.eval_deals,
-            eval_seed,
-        );
-        if cli.log_json {
-            json_progress(&[
-                ("event", serde_json::json!("eval")),
-                ("iter", serde_json::json!(start_iter)),
-                ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
-                ("expl_std_err_mbb", serde_json::json!(br.expl_std_err_mbb)),
-                ("expl_insample_mbb", serde_json::json!(br.expl_insample_mbb)),
-                ("br0", serde_json::json!(br.br0)),
-                ("br1", serde_json::json!(br.br1)),
-                ("deals", serde_json::json!(br.deals_sampled)),
-            ]);
-        } else {
-            eprintln!(
+            let br = pkr_exploit::best_response::sampled_exploitability(
+                trainer.get_table(),
+                abstraction_for_eval.as_ref(),
+                evaluator_for_eval.as_ref(),
+                cli.eval_deals,
+                eval_seed,
+            );
+            if cli.log_json {
+                json_progress(&[
+                    ("event", serde_json::json!("eval")),
+                    ("iter", serde_json::json!(start_iter)),
+                    ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
+                    ("expl_std_err_mbb", serde_json::json!(br.expl_std_err_mbb)),
+                    ("expl_insample_mbb", serde_json::json!(br.expl_insample_mbb)),
+                    ("br0", serde_json::json!(br.br0)),
+                    ("br1", serde_json::json!(br.br1)),
+                    ("deals", serde_json::json!(br.deals_sampled)),
+                ]);
+            } else {
+                eprintln!(
                 "EVAL iter={} expl_mbb={:.2}+/-{:.2} insample={:.2} br0={:.4} br1={:.4} deals={}",
                 start_iter,
                 br.exploitability_mbb,
@@ -714,7 +763,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 br.br1,
                 br.deals_sampled
             );
-        }
+            }
         }
     }
 
@@ -764,7 +813,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| cli.output.with_file_name("exploitability.csv"));
         let is_new = cli.fresh
             || !path.exists()
-            || std::fs::metadata(&path).map(|m| m.len() == 0).unwrap_or(true);
+            || std::fs::metadata(&path)
+                .map(|m| m.len() == 0)
+                .unwrap_or(true);
         let f = if cli.fresh {
             std::fs::File::create(&path)?
         } else {
@@ -790,21 +841,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // much worse it is than the historical best). Only when we are
     // appending to an existing CSV (`!is_new` semantics).
     if !cli.fresh {
-        if let Some(path) = &cli.exploitability_csv {
-            if let Ok(bytes) = std::fs::read(path) {
-                if let Ok(text) = String::from_utf8(bytes) {
-                    let min = text
-                        .lines()
-                        .skip(1)
-                        .filter_map(|l| l.split(',').nth(1))
-                        .filter_map(|v| v.trim().parse::<f64>().ok())
-                        .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |m: f64| m.min(v))));
-                    if let Some(b) = min {
-                        eprintln!("re-seeded promote gate: historical best = {b:.2} mbb");
-                        best_expl_mbb = Some(b);
-                    }
-                }
-            }
+        if let Some(b) = reseed_best_expl(&cli.exploitability_csv, &cli.output) {
+            eprintln!("re-seeded promote gate: historical best = {b:.2} mbb");
+            best_expl_mbb = Some(b);
         }
     }
     // Best raw reading ever seen, for --save-best-reading. Distinct from
@@ -821,6 +860,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // as before. If true, we skip the end-of-run export to avoid
     // clobbering the promoted blueprint with a possibly-worse one.
     let mut promoted = false;
+    // C2 (2026-11-03 re-audit): whether ANY eval fired this run. If
+    // evals fired and the gate rejected every one, the end-of-run
+    // export used to write the gate-rejected table over the previously
+    // promoted (better) blueprint on disk. The gate only protected the
+    // run while it was live. `evals_fired && !promoted` now skips the
+    // export; a run with no evals at all still exports.
+    let mut evals_fired = false;
 
     while done < max_iters {
         if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
@@ -892,8 +938,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         prev_depth_overflows = cur_depth;
         prev_deck_overflows = cur_deck;
 
-        let should_report =
+        let report_due =
             done.saturating_sub(last_report_iter) >= cli.report_every || done == max_iters;
+        // M4 (2026-11-03 re-audit): evals used to be nested inside the
+        // report block, so --eval-every was silently quantized to
+        // --report-every boundaries (--eval-every 1000 with
+        // --report-every 10000 evaluated every ~10k). The block now
+        // runs on either trigger; the progress print and the metrics
+        // CSV stay on the report cadence via `report_due`.
+        let eval_due = should_eval(done, last_eval_iter, cli.eval_every, max_iters);
+        let should_report = report_due || eval_due;
 
         if should_report {
             let elapsed = start.elapsed().as_secs_f64().max(1e-6);
@@ -924,47 +978,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let flush_ms = delta.flush_ns as f64 / 1.0e6;
             let wall_ms = delta.wall_ns as f64 / 1.0e6;
 
-            if cli.log_json {
-                json_progress(&[
-                    ("event", serde_json::json!("progress")),
-                    ("iter", serde_json::json!(done)),
-                    ("max_iters", serde_json::json!(max_iters)),
-                    ("infosets", serde_json::json!(snap.infosets)),
-                    ("cap_pct", serde_json::json!(cap_pct)),
-                    ("it_per_s", serde_json::json!(rate)),
-                    ("eta_s", serde_json::json!(eta_s)),
-                    ("max_abs_regret", serde_json::json!(snap.max_abs_regret)),
-                    ("nonfinite", serde_json::json!(snap.nonfinite_count)),
-                    ("cache_hit_rate", serde_json::json!(cache_hit_rate)),
-                    ("regret_dedup", serde_json::json!(regret_dedup)),
-                    ("nodes_per_iter", serde_json::json!(nodes_per_iter)),
-                    ("avg_depth", serde_json::json!(delta.avg_depth())),
-                ]);
-            } else {
-                eprintln!(
-                    "iter {}/{} | infosets: {} ({:.1}%) | {:.1} it/s | ETA {:.2}h | \
+            if report_due {
+                if cli.log_json {
+                    json_progress(&[
+                        ("event", serde_json::json!("progress")),
+                        ("iter", serde_json::json!(done)),
+                        ("max_iters", serde_json::json!(max_iters)),
+                        ("infosets", serde_json::json!(snap.infosets)),
+                        ("cap_pct", serde_json::json!(cap_pct)),
+                        ("it_per_s", serde_json::json!(rate)),
+                        ("eta_s", serde_json::json!(eta_s)),
+                        ("max_abs_regret", serde_json::json!(snap.max_abs_regret)),
+                        ("nonfinite", serde_json::json!(snap.nonfinite_count)),
+                        ("cache_hit_rate", serde_json::json!(cache_hit_rate)),
+                        ("regret_dedup", serde_json::json!(regret_dedup)),
+                        ("nodes_per_iter", serde_json::json!(nodes_per_iter)),
+                        ("avg_depth", serde_json::json!(delta.avg_depth())),
+                    ]);
+                } else {
+                    eprintln!(
+                        "iter {}/{} | infosets: {} ({:.1}%) | {:.1} it/s | ETA {:.2}h | \
                      max|r|={:.2e} nonfinite={} | cache_hit={:.3} dedup={:.3} | \
                      nodes/it={:.0} depth_avg={:.1} | mem: {}",
-                    done,
-                    max_iters,
-                    snap.infosets,
-                    cap_pct,
-                    rate,
-                    eta_s / 3600.0,
-                    snap.max_abs_regret,
-                    snap.nonfinite_count,
-                    cache_hit_rate,
-                    regret_dedup,
-                    nodes_per_iter,
-                    delta.avg_depth(),
-                    trainer.get_table().memory_report(),
-                );
+                        done,
+                        max_iters,
+                        snap.infosets,
+                        cap_pct,
+                        rate,
+                        eta_s / 3600.0,
+                        snap.max_abs_regret,
+                        snap.nonfinite_count,
+                        cache_hit_rate,
+                        regret_dedup,
+                        nodes_per_iter,
+                        delta.avg_depth(),
+                        trainer.get_table().memory_report(),
+                    );
+                }
             }
 
             // Sampled best-response exploitability check.
             // Fire when done has advanced by at least eval_every since the
             // last eval (done increments by ITERS_PER_SYNC, not by 1).
-            if should_eval(done, last_eval_iter, cli.eval_every, max_iters) {
+            // M4: no longer nested inside the report cadence.
+            if eval_due {
+                evals_fired = true;
                 let eval_seed = resolve_eval_seed(cli.eval_seed, done);
                 // Heldout mode logs the lower bound alongside the legacy
                 // insample reading, but the promotion gate / CSV track the
@@ -1094,26 +1152,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     // improvement over its first eval (v45: 3302 @ 6M
                     // vs 3392 @ 3M, improvement 90 < 2*SE 256) ships
                     // the worse first-eval model.
-                    if cli.save_best_reading {
-                        if is_new_raw_min(best_raw_mbb, br.exploitability_mbb) {
-                            let best_path = cli.output.with_file_name(format!(
-                                "{}.best.bin",
-                                cli.output
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("blueprint")
-                            ));
-                            // Only <stem>.best.bin; leave cli.output to the
-                            // promotion path (per the flag's own doc).
-                            if let Err(e) = export_blueprint(
-                                &trainer, &best_path, cli.min_visits, &fingerprint,
-                            ) {
-                                eprintln!(
-                                    "WARNING: save-best .best.bin export failed at iter {done}: {e}"
-                                );
-                            }
-                            best_raw_mbb = Some(br.exploitability_mbb);
+                    if cli.save_best_reading && is_new_raw_min(best_raw_mbb, br.exploitability_mbb)
+                    {
+                        let best_path = cli.output.with_file_name(format!(
+                            "{}.best.bin",
+                            cli.output
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("blueprint")
+                        ));
+                        // Only <stem>.best.bin; leave cli.output to the
+                        // promotion path (per the flag's own doc).
+                        if let Err(e) =
+                            export_blueprint(&trainer, &best_path, cli.min_visits, &fingerprint)
+                        {
+                            eprintln!(
+                                "WARNING: save-best .best.bin export failed at iter {done}: {e}"
+                            );
                         }
+                        best_raw_mbb = Some(br.exploitability_mbb);
                     }
                     let improvement = best_expl_mbb
                         .map(|b| b - br.exploitability_mbb)
@@ -1130,7 +1187,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             ("iter", serde_json::json!(done)),
                             ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
                             ("expl_std_err_mbb", serde_json::json!(br.expl_std_err_mbb)),
-                            ("best_expl_mbb", serde_json::json!(best_expl_mbb.unwrap_or(0.0))),
+                            (
+                                "best_expl_mbb",
+                                serde_json::json!(best_expl_mbb.unwrap_or(0.0)),
+                            ),
                             ("improvement_mbb", serde_json::json!(improvement)),
                             ("sigma_needed_mbb", serde_json::json!(sigma_needed)),
                             ("reason", serde_json::json!(reason)),
@@ -1148,16 +1208,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                     consecutive_non_minimum = consecutive_non_minimum.saturating_add(1);
-                    if cli.stop_on_plateau > 0
-                        && consecutive_non_minimum >= cli.stop_on_plateau
-                    {
+                    if cli.stop_on_plateau > 0 && consecutive_non_minimum >= cli.stop_on_plateau {
                         if cli.log_json {
                             json_progress(&[
                                 ("event", serde_json::json!("plateau_stop")),
-                                ("consecutive_non_minimum", serde_json::json!(consecutive_non_minimum)),
+                                (
+                                    "consecutive_non_minimum",
+                                    serde_json::json!(consecutive_non_minimum),
+                                ),
                                 ("threshold", serde_json::json!(cli.stop_on_plateau)),
                                 ("iter", serde_json::json!(done)),
-                                ("last_best_mbb", serde_json::json!(best_expl_mbb.unwrap_or(0.0))),
+                                (
+                                    "last_best_mbb",
+                                    serde_json::json!(best_expl_mbb.unwrap_or(0.0)),
+                                ),
                             ]);
                         } else {
                             eprintln!(
@@ -1184,7 +1248,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     ("iter", serde_json::json!(done)),
                                     ("expl_mbb", serde_json::json!(br.exploitability_mbb)),
                                     ("prev_best_mbb", serde_json::json!(best_expl_mbb)),
-                                    ("output", serde_json::json!(cli.output.display().to_string())),
+                                    (
+                                        "output",
+                                        serde_json::json!(cli.output.display().to_string()),
+                                    ),
                                     ("infosets", serde_json::json!(n)),
                                 ]);
                             } else {
@@ -1207,12 +1274,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("blueprint")
                             ));
-                            if let Err(e) = export_blueprint(
-                                &trainer,
-                                &best_path,
-                                cli.min_visits,
-                                &fingerprint,
-                            ) {
+                            if let Err(e) =
+                                export_blueprint(&trainer, &best_path, cli.min_visits, &fingerprint)
+                            {
                                 eprintln!(
                                     "WARNING: best-blueprint export failed at iter {done}: {e}"
                                 );
@@ -1232,42 +1296,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 last_eval_iter = done;
             }
 
-            if let Some(w) = csv_writer.as_mut() {
-                writeln!(
-                    w,
-                    "{},{:.3},{:.1},{},{:.3},{:.6e},{:.6e},{},{:.6e},\
+            if report_due {
+                if let Some(w) = csv_writer.as_mut() {
+                    writeln!(
+                        w,
+                        "{},{:.3},{:.1},{},{:.3},{:.6e},{:.6e},{},{:.6e},\
                      {},{:.1},{:.3},{},{:.4},\
                      {},{},{:.4},{},{},\
                      {:.3},{:.3},{:.3},{:.3}",
-                    done,
-                    elapsed,
-                    rate,
-                    snap.infosets,
-                    cap_pct,
-                    snap.max_abs_regret,
-                    snap.mean_abs_regret,
-                    snap.nonfinite_count,
-                    snap.strategy_sum_mass,
-                    delta.nodes,
-                    nodes_per_iter,
-                    delta.avg_depth(),
-                    delta.max_depth,
-                    cache_hit_rate,
-                    delta.regret_input,
-                    delta.regret_unique,
-                    regret_dedup,
-                    delta.strategy_applied,
-                    delta.pruned_actions,
-                    traverse_ms,
-                    merge_ms,
-                    flush_ms,
-                    wall_ms,
-                )?;
-                w.flush()?;
-            }
+                        done,
+                        elapsed,
+                        rate,
+                        snap.infosets,
+                        cap_pct,
+                        snap.max_abs_regret,
+                        snap.mean_abs_regret,
+                        snap.nonfinite_count,
+                        snap.strategy_sum_mass,
+                        delta.nodes,
+                        nodes_per_iter,
+                        delta.avg_depth(),
+                        delta.max_depth,
+                        cache_hit_rate,
+                        delta.regret_input,
+                        delta.regret_unique,
+                        regret_dedup,
+                        delta.strategy_applied,
+                        delta.pruned_actions,
+                        traverse_ms,
+                        merge_ms,
+                        flush_ms,
+                        wall_ms,
+                    )?;
+                    w.flush()?;
+                }
 
-            prev_metrics_snapshot = cur_metrics;
-            last_report_iter = done;
+                prev_metrics_snapshot = cur_metrics;
+                last_report_iter = done;
+            }
         }
 
         if cli.checkpoint_every > 0
@@ -1292,11 +1358,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "FATAL: checkpoint failed at iteration {} ({}); aborting to preserve disk",
                             done, e
                         );
-                        return Err(format!(
-                            "checkpoint failed at iteration {}: {}",
-                            done, e
-                        )
-                        .into());
+                        return Err(
+                            format!("checkpoint failed at iteration {}: {}", done, e).into()
+                        );
                     }
                 }
             }
@@ -1322,8 +1386,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "Training done: {} iterations in {:.1}s ({:.1} it/s)",
         total_iters,
         elapsed_total,
-        total_iters as f64 / elapsed_total.max(1e-6)
+        total_iters as f64 / elapsed_total.max(1e-6),
     );
+    // 2026-11-03 re-audit: the stop-reason flags were written but never
+    // surfaced. Report them so a capacity stop vs signal stop vs normal
+    // finish is visible in the log.
+    if hit_capacity {
+        eprintln!("stop reason: capacity limit reached");
+    }
+    if interrupted {
+        eprintln!("stop reason: interrupted by signal");
+    }
+    if stopped_early && !hit_capacity && !interrupted {
+        eprintln!("stop reason: stopped early (plateau/bench deadline)");
+    }
+    let _ = stopped_early;
 
     // Capture every training-affecting env flag so stats.json is a
     // complete reproduction record. Add a flag here when it starts
@@ -1461,9 +1538,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             abstraction_for_eval.as_ref(),
         );
         for (label, r) in [
-            ("BU open", pkr_cfr::preflop_validate::validate_preflop_opening(&lookup)),
-            ("BB 3-bet", pkr_cfr::preflop_validate::validate_bb_3bet(&lookup)),
-            ("BB defend", pkr_cfr::preflop_validate::validate_bb_defend(&lookup)),
+            (
+                "BU open",
+                pkr_cfr::preflop_validate::validate_preflop_opening(&lookup),
+            ),
+            (
+                "BB 3-bet",
+                pkr_cfr::preflop_validate::validate_bb_3bet(&lookup),
+            ),
+            (
+                "BB defend",
+                pkr_cfr::preflop_validate::validate_bb_defend(&lookup),
+            ),
         ] {
             eprintln!("  --- {} ---", label);
             eprintln!("  category: {}", r.category);
@@ -1478,7 +1564,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // E1: if we promoted inside the loop, the blueprint on disk is
     // already the best checkpoint; do not overwrite it here.
-    if !promoted {
+    // C2 (2026-11-03 re-audit): same protection when evals fired but
+    // the gate rejected them all — the file on disk is a previously
+    // promoted best and must not be clobbered by a worse table.
+    let gate_rejected_every_eval = evals_fired && !promoted && best_expl_mbb.is_some();
+    if !promoted && !gate_rejected_every_eval {
         // Fallback: --eval-every == 0 (no gate) or no eval fired.
         // T2.4: min-visits filter applied inside export_blueprint.
         let n = export_blueprint(&trainer, &cli.output, cli.min_visits, &fingerprint)?;
@@ -1527,7 +1617,10 @@ mod should_eval_tests {
         assert!(is_new_raw_min(None, 3400.0), "first reading is a min");
         assert!(is_new_raw_min(Some(3400.0), 3300.0), "lower is a min");
         assert!(!is_new_raw_min(Some(3300.0), 3400.0), "higher is not");
-        assert!(!is_new_raw_min(Some(3300.0), 3300.0), "equal is not a new min");
+        assert!(
+            !is_new_raw_min(Some(3300.0), 3300.0),
+            "equal is not a new min"
+        );
     }
 
     use super::should_eval;
@@ -1562,5 +1655,64 @@ mod should_eval_tests {
     fn fires_at_very_first_iteration_when_max_is_zero() {
         // Degenerate; must not panic.
         assert!(!should_eval(0, 0, 0, 0));
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    //! 2026-11-03 re-audit trainer fixes.
+
+    use super::*;
+
+    #[test]
+    fn eval_mode_whitelist_rejects_typos() {
+        assert!(validate_eval_mode("insample").is_ok());
+        assert!(validate_eval_mode("heldout").is_ok());
+        assert!(
+            validate_eval_mode("heldoutt").is_err(),
+            "typo must be rejected"
+        );
+        assert!(validate_eval_mode("").is_err());
+        assert!(
+            validate_eval_mode("HELDOUT").is_err(),
+            "case-sensitive on purpose"
+        );
+    }
+
+    #[test]
+    fn reseed_reads_derived_csv_path_when_flag_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("blueprint.bin");
+        let csv = dir.path().join("exploitability.csv"); // derived path
+        std::fs::write(&csv, "iter,expl_mbb,expl_stderr_mbb,br0,br1,deals\n1000,500.0,10,0,0,100\n2000,120.5,10,0,0,100\n").unwrap();
+
+        // Flag absent: the derived path must be read (was a no-op
+        // before the fix, so the gate auto-promoted the first eval).
+        let got = reseed_best_expl(&None, &output);
+        assert_eq!(
+            got,
+            Some(120.5),
+            "derived exploitability.csv must seed the gate"
+        );
+
+        // Explicit flag wins when present.
+        let csv2 = dir.path().join("custom.csv");
+        std::fs::write(
+            &csv2,
+            "iter,expl_mbb,expl_stderr_mbb,br0,br1,deals\n1,42.0,10,0,0,100\n",
+        )
+        .unwrap();
+        let got2 = reseed_best_expl(&Some(csv2), &output);
+        assert_eq!(got2, Some(42.0));
+    }
+
+    #[test]
+    fn reseed_returns_none_for_missing_or_garbled_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("blueprint.bin");
+        assert_eq!(reseed_best_expl(&None, &output), None, "no CSV anywhere");
+        let csv = dir.path().join("exploitability.csv");
+        std::fs::write(&csv, "not,an,int\nx,y,z\n").unwrap();
+        assert_eq!(reseed_best_expl(&None, &output), None, "garbled CSV");
     }
 }
