@@ -24,6 +24,9 @@ use pkr_subgame::range_tracker::RangeTracker;
 use std::env;
 use std::sync::Arc;
 
+/// 2026-11-03 re-audit: helper kept for manual/ad-hoc runs; the bench
+/// group below builds its fixtures inline.
+#[allow(dead_code)]
 fn load_fixtures<'a>(
     abs: &'a mut KMeansAbstraction,
     tbl: &'a CompactRegretTable,
@@ -48,12 +51,24 @@ fn load_fixtures<'a>(
     let mut st = GameState::new(200.0, 1.0, 2.0);
     st.set_hole_cards([12, 24], [10, 22]);
     // Preflop -> flop: call/check, deal flop.
-    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    st.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    st.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     st.advance_street_in_place(&[40, 3, 16]);
     // Postflop: check/check to reach the turn; separate decision points.
-    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+    st.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    st.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Bet(6.0),
+    });
 
     let tracker = RangeTracker::new(st.clone(), abs, tbl, ev);
     Some((st, tracker))
@@ -77,7 +92,7 @@ fn bench_tracker(c: &mut Criterion) {
         }
     };
     // Load the checkpoint into a table.
-    let mut abs = match load_centroids(&format!("{tables}/centroids.bin")) {
+    let abs = match load_centroids(&format!("{tables}/centroids.bin")) {
         Ok(s) => KMeansAbstraction::from_store(s, Arc::new(NlheEvaluator)),
         Err(_) => {
             eprintln!("SKIP tracker bench: cannot load centroids from {tables}");
@@ -112,17 +127,32 @@ fn bench_tracker(c: &mut Criterion) {
     let abs_dyn: &dyn AbstractionBuilder = &abs;
     let mut st = GameState::new(200.0, 1.0, 2.0);
     st.set_hole_cards([12, 24], [10, 22]);
-    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    st.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    st.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     st.advance_street_in_place(&[40, 3, 16]);
-    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Bet(6.0) });
+    st.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    st.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Bet(6.0),
+    });
 
     let mut group = c.benchmark_group("tracker/apply_action");
     group.sample_size(30);
     // Call is the most common action and the one that iterates all
     // 1326 hands. Benchmark it on a fresh tracker each iteration.
-    let call = Action { player: 0, kind: ActionKind::Call };
+    let call = Action {
+        player: 0,
+        kind: ActionKind::Call,
+    };
     group.bench_function("call_full_range", |b| {
         b.iter_batched(
             || RangeTracker::new(st.clone(), abs_dyn, &tbl, &ev),
