@@ -77,7 +77,9 @@ pub(crate) fn quantize_cdf(strat: &[f32; K]) -> [u8; K] {
     // CDF decode zero-mass for the actions between it and `last`, which the
     // consumers treat as "probability 0". Cap non-final entries at 254.
     for a in 0..last {
-        if out[a] >= 255 { out[a] = 254; }
+        if out[a] == 255 {
+            out[a] = 254;
+        }
     }
     for a in last..K {
         out[a] = 255;
@@ -187,6 +189,15 @@ pub fn write_blueprint(
         file.sync_all()?;
     }
     std::fs::rename(&tmp, path)?;
+    // Durability (2026-11-03 re-audit): the file content is already
+    // synced (sync_all above); the RENAME itself is only durable after
+    // the parent directory entry is synced. Without this, a power
+    // failure can reorder the rename ahead of the data blocks.
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 

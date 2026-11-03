@@ -10,9 +10,7 @@
 //! whose regret table was overwritten -- be re-evaluated at a
 //! different deal count.
 
-use crate::header::{
-    FileHeader, FORMAT_VERSION_V3, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET,
-};
+use crate::header::{FileHeader, FORMAT_VERSION_V3, FORMAT_VERSION_V4, HASH_ALGO_FNV1A64_INFOSET};
 use pkr_cfr::table::CompactRegretTable;
 use std::io;
 use std::path::Path;
@@ -47,11 +45,16 @@ impl std::fmt::Display for ReadError {
 }
 impl std::error::Error for ReadError {}
 impl From<io::Error> for ReadError {
-    fn from(e: io::Error) -> Self { ReadError::Io(e) }
+    fn from(e: io::Error) -> Self {
+        ReadError::Io(e)
+    }
 }
 
-/// Read a v4 blueprint into a fresh table. Returns the table and the
-/// sorted key list.
+/// Read a v4 (or v2/v3) blueprint into a fresh table. Returns the
+/// table and the key list in file order — the writer sorts keys
+/// ascending, and this reader does not re-sort or validate sortedness
+/// (the table is hash-keyed, so order is irrelevant to it; consumers
+/// that binary-search the returned list must sort it themselves).
 pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), ReadError> {
     let bytes = std::fs::read(path)?;
     let fh_size = std::mem::size_of::<FileHeader>();
@@ -66,17 +69,28 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
     // m12 (audit 2026-10-10): the runtime MmapReader accepts v2; this
     // reader rejected it. A v2 file loaded at runtime but failed here,
     // hiding v2 regressions. Accept v2 too.
-    if fh.version < crate::header::FORMAT_VERSION_V2
-        || fh.version > FORMAT_VERSION_V4
-    {
+    if fh.version < crate::header::FORMAT_VERSION_V2 || fh.version > FORMAT_VERSION_V4 {
         return Err(ReadError::UnsupportedVersion(fh.version));
     }
     if fh.hash_algo != HASH_ALGO_FNV1A64_INFOSET {
         return Err(ReadError::BadHashAlgo(fh.hash_algo));
     }
 
-    let anchors_size = 64usize;
-    let fp_size = if fh.version >= FORMAT_VERSION_V4 { 40 } else { 0 };
+    // 2026-11-03 re-audit: the 64-byte AnchorsSection was introduced in
+    // v3 (see header.rs) — a v2 file has key_count right after the
+    // header. The reader used to assume 64 anchor bytes for every
+    // version and read key_count from inside the keys array (the
+    // runtime MmapReader already gated this correctly).
+    let anchors_size = if fh.version >= FORMAT_VERSION_V3 {
+        64usize
+    } else {
+        0
+    };
+    let fp_size = if fh.version >= FORMAT_VERSION_V4 {
+        40
+    } else {
+        0
+    };
     let after_header = fh_size + anchors_size + fp_size;
 
     // M-27 (audit 2026-10-10): the initial gate only guarantees
@@ -111,11 +125,12 @@ pub fn read_blueprint(path: &Path) -> Result<(CompactRegretTable, Vec<u64>), Rea
         }
     }
 
-    let key_count = u32::from_le_bytes(
-        bytes[after_header..after_header + 4].try_into().unwrap(),
-    ) as usize;
+    let key_count =
+        u32::from_le_bytes(bytes[after_header..after_header + 4].try_into().unwrap()) as usize;
     let cdf_size = u32::from_le_bytes(
-        bytes[after_header + 4..after_header + 8].try_into().unwrap(),
+        bytes[after_header + 4..after_header + 8]
+            .try_into()
+            .unwrap(),
     ) as usize;
     let k = fh.max_actions_k as usize;
     // The writer always emits K (=6). A file claiming more would
@@ -188,5 +203,67 @@ mod tests {
 
         dst.get_average_strategy_into(222, &mut s);
         assert!((s[0] - 1.0).abs() < 0.02, "s[0]={}", s[0]);
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    //! Regression tests from the 2026-11-03 re-audit.
+
+    use super::*;
+    use crate::header::FileHeader;
+
+    /// Hand-built **v2-layout** blueprint: [FileHeader:32][key_count:4]
+    /// [cdf_size:4][keys][cdf] — no anchors, no fingerprint. The v2
+    /// format predates the 64-byte AnchorsSection (introduced in v3),
+    /// and the runtime MmapReader already gates anchors on
+    /// `version >= 3`. The reader used to assume 64 anchor bytes for
+    /// every version and read key_count from inside the keys array.
+    #[test]
+    fn v2_layout_blueprint_loads_with_v2_offsets() {
+        let k = pkr_cfr::table::ACTION_K;
+        let keys = [111u64, 222u64];
+        // Uniform CDF rows closing at 255.
+        let row: Vec<u8> = (0..k).map(|a| ((a + 1) * 255 / k) as u8).collect();
+        let mut cdf = Vec::new();
+        cdf.extend_from_slice(&row);
+        cdf.extend_from_slice(&row);
+
+        let mut buf = Vec::new();
+        let fh = FileHeader {
+            magic: *MAGIC,
+            version: crate::header::FORMAT_VERSION_V2,
+            variant_id: 0,
+            infoset_count: keys.len() as u64,
+            max_actions_k: k as u8,
+            hash_algo: HASH_ALGO_FNV1A64_INFOSET,
+            _padding: [0u8; 6],
+        };
+        buf.extend_from_slice(bytemuck::bytes_of(&fh));
+        buf.extend_from_slice(&(keys.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(cdf.len() as u32).to_le_bytes());
+        for key in keys {
+            buf.extend_from_slice(&key.to_le_bytes());
+        }
+        buf.extend_from_slice(&cdf);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2.bin");
+        std::fs::write(&path, &buf).unwrap();
+
+        let (table, read_keys) =
+            read_blueprint(&path).unwrap_or_else(|e| panic!("v2 blueprint must load: {e}"));
+        assert_eq!(read_keys, keys);
+        // Uniform strategy over K buckets.
+        let mut s = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
+        table.get_average_strategy_into(111, &mut s);
+        for a in 0..k {
+            let expect = 1.0 / k as f32;
+            assert!(
+                (s[a] - expect).abs() < 0.02,
+                "s[{a}]={} want {expect}",
+                s[a]
+            );
+        }
     }
 }
