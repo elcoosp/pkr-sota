@@ -16,6 +16,18 @@ ITERATIONS="${ITERATIONS:-100000}"
 THREADS="${THREADS:-8}"
 CAPACITY="${CAPACITY:-50000000}"
 
+# 2026-11-03 re-audit (M3): allow CI to inject cargo features for the
+# trainer invocation. run-dhat.sh sets PROFTEST_FEATURES=dhat-profiling;
+# previously it built WITH the feature but this script re-ran
+# `cargo run` WITHOUT it, so the dhat profiler was compiled out,
+# dhat-heap.json was never written and the weekly job failed on `mv`.
+# Empty PROFTEST_FEATURES -> no --features flag (the safe-array guard
+# keeps this portable to bash 3.2).
+TRAINER_FEATURES=""
+if [ -n "${PROFTEST_FEATURES:-}" ]; then
+    TRAINER_FEATURES=(--features "$PROFTEST_FEATURES")
+fi
+
 echo "=== pkr-sota production-scale profile ==="
 echo "  iterations:  $ITERATIONS"
 echo "  threads:     $THREADS"
@@ -24,7 +36,7 @@ echo "  dir:         $PROF_DIR_ABS"
 echo ""
 
 echo "==> Building release binaries..."
-cargo build --release -p pkr-trainer -p pkr-abstraction 2>&1 | tail -1
+cargo build --release ${TRAINER_FEATURES[@]+"${TRAINER_FEATURES[@]}"} -p pkr-trainer -p pkr-abstraction 2>&1 | tail -1
 
 if [ ! -f "$PROF_DIR_ABS/hand_ranks.bin" ]; then
     echo "==> [1/4] hand_ranks.bin (~1-2 min)"
@@ -62,7 +74,7 @@ fi
 
 echo ""
 echo "==> Training $ITERATIONS iterations with full instrumentation..."
-time cargo run --release -p pkr-trainer -- \
+time cargo run --release -p pkr-trainer ${TRAINER_FEATURES[@]+"${TRAINER_FEATURES[@]}"} -- \
     --iterations "$ITERATIONS" \
     --threads "$THREADS" \
     --capacity "$CAPACITY" \

@@ -11,7 +11,12 @@ cargo build --release -p pkr-trainer --features dhat-profiling
 # Note: dhat disables LTO by overriding the profile; we accept this
 # because the goal is to measure memory, not throughput.
 
+# 2026-11-03 re-audit (M3): forward the dhat feature through proftest.sh.
+# proftest.sh used to invoke `cargo run --release -p pkr-trainer` WITHOUT
+# the feature, so the profiler was compiled out and ./dhat-heap.json was
+# never written (the `mv` below then failed the whole weekly job).
     PROF_DIR="$PROF_DIR" \
+    PROFTEST_FEATURES=dhat-profiling \
     ITERATIONS=5000 THREADS=2 CAPACITY=1000000 \
         ./proftest.sh
 
