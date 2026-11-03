@@ -23,10 +23,11 @@ use std::sync::Arc;
 fn load_table(path: &Path, k: usize) -> CompactRegretTable {
     let t = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(k as u32);
-    t.load_checkpoint(path.to_str().unwrap(), &fp).unwrap_or_else(|e| {
-        eprintln!("load checkpoint {}: {e}", path.display());
-        std::process::exit(1);
-    });
+    t.load_checkpoint(path.to_str().unwrap(), &fp)
+        .unwrap_or_else(|e| {
+            eprintln!("load checkpoint {}: {e}", path.display());
+            std::process::exit(1);
+        });
     t
 }
 
@@ -53,32 +54,100 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--a" => { a_path = args.get(i + 1).map(PathBuf::from); i += 2; }
-            "--b" => { b_path = args.get(i + 1).map(PathBuf::from); i += 2; }
-            "--tables" => { tables = args.get(i + 1).map(PathBuf::from); i += 2; }
-            "--hands" => { hands = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(hands); i += 2; }
-            "--seed" => { seed = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
-            "--sig" => { sig = args.get(i + 1).and_then(|s| s.parse::<u8>().ok()); i += 2; }
-            "--search-a" => { search_a = true; i += 1; }
-            "--search-b" => { search_b = true; i += 1; }
-            "--search-vector" => { search_vector = true; i += 1; }
-            "--search-bound" => { search_bound = true; i += 1; }
-            "--search-gadget" => { search_gadget = true; i += 1; }
-            "--search-bound-steps" => { search_bound_steps = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_bound_steps); i += 2; }
-            "--search-budget-ms" => { search_budget_ms = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_budget_ms); i += 2; }
+            "--a" => {
+                a_path = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--b" => {
+                b_path = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--tables" => {
+                tables = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--hands" => {
+                hands = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(hands);
+                i += 2;
+            }
+            "--seed" => {
+                seed = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed);
+                i += 2;
+            }
+            "--sig" => {
+                sig = args.get(i + 1).and_then(|s| s.parse::<u8>().ok());
+                i += 2;
+            }
+            "--search-a" => {
+                search_a = true;
+                i += 1;
+            }
+            "--search-b" => {
+                search_b = true;
+                i += 1;
+            }
+            "--search-vector" => {
+                search_vector = true;
+                i += 1;
+            }
+            "--search-bound" => {
+                search_bound = true;
+                i += 1;
+            }
+            "--search-gadget" => {
+                search_gadget = true;
+                i += 1;
+            }
+            "--search-bound-steps" => {
+                search_bound_steps = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(search_bound_steps);
+                i += 2;
+            }
+            "--search-budget-ms" => {
+                search_budget_ms = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(search_budget_ms);
+                i += 2;
+            }
             "--search-streets" => {
-                if let Some(s) = args.get(i+1) {
+                if let Some(s) = args.get(i + 1) {
                     let mut e = [false; 4];
                     for ch in s.chars() {
-                        match ch { 'p' => e[0]=true, 'f' => e[1]=true, 't' => e[2]=true, 'r' => e[3]=true, _=>{} }
+                        match ch {
+                            'p' => e[0] = true,
+                            'f' => e[1] = true,
+                            't' => e[2] = true,
+                            'r' => e[3] = true,
+                            _ => {}
+                        }
                     }
                     search_streets = e;
                 }
                 i += 2;
             }
-            "--search-iters" => { search_iters = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_iters); i += 2; }
-            "--search-hands" => { search_hands = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_hands); i += 2; }
-            _ => { i += 1; }
+            "--search-iters" => {
+                search_iters = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(search_iters);
+                i += 2;
+            }
+            "--search-hands" => {
+                search_hands = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(search_hands);
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -89,28 +158,28 @@ fn main() {
     // lbr_eval's handling so the two instruments accept the same flag.
     // sig: 0 = V1, 1/3 = V3 (default), 4 = V4, 5 = V5.
     if let Some(sig_v) = sig {
-      match sig_v {
-        5 => {
-            std::env::set_var("PKR_SIG_V5", "1");
-            std::env::set_var("PKR_SIG_V4", "0");
-            std::env::set_var("PKR_SIG_V3", "1");
+        match sig_v {
+            5 => {
+                std::env::set_var("PKR_SIG_V5", "1");
+                std::env::set_var("PKR_SIG_V4", "0");
+                std::env::set_var("PKR_SIG_V3", "1");
+            }
+            4 => {
+                std::env::set_var("PKR_SIG_V4", "1");
+                std::env::set_var("PKR_SIG_V5", "0");
+                std::env::set_var("PKR_SIG_V3", "1");
+            }
+            3 | 1 => {
+                std::env::set_var("PKR_SIG_V3", "1");
+                std::env::set_var("PKR_SIG_V4", "0");
+                std::env::set_var("PKR_SIG_V5", "0");
+            }
+            _ => {
+                std::env::set_var("PKR_SIG_V3", "0");
+                std::env::set_var("PKR_SIG_V4", "0");
+                std::env::set_var("PKR_SIG_V5", "0");
+            }
         }
-        4 => {
-            std::env::set_var("PKR_SIG_V4", "1");
-            std::env::set_var("PKR_SIG_V5", "0");
-            std::env::set_var("PKR_SIG_V3", "1");
-        }
-        3 | 1 => {
-            std::env::set_var("PKR_SIG_V3", "1");
-            std::env::set_var("PKR_SIG_V4", "0");
-            std::env::set_var("PKR_SIG_V5", "0");
-        }
-        _ => {
-            std::env::set_var("PKR_SIG_V3", "0");
-            std::env::set_var("PKR_SIG_V4", "0");
-            std::env::set_var("PKR_SIG_V5", "0");
-        }
-      }
     }
 
     let a_path = a_path.unwrap_or_else(|| {
@@ -123,11 +192,7 @@ fn main() {
     });
 
     // Abstraction tables live in --tables DIR, or in A's parent.
-    let td = pkr_fuzz::tournament::resolve_tables_dir(
-        &a_path,
-        &b_path,
-        tables.as_deref(),
-    );
+    let td = pkr_fuzz::tournament::resolve_tables_dir(&a_path, &b_path, tables.as_deref());
     if td.a_b_diverge {
         eprintln!(
             "ERROR: A and B live in different directories and no --tables DIR was given. \
@@ -149,17 +214,34 @@ fn main() {
         );
     }
 
-    let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap())
-        .unwrap_or_else(|e| { eprintln!("load centroids: {e}"); std::process::exit(1); });
-    let abs = Arc::new(KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator)));
+    let store = load_centroids(tdir.join("centroids.bin").to_str().unwrap()).unwrap_or_else(|e| {
+        eprintln!("load centroids: {e}");
+        std::process::exit(1);
+    });
+    let abs = Arc::new(KMeansAbstraction::from_store(
+        store,
+        Arc::new(pkr_eval::NlheEvaluator),
+    ));
     abs.init_table(0, tdir.join("preflop_abstraction.bin").to_str().unwrap())
-        .unwrap_or_else(|e| { eprintln!("init preflop: {e:?}"); std::process::exit(1); });
+        .unwrap_or_else(|e| {
+            eprintln!("init preflop: {e:?}");
+            std::process::exit(1);
+        });
     abs.init_table(1, tdir.join("abstraction.bin").to_str().unwrap())
-        .unwrap_or_else(|e| { eprintln!("init flop: {e:?}"); std::process::exit(1); });
+        .unwrap_or_else(|e| {
+            eprintln!("init flop: {e:?}");
+            std::process::exit(1);
+        });
     abs.init_table(2, tdir.join("turn_abstraction.bin").to_str().unwrap())
-        .unwrap_or_else(|e| { eprintln!("init turn: {e:?}"); std::process::exit(1); });
+        .unwrap_or_else(|e| {
+            eprintln!("init turn: {e:?}");
+            std::process::exit(1);
+        });
     abs.init_table(3, tdir.join("river_buckets.bin").to_str().unwrap())
-        .unwrap_or_else(|e| { eprintln!("init river: {e:?}"); std::process::exit(1); });
+        .unwrap_or_else(|e| {
+            eprintln!("init river: {e:?}");
+            std::process::exit(1);
+        });
 
     let k = abs.k();
     eprintln!("abstraction: k={k} from {} (sig={sig:?})", tdir.display());
@@ -175,9 +257,12 @@ fn main() {
 
     // Optional per-side subgame search. Same checkpoint, one side searched,
     // isolates search's head-to-head effect.
-    let mk_handle = |search: bool, table: &Arc<pkr_cfr::table::CompactRegretTable>|
-        -> Option<Box<dyn pkr_runtime::subgame::SearchHandle>> {
-        if !search { return None; }
+    let mk_handle = |search: bool,
+                     table: &Arc<pkr_cfr::table::CompactRegretTable>|
+     -> Option<Box<dyn pkr_runtime::subgame::SearchHandle>> {
+        if !search {
+            return None;
+        }
         if search_vector {
             let cfg = pkr_runtime::vsearch::VSearchCfg {
                 bet_fracs: vec![0.5, 1.0],
@@ -218,7 +303,16 @@ fn main() {
     }
 
     eprintln!("running {hands} deals, seed {seed} ...");
-    let r = tournament(&pa, &pb, abs.as_ref(), &ev, hands, seed, handle_a.as_deref(), handle_b.as_deref());
+    let r = tournament(
+        &pa,
+        &pb,
+        abs.as_ref(),
+        &ev,
+        hands,
+        seed,
+        handle_a.as_deref(),
+        handle_b.as_deref(),
+    );
 
     println!();
     println!("=== pkr-tournament ===");
@@ -230,20 +324,30 @@ fn main() {
         eprintln!(
             "[SEARCH_DEBUG] solve_root invoked {} times, gate refused {} times | \
              bounded: solves={} kept_search={} blended={} fell_back={}",
-            n, r,
+            n,
+            r,
             pkr_runtime::vsearch::VSEARCH_BOUNDED_SOLVES.load(Ordering::Relaxed),
             pkr_runtime::vsearch::VSEARCH_BOUND_KEPT_SEARCH.load(Ordering::Relaxed),
             pkr_runtime::vsearch::VSEARCH_BOUND_BLENDED.load(Ordering::Relaxed),
             pkr_runtime::vsearch::VSEARCH_BOUND_FELL_BACK.load(Ordering::Relaxed)
         );
-        eprintln!("[SEARCH_DEBUG] gadget_solves={}", pkr_runtime::vsearch::VSEARCH_GADGET_SOLVES.load(Ordering::Relaxed));
+        eprintln!(
+            "[SEARCH_DEBUG] gadget_solves={}",
+            pkr_runtime::vsearch::VSEARCH_GADGET_SOLVES.load(Ordering::Relaxed)
+        );
     }
     println!("  B: {}", b_path.display());
     println!("  hands: {}  seed: {}", hands, seed);
     println!();
     println!("  A mean chips/deal (seat 0):  {:+.4}", r.mean_a_seat0);
     println!("  B mean chips/deal (seat 0):  {:+.4}", r.mean_b_seat0);
-    println!("  diff (A - B):                {:+.4} chips/deal", r.mean_diff);
+    if r.hands_incomplete > 0 {
+        println!("  hands incomplete (excluded): {}", r.hands_incomplete);
+    }
+    println!(
+        "  diff (A - B):                {:+.4} chips/deal",
+        r.mean_diff
+    );
     println!("  SE:                          {:.4}", r.se_diff);
     println!("  t:                           {:+.2}", r.t);
     // A vs A gives mean_diff = 0 and se_diff = 0; that's the correct

@@ -22,8 +22,7 @@
 
 use pkr_core::state::{Action, ActionKind, GameState, Street};
 use pkr_eval::NlheEvaluator;
-use rand::seq::IndexedRandom;
-use rand::{Rng, RngExt};
+use rand::RngExt;
 
 /// Reference implementation of a poker hand tracker.
 /// This is a simplified, deliberately verbose implementation used to
@@ -132,6 +131,9 @@ impl ReferenceState {
         false
     }
 
+    /// 2026-11-03 re-audit: only used by tests since `run_fuzz` (its
+    /// last lib caller) was deleted.
+    #[allow(dead_code)]
     fn winner(&self) -> Option<usize> {
         if self.folded[0] && !self.folded[1] {
             return Some(1);
@@ -142,6 +144,9 @@ impl ReferenceState {
         None
     }
 
+    /// See `winner`: reference-side payoff, test-only after the
+    /// `run_fuzz` deletion (2026-11-03 re-audit).
+    #[allow(dead_code)]
     fn payoff(&self, player: usize) -> f32 {
         if let Some(w) = self.winner() {
             if w == player {
@@ -175,132 +180,24 @@ impl ReferenceState {
     }
 }
 
-/// Draw community cards for a street given the current street enum.
-fn draw_board_cards(rng: &mut impl Rng, street: Street) -> Vec<u8> {
-    let count = match street {
-        Street::Preflop => 0,
-        Street::Flop => 3,
-        Street::Turn => 1,
-        Street::River => 1,
-    };
-    (0..count).map(|_| rng.random_range(0..52) as u8).collect()
-}
+// 2026-11-03 re-audit: the legacy `run_fuzz` was deleted. It drew
+// board cards with replacement (rng.random_range(0..52)) and could
+// collide with hole cards; it had zero callers (superseded by
+// `run_fuzz_seeded`, which uses a proper deck). `FuzzingResult` stays —
+// `run_fuzz_seeded` returns it.
 
-/// Run differential fuzzing: play N random hands, comparing GameState vs
-/// ReferenceState on pot, stacks, actor, and terminal payoffs.
-pub fn run_fuzz(num_hands: u32) -> FuzzingResult {
-    let mut mismatches = 0u32;
-    let mut hands_completed = 0u32;
-    let mut rng = rand::rng();
-    let evaluator = NlheEvaluator;
+/// 2026-11-03 re-audit: seed-domain bit. Deal seeds clear it, decision
+/// seeds set it; combined with the bijective mix this makes the two
+/// streams provably disjoint (see eval_paired).
+pub const SEED_DOMAIN_DECISIONS: u64 = 1u64 << 63;
 
-    for _ in 0..num_hands {
-        let mut state = GameState::new(200.0, 1.0, 2.0);
-        let mut ref_state = ReferenceState::new(200.0, 1.0, 2.0);
-
-        // Deal hole cards
-        let hero = [rng.random_range(0..52), rng.random_range(0..52)];
-        let villain = [rng.random_range(0..52), rng.random_range(0..52)];
-        if hero[0] == hero[1]
-            || villain[0] == villain[1]
-            || hero.iter().any(|&c| villain.contains(&c))
-        {
-            continue;
-        }
-        state.set_hole_cards(hero, villain);
-
-        let mut steps = 0u32;
-        let max_steps = 50;
-        let mut mismatch = false;
-
-        while !state.is_terminal() && steps < max_steps {
-            steps += 1;
-
-            let gs_actions = state.legal_actions();
-
-            // Filter to only Check/Call/Fold/All-in for comparison with reference.
-            // GameState also generates pot-fraction bets that the simplified
-            // reference doesn't enumerate — those are tested separately.
-            let comparable: Vec<Action> = gs_actions
-                .into_iter()
-                .filter(|a| match a.kind {
-                    ActionKind::Fold | ActionKind::Check | ActionKind::Call => true,
-                    ActionKind::Bet(amt) => {
-                        // All-in only: when checking, all-in = stack; when raising, all-in = stack + street_bets
-                        let stack = state.stacks[a.player];
-                        let street_bets = state.street_bets[a.player];
-                        amt >= (stack + street_bets - 0.01) || amt >= (stack - 0.01)
-                    }
-                })
-                .collect();
-
-            let ref_actions = ref_state.legal_actions();
-
-            if comparable.len() != ref_actions.len() {
-                mismatches += 1;
-                mismatch = true;
-                break;
-            }
-
-            if comparable.is_empty() {
-                break;
-            }
-
-            let action = comparable
-                .choose(&mut rng)
-                .map(|a| a.clone())
-                .unwrap_or(comparable[0]);
-
-            state.apply_action_in_place(&action);
-            ref_state.apply(&action);
-
-            // Advance street if round is complete
-            if state.is_street_complete() && state.street != Street::River {
-                let board_cards = draw_board_cards(&mut rng, state.street);
-                state.advance_street_in_place(&board_cards);
-                ref_state.advance_street(board_cards);
-            }
-
-            // Compare key state invariants
-            if (state.pot - ref_state.pot).abs() > 0.01 {
-                mismatches += 1;
-                mismatch = true;
-                break;
-            }
-            if (state.stacks[0] - ref_state.stacks[0]).abs() > 0.01 {
-                mismatches += 1;
-                mismatch = true;
-                break;
-            }
-            if (state.stacks[1] - ref_state.stacks[1]).abs() > 0.01 {
-                mismatches += 1;
-                mismatch = true;
-                break;
-            }
-            if state.actor != ref_state.actor {
-                mismatches += 1;
-                mismatch = true;
-                break;
-            }
-        }
-
-        if !mismatch && state.is_terminal() {
-            hands_completed += 1;
-            if let Some(winner) = ref_state.winner() {
-                let gs_payoff = state.terminal_payoff(winner, &evaluator);
-                let ref_payoff = ref_state.payoff(winner);
-                if (gs_payoff - ref_payoff).abs() > 0.5 {
-                    mismatches += 1;
-                }
-            }
-        }
-    }
-
-    FuzzingResult {
-        hands_run: num_hands,
-        hands_completed,
-        mismatches,
-    }
+/// splitmix64 finalizer (same construction as tournament::mix_seed) —
+/// a bijection over u64.
+pub(crate) fn pkr_fuzz_seed_mix(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// A scripted opponent for eval harness testing.
@@ -452,12 +349,19 @@ fn decide_from_blueprint(
         let mut n = 0usize;
         for i in 0..NH {
             let hh = pkr_subgame::range_tracker::hole_at(i);
-            if hh.iter().any(|c| board.contains(c)) { continue; }
-            uniform[i] = 1.0; n += 1;
+            if hh.iter().any(|c| board.contains(c)) {
+                continue;
+            }
+            uniform[i] = 1.0;
+            n += 1;
         }
         if n > 0 {
             let u = 1.0 / n as f64;
-            for x in uniform.iter_mut() { if *x > 0.0 { *x = u; } }
+            for x in uniform.iter_mut() {
+                if *x > 0.0 {
+                    *x = u;
+                }
+            }
             let hole = state.hole[state.actor];
             if let Some(strat) = sh.decide(state, &hole, &uniform) {
                 // map buckets -> representative legal actions via the
@@ -845,12 +749,23 @@ fn ref_terminal_payoff(
     let vill_rank = evaluator.evaluate_hand(villain, &r.board);
     let win = hero_rank < vill_rank;
     let tie = hero_rank == vill_rank;
-    if tie {
-        (r.pot / 2.0) - r.total_invested[player]
-    } else if (player == 0 && win) || (player == 1 && !win) {
-        r.pot - r.total_invested[player]
+    // Uncalled-bet return (2026-11-03): mirrors the corrected
+    // `GameState::terminal_payoff` — an unmatched investment excess
+    // goes back to the bettor at showdown; only the contested part of
+    // the pot is won or split.
+    let excess = (r.total_invested[0] - r.total_invested[1]).abs();
+    let contested = r.pot - excess;
+    let my_excess = if r.total_invested[player] > r.total_invested[other] {
+        excess
     } else {
-        -r.total_invested[player]
+        0.0
+    };
+    if tie {
+        contested / 2.0 + my_excess - r.total_invested[player]
+    } else if (player == 0 && win) || (player == 1 && !win) {
+        contested + my_excess - r.total_invested[player]
+    } else {
+        my_excess - r.total_invested[player]
     }
 }
 
@@ -1057,6 +972,9 @@ pub struct PairedOpponent {
     /// Standard error of `mean_diff`. The paired CI is
     /// `mean_diff ± 1.96 * se_diff` at 95%.
     pub se_diff: f64,
+    /// 2026-11-03 re-audit: hands excluded from the means because a
+    /// pass hit the step cap without reaching a terminal.
+    pub hands_incomplete: u64,
 }
 
 /// Whole-run paired result.
@@ -1109,7 +1027,7 @@ fn play_one_hand(
     villain: [u8; 2],
     runout: &[u8; 5],
     base_seed: u64,
-) -> f32 {
+) -> Option<f32> {
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
@@ -1129,8 +1047,11 @@ fn play_one_hand(
         steps += 1;
         let action = if state.actor == 0 {
             // Common random numbers: seed per-decision from base_seed.
-            let decision_seed =
-                base_seed.wrapping_add(decision_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            // 2026-11-03 re-audit: mixed with the decisions domain bit —
+            // see eval_paired for the collision this avoids.
+            let decision_seed = pkr_fuzz_seed_mix(
+                base_seed.wrapping_add(decision_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+            ) | SEED_DOMAIN_DECISIONS;
             let mut dec_rng = SmallRng::seed_from_u64(decision_seed);
             decision_idx += 1;
             let (act, _used_bp) = decide_from_blueprint(&ctx, &state, &mut dec_rng);
@@ -1156,10 +1077,12 @@ fn play_one_hand(
         }
     }
 
+    // 2026-11-03 re-audit: incomplete hands return None (excluded and
+    // counted by the caller) instead of a phantom 0.0 payoff.
     if state.is_terminal() {
-        state.terminal_payoff(0, evaluator)
+        Some(state.terminal_payoff(0, evaluator))
     } else {
-        0.0
+        None
     }
 }
 
@@ -1186,16 +1109,27 @@ pub fn eval_paired(
     ];
 
     let mut opponents = Vec::with_capacity(bots.len());
+    // 2026-11-03 re-audit: incomplete hands are excluded from means.
+    let mut hands_incomplete: u64 = 0;
     for (name, bot) in &bots {
         let mut profits_a: Vec<f64> = Vec::with_capacity(num_hands as usize);
         let mut profits_b: Vec<f64> = Vec::with_capacity(num_hands as usize);
 
         for hand_no in 0..num_hands {
-            let hand_seed = base_seed
-                .wrapping_add(hand_no as u64)
+            // 2026-11-03 re-audit: domain-separated seed derivation.
+            // The old scheme (`hand_seed = (base+i)*PHI + 1`, then
+            // `decision_seed = hand_seed + d*PHI`) made the decision-1
+            // seed of hand i equal the deal seed of hand i+1 — the
+            // exact shifted-by-one collision that produced the
+            // correlated-seeds incident. Deals now mix the spread
+            // value with the top bit CLEAR, decisions with the top bit
+            // SET; mix_seed is a bijection, so the two seed sets are
+            // provably disjoint.
+            let hand_pre = base_seed
                 .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .wrapping_add(0x1);
-            let mut deal_rng = SmallRng::seed_from_u64(hand_seed);
+                .wrapping_add(hand_no as u64);
+            let deal_seed = pkr_fuzz_seed_mix(hand_pre) & !SEED_DOMAIN_DECISIONS;
+            let mut deal_rng = SmallRng::seed_from_u64(deal_seed);
             let (hero, villain, runout) = deal_runout(&mut deal_rng);
 
             let pa = play_one_hand(
@@ -1206,7 +1140,7 @@ pub fn eval_paired(
                 hero,
                 villain,
                 &runout,
-                hand_seed,
+                hand_pre,
             );
             let pb = play_one_hand(
                 b,
@@ -1216,11 +1150,21 @@ pub fn eval_paired(
                 hero,
                 villain,
                 &runout,
-                hand_seed,
+                hand_pre,
             );
 
-            profits_a.push(pa as f64);
-            profits_b.push(pb as f64);
+            // 2026-11-03 re-audit: both passes must complete; the
+            // paired diff needs both. Incomplete hands are excluded
+            // and counted, not treated as 0.0 chips.
+            match (pa, pb) {
+                (Some(pa), Some(pb)) => {
+                    profits_a.push(pa as f64);
+                    profits_b.push(pb as f64);
+                }
+                _ => {
+                    hands_incomplete += 1;
+                }
+            }
         }
 
         let n = profits_a.len() as f64;
@@ -1232,6 +1176,7 @@ pub fn eval_paired(
                 mean_b: 0.0,
                 mean_diff: 0.0,
                 se_diff: 0.0,
+                hands_incomplete,
             });
             continue;
         }
@@ -1258,6 +1203,7 @@ pub fn eval_paired(
             mean_b,
             mean_diff,
             se_diff,
+            hands_incomplete,
         });
     }
 
@@ -1265,6 +1211,50 @@ pub fn eval_paired(
         hands_per_opp: num_hands,
         seed: base_seed,
         opponents,
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    use super::*;
+
+    /// 2026-11-03 re-audit: the old scheme made the decision-1 seed of
+    /// hand i equal the deal seed of hand i+1. With the domain bit +
+    /// bijective mix, deal seeds and decision seeds must be exactly
+    /// disjoint, and decision seeds must be pairwise distinct.
+    #[test]
+    fn eval_seed_streams_are_disjoint() {
+        let base = 2024u64;
+        let mut deal_seeds = std::collections::HashSet::new();
+        let mut decision_seeds = std::collections::HashSet::new();
+        for hand_no in 0..10_000u64 {
+            let hand_pre = base
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(hand_no);
+            let deal_seed = pkr_fuzz_seed_mix(hand_pre) & !SEED_DOMAIN_DECISIONS;
+            assert_eq!(
+                deal_seed & SEED_DOMAIN_DECISIONS,
+                0,
+                "deal seed must clear the domain bit"
+            );
+            deal_seeds.insert(deal_seed);
+            for d in 0..60u64 {
+                let ds =
+                    pkr_fuzz_seed_mix(hand_pre.wrapping_add(d.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+                        | SEED_DOMAIN_DECISIONS;
+                assert_eq!(
+                    ds & SEED_DOMAIN_DECISIONS,
+                    SEED_DOMAIN_DECISIONS,
+                    "decision seed must set the domain bit"
+                );
+                decision_seeds.insert(ds);
+            }
+        }
+        // Domain bits alone guarantee disjointness; assert it anyway so
+        // a future refactor that drops the bit fails loudly.
+        assert!(deal_seeds.is_disjoint(&decision_seeds));
+        // And the deal seeds themselves are distinct per hand.
+        assert_eq!(deal_seeds.len(), 10_000);
     }
 }
 
@@ -1470,11 +1460,13 @@ mod e3b_tests {
         let mut profits_a = Vec::with_capacity(n as usize);
         let mut profits_b = Vec::with_capacity(n as usize);
         for hand_no in 0..n {
-            let hand_seed = base_seed
-                .wrapping_add(hand_no as u64)
+            // Same domain-separated scheme as eval_paired (2026-11-03
+            // re-audit): deals clear the top bit, decisions set it.
+            let hand_pre = base_seed
                 .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .wrapping_add(0x1);
-            let mut deal_rng = SmallRng::seed_from_u64(hand_seed);
+                .wrapping_add(hand_no as u64);
+            let deal_seed = pkr_fuzz_seed_mix(hand_pre) & !SEED_DOMAIN_DECISIONS;
+            let mut deal_rng = SmallRng::seed_from_u64(deal_seed);
             let (hero, villain, runout) = deal_runout(&mut deal_rng);
             // Use StationBot for both passes.
             let pa = play_one_hand(
@@ -1485,7 +1477,7 @@ mod e3b_tests {
                 hero,
                 villain,
                 &runout,
-                hand_seed,
+                hand_pre,
             );
             let pb = play_one_hand(
                 &fold_heavy,
@@ -1495,10 +1487,12 @@ mod e3b_tests {
                 hero,
                 villain,
                 &runout,
-                hand_seed,
+                hand_pre,
             );
-            profits_a.push(pa as f64);
-            profits_b.push(pb as f64);
+            if let (Some(pa), Some(pb)) = (pa, pb) {
+                profits_a.push(pa as f64);
+                profits_b.push(pb as f64);
+            }
         }
         let nf = n as f64;
         let ma = profits_a.iter().sum::<f64>() / nf;

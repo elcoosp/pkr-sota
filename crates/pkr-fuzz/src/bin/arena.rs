@@ -28,7 +28,10 @@ use std::sync::Arc;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: {} --checkpoint <path> [--hands N] [--seed S]", args[0]);
+        eprintln!(
+            "usage: {} --checkpoint <path> [--hands N] [--seed S]",
+            args[0]
+        );
         std::process::exit(2);
     }
 
@@ -46,31 +49,83 @@ fn main() {
     let mut search_iters: u32 = 50;
     let mut search_streets: [bool; 4] = [false, false, true, true];
 
-
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--checkpoint" => { checkpoint = args.get(i + 1).cloned(); i += 2; }
-            "--centroids"  => { centroids  = args.get(i + 1).cloned(); i += 2; }
-            "--preflop-table" => { preflop = args.get(i + 1).cloned(); i += 2; }
-            "--flop-table"    => { flop    = args.get(i + 1).cloned(); i += 2; }
-            "--turn-table"    => { turn    = args.get(i + 1).cloned(); i += 2; }
-            "--river-table"   => { river   = args.get(i + 1).cloned(); i += 2; }
-            "--hands" => { hands = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(hands); i += 2; }
-            "--seed"  => { seed  = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed); i += 2; }
-            "--sig"   => { sig   = args.get(i + 1).and_then(|s| s.parse::<u8>().ok()); i += 2; }
-            "--search" => { search = true; i += 1; }
-            "--search-vector" => { search = true; search_vector = true; i += 1; }
-            "--search-iters" => { search_iters = args.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(search_iters); i += 2; }
+            "--checkpoint" => {
+                checkpoint = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--centroids" => {
+                centroids = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--preflop-table" => {
+                preflop = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--flop-table" => {
+                flop = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--turn-table" => {
+                turn = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--river-table" => {
+                river = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--hands" => {
+                hands = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(hands);
+                i += 2;
+            }
+            "--seed" => {
+                seed = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(seed);
+                i += 2;
+            }
+            "--sig" => {
+                sig = args.get(i + 1).and_then(|s| s.parse::<u8>().ok());
+                i += 2;
+            }
+            "--search" => {
+                search = true;
+                i += 1;
+            }
+            "--search-vector" => {
+                search = true;
+                search_vector = true;
+                i += 1;
+            }
+            "--search-iters" => {
+                search_iters = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(search_iters);
+                i += 2;
+            }
             "--search-streets" => {
-                if let Some(s) = args.get(i+1) {
+                if let Some(s) = args.get(i + 1) {
                     let mut e = [false; 4];
-                    for ch in s.chars() { match ch { 'p' => e[0]=true, 'f' => e[1]=true, 't' => e[2]=true, 'r' => e[3]=true, _=>{} } }
+                    for ch in s.chars() {
+                        match ch {
+                            'p' => e[0] = true,
+                            'f' => e[1] = true,
+                            't' => e[2] = true,
+                            'r' => e[3] = true,
+                            _ => {}
+                        }
+                    }
                     search_streets = e;
                 }
                 i += 2;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -78,28 +133,28 @@ fn main() {
     // See crates/pkr-fuzz/src/bin/tournament.rs and lbr_eval for the
     // same block. sig: 0 = V1, 1/3 = V3 (default), 4 = V4, 5 = V5.
     if let Some(sig_v) = sig {
-      match sig_v {
-        5 => {
-            std::env::set_var("PKR_SIG_V5", "1");
-            std::env::set_var("PKR_SIG_V4", "0");
-            std::env::set_var("PKR_SIG_V3", "1");
+        match sig_v {
+            5 => {
+                std::env::set_var("PKR_SIG_V5", "1");
+                std::env::set_var("PKR_SIG_V4", "0");
+                std::env::set_var("PKR_SIG_V3", "1");
+            }
+            4 => {
+                std::env::set_var("PKR_SIG_V4", "1");
+                std::env::set_var("PKR_SIG_V5", "0");
+                std::env::set_var("PKR_SIG_V3", "1");
+            }
+            3 | 1 => {
+                std::env::set_var("PKR_SIG_V3", "1");
+                std::env::set_var("PKR_SIG_V4", "0");
+                std::env::set_var("PKR_SIG_V5", "0");
+            }
+            _ => {
+                std::env::set_var("PKR_SIG_V3", "0");
+                std::env::set_var("PKR_SIG_V4", "0");
+                std::env::set_var("PKR_SIG_V5", "0");
+            }
         }
-        4 => {
-            std::env::set_var("PKR_SIG_V4", "1");
-            std::env::set_var("PKR_SIG_V5", "0");
-            std::env::set_var("PKR_SIG_V3", "1");
-        }
-        3 | 1 => {
-            std::env::set_var("PKR_SIG_V3", "1");
-            std::env::set_var("PKR_SIG_V4", "0");
-            std::env::set_var("PKR_SIG_V5", "0");
-        }
-        _ => {
-            std::env::set_var("PKR_SIG_V3", "0");
-            std::env::set_var("PKR_SIG_V4", "0");
-            std::env::set_var("PKR_SIG_V5", "0");
-        }
-      }
     }
 
     let checkpoint = checkpoint.unwrap_or_else(|| {
@@ -113,9 +168,17 @@ fn main() {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let c = centroids.unwrap_or_else(|| dir.join("centroids.bin").to_string_lossy().into_owned());
-    let pf = preflop.unwrap_or_else(|| dir.join("preflop_abstraction.bin").to_string_lossy().into_owned());
+    let pf = preflop.unwrap_or_else(|| {
+        dir.join("preflop_abstraction.bin")
+            .to_string_lossy()
+            .into_owned()
+    });
     let fl = flop.unwrap_or_else(|| dir.join("abstraction.bin").to_string_lossy().into_owned());
-    let tn = turn.unwrap_or_else(|| dir.join("turn_abstraction.bin").to_string_lossy().into_owned());
+    let tn = turn.unwrap_or_else(|| {
+        dir.join("turn_abstraction.bin")
+            .to_string_lossy()
+            .into_owned()
+    });
     let rv = river.unwrap_or_else(|| dir.join("river_buckets.bin").to_string_lossy().into_owned());
 
     let store = load_centroids(&c).unwrap_or_else(|e| {
@@ -123,10 +186,22 @@ fn main() {
         std::process::exit(1);
     });
     let abs = KMeansAbstraction::from_store(store, Arc::new(pkr_eval::NlheEvaluator));
-    abs.init_table(0, &pf).unwrap_or_else(|e| { eprintln!("init preflop: {e:?}"); std::process::exit(1); });
-    abs.init_table(1, &fl).unwrap_or_else(|e| { eprintln!("init flop: {e:?}"); std::process::exit(1); });
-    abs.init_table(2, &tn).unwrap_or_else(|e| { eprintln!("init turn: {e:?}"); std::process::exit(1); });
-    abs.init_table(3, &rv).unwrap_or_else(|e| { eprintln!("init river: {e:?}"); std::process::exit(1); });
+    abs.init_table(0, &pf).unwrap_or_else(|e| {
+        eprintln!("init preflop: {e:?}");
+        std::process::exit(1);
+    });
+    abs.init_table(1, &fl).unwrap_or_else(|e| {
+        eprintln!("init flop: {e:?}");
+        std::process::exit(1);
+    });
+    abs.init_table(2, &tn).unwrap_or_else(|e| {
+        eprintln!("init turn: {e:?}");
+        std::process::exit(1);
+    });
+    abs.init_table(3, &rv).unwrap_or_else(|e| {
+        eprintln!("init river: {e:?}");
+        std::process::exit(1);
+    });
 
     let k = abs.k();
     eprintln!("abstraction loaded: k={k} (sig={sig:?})");
@@ -153,7 +228,9 @@ fn main() {
             bound_max_steps: 12,
             time_budget_ms: 0,
         };
-        eprintln!("arena search: vector={search_vector} streets={search_streets:?} iters={search_iters}");
+        eprintln!(
+            "arena search: vector={search_vector} streets={search_streets:?} iters={search_iters}"
+        );
         Some(Box::new(pkr_runtime::vsearch::VSearchHandle::new(cfg)))
     } else {
         None
@@ -169,8 +246,10 @@ fn main() {
 
     if std::env::var("PKR_SEARCH_DEBUG").is_ok() {
         use std::sync::atomic::Ordering;
-        eprintln!("[SEARCH_DEBUG] arena solve_root invoked {} times",
-            pkr_runtime::vsearch::VSEARCH_SOLVE_COUNT.load(Ordering::Relaxed));
+        eprintln!(
+            "[SEARCH_DEBUG] arena solve_root invoked {} times",
+            pkr_runtime::vsearch::VSEARCH_SOLVE_COUNT.load(Ordering::Relaxed)
+        );
     }
     println!();
     println!("=== arena: {} hands, seed {} ===", hands, seed);

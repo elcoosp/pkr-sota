@@ -55,6 +55,9 @@ pub struct TournamentResult {
     /// Standard error of `mean_diff` on the per-hand paired differences.
     pub se_diff: f64,
     /// t-statistic = mean_diff / se_diff.
+    /// 2026-11-03 re-audit: hands that hit the step cap or exhausted the
+    /// runout without reaching a terminal; excluded from every mean.
+    pub hands_incomplete: u64,
     pub t: f64,
 }
 
@@ -63,7 +66,10 @@ pub struct TournamentResult {
 /// SmallRng (xoshiro), whose streams for adjacent seeds are strongly
 /// correlated.
 #[inline]
-fn mix_seed(x: u64) -> u64 {
+/// splitmix64 finalizer — a bijection, so two different inputs can
+/// never collide after mixing. Used to decorrelate seed streams
+/// (the shifted-by-one incident) in both tournament and eval harnesses.
+pub(crate) fn mix_seed(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -98,7 +104,7 @@ fn play_one(
     base_seed: u64,
     search_hero: Option<&dyn pkr_runtime::subgame::SearchHandle>,
     search_villain: Option<&dyn pkr_runtime::subgame::SearchHandle>,
-) -> f32 {
+) -> Option<f32> {
     assert!(hero_seat < 2, "hero_seat must be 0 or 1");
     let vill_seat = 1 - hero_seat;
 
@@ -118,13 +124,21 @@ fn play_one(
         provider: if hero_seat == 0 { hero } else { villain },
         abstraction,
         evaluator,
-        search: if hero_seat == 0 { search_hero } else { search_villain },
+        search: if hero_seat == 0 {
+            search_hero
+        } else {
+            search_villain
+        },
     };
     let ctx_seat1 = EvalContext {
         provider: if hero_seat == 0 { villain } else { hero },
         abstraction,
         evaluator,
-        search: if hero_seat == 0 { search_villain } else { search_hero },
+        search: if hero_seat == 0 {
+            search_villain
+        } else {
+            search_hero
+        },
     };
 
     let mut deck_idx = 0usize;
@@ -164,28 +178,28 @@ fn play_one(
         }
     }
 
-    let payoff_seat0 = if state.is_terminal() {
-        state.terminal_payoff(0, evaluator)
-    } else {
-        0.0
-    };
+    // 2026-11-03 re-audit: an incomplete hand (step cap or runout
+    // exhausted) used to contribute a phantom 0.0 payoff to the mean,
+    // biasing absolute chip readings toward zero. Return None and let
+    // the caller exclude and count it.
+    if !state.is_terminal() {
+        let _ = vill_seat; // reserved for future use
+        return None;
+    }
+    let payoff_seat0 = state.terminal_payoff(0, evaluator);
     let hero_delta = if hero_seat == 0 {
         payoff_seat0
     } else {
         -payoff_seat0
     };
     let _ = vill_seat; // reserved for future use
-    hero_delta
+    Some(hero_delta)
 }
 
 /// Wrapper: pick a concrete action for the actor using the ctx's
 /// provider. Mirrors `decide_from_blueprint` (private in lib.rs) but
 /// takes the ctx directly.
-fn decide_via(
-    ctx: &EvalContext,
-    state: &GameState,
-    rng: &mut SmallRng,
-) -> (Action, bool) {
+fn decide_via(ctx: &EvalContext, state: &GameState, rng: &mut SmallRng) -> (Action, bool) {
     // Legal concrete actions.
     let mut buf: [Action; 8] = [Action {
         player: 0,
@@ -194,7 +208,10 @@ fn decide_via(
     let n = state.legal_actions_into(&mut buf);
     if n == 0 {
         return (
-            Action { player: state.actor, kind: ActionKind::Fold },
+            Action {
+                player: state.actor,
+                kind: ActionKind::Fold,
+            },
             false,
         );
     }
@@ -212,12 +229,19 @@ fn decide_via(
         let mut n_legal = 0usize;
         for idx in 0..N_HANDS {
             let h = pkr_subgame::range_tracker::hole_at(idx);
-            if h.iter().any(|c| board_cards.contains(c)) { continue; }
-            uniform[idx] = 1.0; n_legal += 1;
+            if h.iter().any(|c| board_cards.contains(c)) {
+                continue;
+            }
+            uniform[idx] = 1.0;
+            n_legal += 1;
         }
         if n_legal > 0 {
             let u = 1.0 / n_legal as f64;
-            for x in uniform.iter_mut() { if *x > 0.0 { *x = u; } }
+            for x in uniform.iter_mut() {
+                if *x > 0.0 {
+                    *x = u;
+                }
+            }
         }
         let hole = &state.hole[state.actor];
         if let Some(strat) = sh.decide(state, hole, &uniform) {
@@ -351,11 +375,7 @@ pub struct TablesDir {
 /// directory is used. Pure function; no filesystem access. Callers
 /// that want the divergence warning log it themselves using
 /// [`TablesDir::a_b_diverge`].
-pub fn resolve_tables_dir(
-    a: &Path,
-    b: &Path,
-    explicit: Option<&Path>,
-) -> TablesDir {
+pub fn resolve_tables_dir(a: &Path, b: &Path, explicit: Option<&Path>) -> TablesDir {
     if let Some(d) = explicit {
         return TablesDir {
             dir: d.to_path_buf(),
@@ -397,6 +417,10 @@ pub fn tournament(
     let mut sum_a_seat0 = 0.0f64;
     let mut sum_b_seat0 = 0.0f64;
 
+    // 2026-11-03 re-audit: incomplete hands are excluded (not counted
+    // as 0.0 chips) and reported.
+    let mut hands_incomplete: u64 = 0;
+
     // Progress: a 20k-deal search H2H runs for hours and the loop prints
     // nothing otherwise. Every ~10% (min 500, max 2000 deals) to stderr.
     let progress_every = (hands / 10).clamp(1, 2000);
@@ -410,20 +434,59 @@ pub fn tournament(
             let eta = (hands as f64 - done) / rate.max(1e-9);
             eprintln!(
                 "[tournament] {i}/{} deals ({:.0}%), {:.2} deals/s, ETA {:.0}m",
-                hands, 100.0 * done / hands as f64, rate, eta / 60.0
+                hands,
+                100.0 * done / hands as f64,
+                rate,
+                eta / 60.0
             );
         }
         // Spread the base seed by a large odd constant so different
         // --seed values give DISJOINT deal sets. A plain base_seed+i made
         // seed 43's deals = seed 42's shifted by one (19999/20000 shared).
-        let seed = base_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(i);
+        let seed = base_seed
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(i);
         let (h0, h1, runout) = deal_hand(seed);
 
         // Pass 1: A in seat 0, B in seat 1. Measured as seat-0 profit.
-        let a_at_seat0 = play_one(a, b, abstraction, evaluator, h0, h1, &runout, 0, seed, search_a, search_b);
+        let a_at_seat0 = play_one(
+            a,
+            b,
+            abstraction,
+            evaluator,
+            h0,
+            h1,
+            &runout,
+            0,
+            seed,
+            search_a,
+            search_b,
+        );
 
         // Pass 2: B in seat 0, A in seat 1. Measured as seat-0 profit.
-        let b_at_seat0 = play_one(b, a, abstraction, evaluator, h0, h1, &runout, 0, seed, search_b, search_a);
+        let b_at_seat0 = play_one(
+            b,
+            a,
+            abstraction,
+            evaluator,
+            h0,
+            h1,
+            &runout,
+            0,
+            seed,
+            search_b,
+            search_a,
+        );
+
+        // 2026-11-03 re-audit: exclude incomplete hands from the mean
+        // (both passes must complete; the paired diff needs both).
+        let (a_at_seat0, b_at_seat0) = match (a_at_seat0, b_at_seat0) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                hands_incomplete += 1;
+                continue;
+            }
+        };
 
         // Same-seat paired diff: how much more does A win from the
         // SB than B does from the SB, on the same deal?
@@ -444,7 +507,11 @@ pub fn tournament(
         0.0
     };
     let se_diff = (var / n).sqrt();
-    let t = if se_diff > 0.0 { mean_diff / se_diff } else { 0.0 };
+    let t = if se_diff > 0.0 {
+        mean_diff / se_diff
+    } else {
+        0.0
+    };
 
     TournamentResult {
         hands,
@@ -454,6 +521,7 @@ pub fn tournament(
         mean_diff,
         se_diff,
         t,
+        hands_incomplete,
     }
 }
 
@@ -512,7 +580,8 @@ mod tests {
     fn seeds_give_disjoint_deals() {
         let spread = |b: u64, i: u64| b.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(i);
         let mut shared = 0;
-        let set: std::collections::HashSet<_> = (0..500).map(|i| deal_hand(spread(42, i))).collect();
+        let set: std::collections::HashSet<_> =
+            (0..500).map(|i| deal_hand(spread(42, i))).collect();
         for i in 0..500 {
             if set.contains(&deal_hand(spread(43, i))) {
                 shared += 1;
@@ -582,12 +651,14 @@ mod tests {
             eprintln!("SKIP: {} not present -- run ./smoke.sh", dir.display());
             return None;
         }
-        let store = match pkr_abstraction::load_centroids(
-            dir.join("centroids.bin").to_str().unwrap(),
-        ) {
-            Ok(s) => s,
-            Err(e) => { eprintln!("SKIP: load centroids failed: {e}"); return None; }
-        };
+        let store =
+            match pkr_abstraction::load_centroids(dir.join("centroids.bin").to_str().unwrap()) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("SKIP: load centroids failed: {e}");
+                    return None;
+                }
+            };
         let abs = pkr_abstraction::KMeansAbstraction::from_store(
             store,
             std::sync::Arc::new(pkr_eval::NlheEvaluator),
@@ -616,7 +687,10 @@ mod tests {
                 *x = 0;
             }
             cdf[6] = 255;
-            Some(SotaAdvice { cdf_probabilities: cdf, len: 7 })
+            Some(SotaAdvice {
+                cdf_probabilities: cdf,
+                len: 7,
+            })
         }
     }
 
