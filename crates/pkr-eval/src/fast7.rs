@@ -53,7 +53,8 @@ impl Fast7Evaluator {
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "hand_ranks.bin too small: {} bytes, expected at least {}",
-                    mmap.len(), EXPECTED
+                    mmap.len(),
+                    EXPECTED
                 ),
             ));
         }
@@ -86,6 +87,15 @@ impl Fast7Evaluator {
 impl Evaluator for Fast7Evaluator {
     #[inline]
     fn evaluate_hand(&self, hole: &[u8], board: &[u8]) -> u32 {
+        // 2026-11-03 re-audit: mirror slow.rs's M-22 assert. Without it
+        // a >7-card input hit a raw index-out-of-bounds instead of a
+        // diagnostic message (the two evaluators failed differently on
+        // the same misuse).
+        assert!(
+            hole.len() + board.len() <= 7,
+            "evaluate_hand: {} cards exceeds the 7-card buffer",
+            hole.len() + board.len()
+        );
         let mut cards = [0u8; 7];
         let mut n = 0usize;
         for &c in hole.iter().chain(board.iter()) {
