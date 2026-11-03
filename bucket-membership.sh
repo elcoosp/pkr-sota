@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # bucket-membership.sh — for each hand class, show which bucket it's in
 # and what other classes share that bucket.
+# 2026-11-03 re-audit (M14): the eval-log path and output dirs are now
+# derived from VERSION (default v14, the version this tool was written
+# for) instead of being hardcoded to v9/v14.
 set -uo pipefail
 cd "$(dirname "$0")"
+
+VERSION="${VERSION:-v14}"
+export VERSION
 
 python3 - << 'PY'
 from math import comb
@@ -12,8 +18,13 @@ def flat_index_preflop(c0, c1):
     return comb(a, 2) + comb(b, 1)
 
 def to_cards(rank, suit):
+    # 2026-11-03 re-audit (M14): the canonical card encoding in this repo
+    # is id = suit * 13 + rank (pkr-eval/src/slow.rs `id = suit * 13 +
+    # rank, ranks 2..=A = 0..=12`, also fast7.rs and hand_ranks.bin).
+    # This helper used rank * 4 + suit, so EVERY bucket membership printed
+    # here belonged to the wrong combo.
     # rank 0..12 = 2..A, suit 0..3 = c,d,h,s
-    return rank * 4 + suit
+    return suit * 13 + rank
 
 RANK_NAMES = "23456789TJQKA"
 
@@ -42,10 +53,14 @@ for r1 in range(12, -1, -1):
         classes.append((hand_class(r1, r2, False),
                         (to_cards(r1, 0), to_cards(r2, 1))))
 
-# Read preflop table
+# Read preflop tables. The primary table follows VERSION (default v14);
+# the k=8 v9 table is kept as the always-present small-k reference.
+import os
+
+version = os.environ.get("VERSION", "v14")
 tables = {
-    'v9  (k=8)':  'outputs/v9/preflop_abstraction.bin',
-    'v14 (k=200)': 'outputs/v14/preflop_abstraction.bin',
+    f'{version} (k=200)': f'outputs/{version}/preflop_abstraction.bin',
+    'v9 (k=8)':            'outputs/v9/preflop_abstraction.bin',
 }
 
 # For each table, group classes by bucket
@@ -102,6 +117,6 @@ for label, path in tables.items():
 PY
 
 echo ""
-echo "=== v14 current status ==="
+echo "=== ${VERSION} current status ==="
 pgrep -fl pkr-trainer || echo "  no trainer running"
-tail -3 /tmp/v14_evals.log 2>/dev/null
+tail -3 "/tmp/${VERSION}_evals.log" 2>/dev/null || true
