@@ -19,6 +19,9 @@ fn leduc_converges() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .expect("parse expl_mchips");
-    assert!(m < 70.0, "Leduc exploitability regressed: {m} mchips (limit 70)");
+    assert!(
+        m < 70.0,
+        "Leduc exploitability regressed: {m} mchips (limit 70)"
+    );
     assert!(m > 0.0, "exploitability is zero - solver did nothing");
 }
