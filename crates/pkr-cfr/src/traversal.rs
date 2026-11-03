@@ -443,7 +443,11 @@ pub fn traverse(
                 v[a] = f32::NAN;
                 continue;
             }
-            if may_prune && strategy[a] == 0.0 && a != pkr_core::abstraction::JAM_BUCKET as usize && rng.random::<f32>() < 0.95 {
+            if may_prune
+                && strategy[a] == 0.0
+                && a != pkr_core::abstraction::JAM_BUCKET as usize
+                && rng.random::<f32>() < 0.95
+            {
                 v[a] = f32::NAN;
                 metrics.pruned_actions += 1;
                 continue;
@@ -485,8 +489,7 @@ pub fn traverse(
             // S4a: Linear CFR weights sampled regret by t / 1e6.
             // Overflow-safe: f64 intermediate, clamped to f32 range.
             if crate::config::TrainConfig::global().linear_cfr {
-                let scaled =
-                    delta as f64 * (global_iteration as f64 / 1e6);
+                let scaled = delta as f64 * (global_iteration as f64 / 1e6);
                 delta = scaled.clamp(-f32::MAX as f64, f32::MAX as f64) as f32;
             }
             batch.push(BatchItem {

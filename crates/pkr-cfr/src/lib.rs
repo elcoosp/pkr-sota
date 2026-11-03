@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
+pub mod config;
 pub mod dcfr;
 pub mod gpu;
 pub mod metrics;
@@ -8,7 +9,6 @@ pub mod riversolve;
 pub mod table;
 pub mod traversal;
 pub mod valuenet;
-pub mod config;
 
 use crate::gpu::BatchItem;
 use crate::metrics::LocalMetrics;
@@ -99,12 +99,7 @@ impl Trainer {
         }
     }
 
-    fn run_iterations_parallel_impl(
-        &mut self,
-        n: usize,
-        start_iter: u32,
-        traversers: &[usize],
-    ) {
+    fn run_iterations_parallel_impl(&mut self, n: usize, start_iter: u32, traversers: &[usize]) {
         use crate::metrics::global;
         use std::sync::OnceLock;
         use std::time::Instant;
@@ -138,7 +133,7 @@ impl Trainer {
                 let mut rng = SmallRng::seed_from_u64(
                     run_seed
                       // M-17 (audit 2026-10-10): seed on base_iter alone.
-                        ^ (base_iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        ^ (base_iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
                 );
                 let initial_deck: [u8; 52] = core::array::from_fn(|i| i as u8);
 
@@ -207,9 +202,18 @@ impl Trainer {
         let (regret_in, regret_out) = table.flush_cpu_batch(&mut self.merged_batch);
         let t_flush = t2.elapsed();
 
+        // 2026-11-03 re-audit: under PKR_ALT_UPDATES the two
+        // single-traverser passes each carry half a logical iteration;
+        // recording n per pass double-counted iterations in
+        // stats.json / metrics.csv (it/s and per-iteration costs).
+        let logical_iters = if traversers.len() == 1 {
+            (n / 2) as u64
+        } else {
+            n as u64
+        };
         global().record_batch(
             &batch_metrics,
-            n as u64,
+            logical_iters,
             t_wall.elapsed().as_nanos() as u64,
             t_traverse.as_nanos() as u64,
             t_merge.as_nanos() as u64,
@@ -279,5 +283,63 @@ impl Trainer {
         let iter = self.table.load_checkpoint(path, current)?;
         self.iteration.store(iter, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    //! 2026-11-03 re-audit: `GlobalMetrics.iterations` used to record
+    //! `n` per impl call, so `PKR_ALT_UPDATES=1` (two single-traverser
+    //! passes) double-counted logical iterations in stats.json and
+    //! metrics.csv.
+
+    use crate::metrics::global;
+    use crate::Trainer;
+    use pkr_contracts::{AbstractionBuilder, Evaluator};
+    use std::sync::Arc;
+
+    struct StubAbs;
+    impl AbstractionBuilder for StubAbs {
+        fn get_infoset_hash(&self, _h: &[u8], _b: &[u8], hist: &[u8], street: u8) -> u64 {
+            let mut s = pkr_contracts::FNV_OFFSET;
+            pkr_contracts::fnv1a(&mut s, &[street]);
+            pkr_contracts::fnv1a(&mut s, hist);
+            s
+        }
+    }
+
+    struct StubEval;
+    impl Evaluator for StubEval {
+        fn evaluate_hand(&self, _hole: &[u8], _board: &[u8]) -> u32 {
+            0
+        }
+    }
+
+    fn trainer() -> Trainer {
+        Trainer::with_capacity(Arc::new(StubAbs), Arc::new(StubEval), 4096)
+    }
+
+    // One test (not two): GlobalMetrics is process-global, and parallel
+    // test threads would contaminate each other's snapshots.
+    #[test]
+    fn metrics_iteration_accounting() {
+        let before = global().snapshot().iterations;
+
+        // Two single-traverser passes of n=10 = 10 logical iterations.
+        let mut t = trainer();
+        t.run_iterations_parallel_impl(10, 1, &[0]);
+        t.run_iterations_parallel_impl(10, 1, &[1]);
+        let after_alt = global().snapshot().iterations;
+        assert_eq!(
+            after_alt - before,
+            10,
+            "two half-iterations of n=10 must record 10, not 20"
+        );
+
+        // Simultaneous mode records the full n.
+        let mut t2 = trainer();
+        t2.run_iterations_parallel_impl(10, 1, &[0, 1]);
+        let after_sim = global().snapshot().iterations;
+        assert_eq!(after_sim - after_alt, 10);
     }
 }

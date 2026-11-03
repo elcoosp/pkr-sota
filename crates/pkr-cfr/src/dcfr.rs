@@ -270,25 +270,44 @@ pub fn dcfr_step(iteration: u32) -> DcfrStep {
     // momentum. `identity` only at t == 0 (first-ever update returns
     // delta unmodified, matching `update_regret_i64` history).
     if crate::config::TrainConfig::global().linear_cfr {
-        return DcfrStep { w_pos: 1.0, w_neg: 1.0, gamma: 0.0, identity: iteration == 0 };
+        return DcfrStep {
+            w_pos: 1.0,
+            w_neg: 1.0,
+            gamma: 0.0,
+            identity: iteration == 0,
+        };
     }
     // Only t == 0 is the identity case (matches the original
     // `update_regret_i64` behaviour: first-ever update returns delta
     // unmodified). During warmup (0 < t < TAU) the discount is 1.0 and
     // the standard `r' = max(0, r + delta)` applies.
     if iteration == 0 {
-        return DcfrStep { w_pos: 1.0, w_neg: 1.0, gamma: 1.0, identity: true };
+        return DcfrStep {
+            w_pos: 1.0,
+            w_neg: 1.0,
+            gamma: 1.0,
+            identity: true,
+        };
     }
     if iteration < TAU {
         // Warmup: discount = 1, but gamma (used only by the momentum
         // path) is still 1/sqrt(t+1) so PCFR+ momentum behaves the same
         // as the pre-refactor `update_regret_full`.
         let gamma = 1.0 / ((iteration as f64) + 1.0).sqrt();
-        return DcfrStep { w_pos: 1.0, w_neg: 1.0, gamma, identity: false };
+        return DcfrStep {
+            w_pos: 1.0,
+            w_neg: 1.0,
+            gamma,
+            identity: false,
+        };
     }
     let t = iteration as f64;
     let p = hs_progress(iteration);
-    let alpha = if hs_dcfr_enabled() { schedule_alpha(p) } else { configured_alpha() };
+    let alpha = if hs_dcfr_enabled() {
+        schedule_alpha(p)
+    } else {
+        configured_alpha()
+    };
     let tp = t.powf(alpha);
     let tn = t.powf(BETA as f64);
     let w_pos = tp / (tp + 1.0);
@@ -296,7 +315,12 @@ pub fn dcfr_step(iteration: u32) -> DcfrStep {
     // The momentum gamma was used by the (now-disabled) PCFR+ path.
     // We keep it for API compatibility; production uses PKR_MOMENTUM=0.
     let gamma = 1.0 / (t + 1.0).sqrt();
-    DcfrStep { w_pos, w_neg, gamma, identity: false }
+    DcfrStep {
+        w_pos,
+        w_neg,
+        gamma,
+        identity: false,
+    }
 }
 
 /// Apply the precomputed discounts. `momentum_on=false` (production)
@@ -343,7 +367,10 @@ pub fn update_regret_with_step(
         summed.max(0)
     } else {
         // -R_MAX (see table.rs) so no downstream multiply overflows.
-        summed.max(-(1i64 << 62))
+        // 2026-11-03 re-audit: this used to hardcode -(1<<62), half of
+        // R_MAX's headroom, with the real clamp two layers away in
+        // flush_cpu_batch_with. Use the constant itself.
+        summed.max(-crate::table::R_MAX)
     };
     (new_r, predicted_i64)
 }
@@ -391,7 +418,13 @@ pub fn update_regret_i64_mode(
     momentum_on: bool,
 ) -> (i64, i64) {
     let step = dcfr_step(iteration);
-    update_regret_with_step(current_i64, prev_momentum_i64, delta_i64, &step, momentum_on)
+    update_regret_with_step(
+        current_i64,
+        prev_momentum_i64,
+        delta_i64,
+        &step,
+        momentum_on,
+    )
 }
 
 /// Production entry point (momentum on).

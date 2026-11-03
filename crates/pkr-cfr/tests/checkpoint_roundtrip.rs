@@ -28,7 +28,8 @@ fn save_load_roundtrip_preserves_cells() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ckpt.bin");
-    src.save_checkpoint(path.to_str().unwrap(), 12_345, &fp).unwrap();
+    src.save_checkpoint(path.to_str().unwrap(), 12_345, &fp)
+        .unwrap();
 
     let dst = CompactRegretTable::with_capacity(4096);
     let iter = dst.load_checkpoint(path.to_str().unwrap(), &fp).unwrap();
@@ -43,7 +44,8 @@ fn save_load_roundtrip_preserves_cells() {
             assert!(
                 (a[k] - b[k]).abs() < 1e-6,
                 "hash {h:#x} action {k}: src={} dst={}",
-                a[k], b[k]
+                a[k],
+                b[k]
             );
         }
     }
@@ -59,7 +61,9 @@ fn load_rejects_fingerprint_mismatch() {
 
     let fp2 = AbstractionFingerprint::from_constants(300);
     let dst = CompactRegretTable::with_capacity(4096);
-    let err = dst.load_checkpoint(path.to_str().unwrap(), &fp2).unwrap_err();
+    let err = dst
+        .load_checkpoint(path.to_str().unwrap(), &fp2)
+        .unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 }
 
@@ -77,6 +81,8 @@ fn load_rejects_truncated_file() {
     std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
 
     let dst = CompactRegretTable::with_capacity(4096);
-    let err = dst.load_checkpoint(path.to_str().unwrap(), &fp).unwrap_err();
+    let err = dst
+        .load_checkpoint(path.to_str().unwrap(), &fp)
+        .unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
 }

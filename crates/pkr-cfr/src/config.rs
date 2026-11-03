@@ -33,11 +33,7 @@ use std::sync::OnceLock;
 
 /// Env-var fallback helper: read `name`, parse, keep only if the
 /// predicate passes. Falls back to `default` on any error.
-fn env_parse<T: std::str::FromStr>(
-    name: &str,
-    default: T,
-    accept: impl Fn(&T) -> bool,
-) -> T {
+fn env_parse<T: std::str::FromStr>(name: &str, default: T, accept: impl Fn(&T) -> bool) -> T {
     std::env::var(name)
         .ok()
         .and_then(|s| s.parse::<T>().ok())
@@ -175,9 +171,7 @@ Proceeding with momentum=false. Setting will not affect training."
                 }
                 false
             },
-            avg_power: env_parse("PKR_AVG_POWER", d.avg_power, |p| {
-                (0.0..=4.0).contains(p)
-            }),
+            avg_power: env_parse("PKR_AVG_POWER", d.avg_power, |p| (0.0..=4.0).contains(p)),
             explore_epsilon: env_parse("PKR_EXPLORE_EPSILON", d.explore_epsilon, |e| {
                 (0.0..1.0).contains(e)
             }),
@@ -248,7 +242,10 @@ mod tests {
     fn experiment_defaults_are_stable() {
         let d = TrainConfig::default();
         assert!(!d.momentum, "F2: momentum must default OFF");
-        assert_eq!(d.avg_power, 1.0, "avg_power=1 (was 2.0; changed 2026-10-02, see f5-grid)");
+        assert_eq!(
+            d.avg_power, 1.0,
+            "avg_power=1 (was 2.0; changed 2026-10-02, see f5-grid)"
+        );
         assert_eq!(d.explore_epsilon, 0.01, "F2: eps must default to 0.01");
         assert_eq!(d.dcfr_alpha, 1.5, "F2: dcfr_alpha must default to 1.5");
         assert!(!d.hs_dcfr, "F2: hs_dcfr must default OFF");

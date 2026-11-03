@@ -35,14 +35,20 @@ fn to_card(rank: u8, suit: u8) -> u8 {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 5 {
-        eprintln!("usage: {} <ckpt> <preflop_table> <centroids> <rank_table> [out.csv]", args[0]);
+        eprintln!(
+            "usage: {} <ckpt> <preflop_table> <centroids> <rank_table> [out.csv]",
+            args[0]
+        );
         std::process::exit(2);
     }
     let ckpt = &args[1];
     let preflop_table_path = &args[2];
     let centroids_path = &args[3];
     let rank_table_path = &args[4];
-    let out_path = args.get(5).map(|s| s.as_str()).unwrap_or("preflop_dump.csv");
+    let out_path = args
+        .get(5)
+        .map(|s| s.as_str())
+        .unwrap_or("preflop_dump.csv");
 
     // Build abstraction.
     let store = load_centroids(centroids_path)?;
@@ -66,7 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let street = 0u8;
 
     let mut w = std::io::BufWriter::new(std::fs::File::create(out_path)?);
-    writeln!(w, "hand,r1,r2,suited,fold,check,call,bet_small,bet_medium,bet_large,cluster")?;
+    writeln!(
+        w,
+        "hand,r1,r2,suited,fold,check,call,bet_small,bet_medium,bet_large,cluster"
+    )?;
 
     let mut rank_table_used = std::marker::PhantomData::<()>;
     let _ = rank_table_path;
@@ -74,7 +83,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for r1 in (0u8..13).rev() {
         for r2 in (0u8..13).rev() {
-            if r2 > r1 { continue; }
+            if r2 > r1 {
+                continue;
+            }
             let pair = r1 == r2;
             let variants: &[bool] = if pair { &[false] } else { &[true, false] };
             for &suited in variants {
@@ -93,7 +104,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Look up the cluster id.
                 let cluster = {
                     let idx = {
-                        let (a, b) = if hole[0] > hole[1] { (hole[0], hole[1]) } else { (hole[1], hole[0]) };
+                        let (a, b) = if hole[0] > hole[1] {
+                            (hole[0], hole[1])
+                        } else {
+                            (hole[1], hole[0])
+                        };
                         let ca = pkr_eval::lookup::choose(a as u32, 2);
                         let cb = pkr_eval::lookup::choose(b as u32, 1);
                         ca + cb
@@ -109,8 +124,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     w,
                     "{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{}",
                     hand_name(r1, r2, suited),
-                    r1, r2, suited as u8,
-                    strat[0], strat[1], strat[2], strat[3], strat[4], strat[5],
+                    r1,
+                    r2,
+                    suited as u8,
+                    strat[0],
+                    strat[1],
+                    strat[2],
+                    strat[3],
+                    strat[4],
+                    strat[5],
                     cluster,
                 )?;
             }

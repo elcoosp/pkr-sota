@@ -251,7 +251,27 @@ impl ValueNet {
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
 
+        // 2026-11-03 re-audit: short or unaligned files used to panic
+        // (cast_slice on a non-multiple-of-4 length, then slice OOB).
+        // This module is WIP/unwired, but load must fail with an error,
+        // not abort the process, before it is ever wired up.
+        let expected =
+            HIDDEN1 * INPUT_DIM + HIDDEN1 + HIDDEN2 * HIDDEN1 + HIDDEN2 + OUTPUT_DIM * HIDDEN2 + 1;
+        if data.len() % 4 != 0 {
+            return Err(format!(
+                "valuenet file {path}: length {} is not a multiple of 4",
+                data.len()
+            )
+            .into());
+        }
         let floats: &[f32] = bytemuck::cast_slice(&data);
+        if floats.len() < expected {
+            return Err(format!(
+                "valuenet file {path}: {} floats, need {expected}",
+                floats.len()
+            )
+            .into());
+        }
         let mut offset = 0;
 
         let w1 = floats[offset..offset + HIDDEN1 * INPUT_DIM].to_vec();
@@ -416,5 +436,41 @@ mod tests {
         let out1 = net.forward(&features);
         let out2 = net.forward(&features);
         assert_eq!(out1, out2);
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    #[test]
+    fn load_rejects_short_and_unaligned_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("vn.bin");
+        // 3 bytes: neither a multiple of 4 nor long enough.
+        std::fs::write(&p, b"abc").unwrap();
+        assert!(
+            ValueNet::load(p.to_str().unwrap()).is_err(),
+            "unaligned short file must Err"
+        );
+        // Aligned but truncated (4 floats instead of thousands).
+        let p2 = dir.path().join("vn2.bin");
+        std::fs::write(&p2, [0u8; 16]).unwrap();
+        assert!(
+            ValueNet::load(p2.to_str().unwrap()).is_err(),
+            "truncated file must Err"
+        );
+    }
+
+    #[test]
+    fn load_roundtrips_a_valid_file() {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+        let net = ValueNet::new(&mut rng);
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("vn_ok.bin");
+        net.export(p.to_str().unwrap()).unwrap();
+        let loaded = ValueNet::load(p.to_str().unwrap()).expect("valid file must load");
+        assert_eq!(loaded.param_count(), net.param_count());
     }
 }

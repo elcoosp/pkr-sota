@@ -211,10 +211,6 @@ fn cache_insert(hash: u64, idx: usize) {
     });
 }
 
-/// Retained for future use if the integer path ever needs to warn about
-/// non-finite intermediates (currently it cannot produce them because
-/// all arithmetic stays in i64/i128).
-#[allow(dead_code)]
 // L6: `new_r == i64::MAX` is unreachable — `update_regret_with_step`
 // saturates via `saturating_add` and every flush clamps to +/-R_MAX
 // (i64::MAX/4). Removed as dead assurance; if saturation detection is
@@ -560,7 +556,11 @@ impl CompactRegretTable {
     /// parallel-write each group. After dedup every key is unique, so no
     /// two parallel groups touch the same atomic cell.
     pub fn apply_strategy_batch(&self, ops: &mut Vec<StrategyOp>) -> u64 {
-        ops.retain(|op| op.prob != 0.0);
+        // S2 hardening (2026-11-03 re-audit): NaN != 0.0 is true, so
+        // the old retain let NaN probs through to poison an infoset's
+        // strategy sum. Unreachable with current config bounds, but
+        // cheap to keep out.
+        ops.retain(|op| op.prob.is_finite() && op.prob != 0.0);
         if ops.is_empty() {
             return 0;
         }
@@ -614,13 +614,18 @@ impl CompactRegretTable {
             return (0, 0);
         }
         // Deterministic total order: ties on (index, action, iteration) are
-    // broken by the delta's bit pattern, so the f64 accumulation order
-    // is identical across runs. Without this, par_sort_unstable_by_key
-    // reorders equal keys nondeterministically and the sum's low bits
-    // vary run-to-run.
-    batch.par_sort_unstable_by_key(|item| {
-        (item.index, item.action, item.iteration, item.delta.to_bits())
-    });
+        // broken by the delta's bit pattern, so the f64 accumulation order
+        // is identical across runs. Without this, par_sort_unstable_by_key
+        // reorders equal keys nondeterministically and the sum's low bits
+        // vary run-to-run.
+        batch.par_sort_unstable_by_key(|item| {
+            (
+                item.index,
+                item.action,
+                item.iteration,
+                item.delta.to_bits(),
+            )
+        });
 
         let mut groups: Vec<(usize, usize, u32, u32)> = Vec::with_capacity(batch.len() / 4 + 16);
         let mut i = 0usize;
@@ -766,7 +771,9 @@ impl CompactRegretTable {
         let guard = self.hash_to_idx.pin();
         guard.get(&infoset_hash).map(|&idx| {
             let mut s = 0.0f64;
-            for a in 0..K { s += self.load_sum(idx, a); }
+            for a in 0..K {
+                s += self.load_sum(idx, a);
+            }
             s
         })
     }
@@ -819,7 +826,8 @@ impl CompactRegretTable {
                 if let Some(&idx) = guard.get(k) {
                     let base = idx * SUM_STRIDE;
                     for a in 0..SUM_STRIDE {
-                        strat_mass += f64::from_bits(self.strategy_sum[base + a].load(Ordering::Relaxed));
+                        strat_mass +=
+                            f64::from_bits(self.strategy_sum[base + a].load(Ordering::Relaxed));
                     }
                 }
             }
@@ -1036,10 +1044,7 @@ impl CompactRegretTable {
         // AT 1 THREAD. At 4+ threads the strategy-sum accumulation has
         // a small residual divergence (see
         // docs/experiments/archive/training-nondeterminism.md).
-        let mut entries: Vec<(u64, usize)> = guard
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect();
+        let mut entries: Vec<(u64, usize)> = guard.iter().map(|(k, v)| (*k, *v)).collect();
         entries.sort_unstable_by_key(|(k, _)| *k);
         let mut kv_buf = [0u8; 16];
         for (k, v) in entries {
@@ -1202,8 +1207,7 @@ impl CompactRegretTable {
             for i in 0..batch {
                 let off = i * 16;
                 let key = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
-                let idx =
-                    u64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap()) as usize;
+                let idx = u64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap()) as usize;
                 if idx >= self.capacity {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -1354,7 +1358,10 @@ mod tests {
         // momentum state rather than collapsing to one update:
         //   i1: 100 -> r=71; +300 -> r=304; +400 -> r=655  => 0.655
         //   i2: 200 -> r=141; +500 -> r=536                => 0.536
-        let mode = FlushMode { sequential: true, momentum: true };
+        let mode = FlushMode {
+            sequential: true,
+            momentum: true,
+        };
         let (input, unique) = table.flush_cpu_batch_with(&mut batch, mode);
         assert_eq!(input, 5);
         assert_eq!(unique, 2);
@@ -1367,13 +1374,41 @@ mod tests {
         let j1 = table2.get_or_create_idx(0xBEEF_0001);
         let j2 = table2.get_or_create_idx(0xBEEF_0002);
         let mut batch2 = vec![
-            BatchItem { index: j1 as u32, action: 0, iteration: 1, delta: 0.1 },
-            BatchItem { index: j2 as u32, action: 2, iteration: 1, delta: 0.2 },
-            BatchItem { index: j1 as u32, action: 0, iteration: 1, delta: 0.3 },
-            BatchItem { index: j1 as u32, action: 0, iteration: 1, delta: 0.4 },
-            BatchItem { index: j2 as u32, action: 2, iteration: 1, delta: 0.5 },
+            BatchItem {
+                index: j1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.1,
+            },
+            BatchItem {
+                index: j2 as u32,
+                action: 2,
+                iteration: 1,
+                delta: 0.2,
+            },
+            BatchItem {
+                index: j1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.3,
+            },
+            BatchItem {
+                index: j1 as u32,
+                action: 0,
+                iteration: 1,
+                delta: 0.4,
+            },
+            BatchItem {
+                index: j2 as u32,
+                action: 2,
+                iteration: 1,
+                delta: 0.5,
+            },
         ];
-        let mode_no_mom = FlushMode { sequential: true, momentum: false };
+        let mode_no_mom = FlushMode {
+            sequential: true,
+            momentum: false,
+        };
         let _ = table2.flush_cpu_batch_with(&mut batch2, mode_no_mom);
         // Plain DCFR at t=1 (warmup, discount=1) sums the deltas:
         //   i1: 100 + 300 + 400 = 800 => 0.8
@@ -1440,44 +1475,76 @@ mod f5_tests {
 
     #[test]
     fn flush_folds_deltas_sequentially_per_iteration() {
-        // Only valid when the sequential fold is enabled via env var.
-        if std::env::var("PKR_F5_SEQUENTIAL").as_deref() != Ok("1") {
-            eprintln!("SKIP: PKR_F5_SEQUENTIAL not set");
-            return;
-        }
+        // 2026-11-03 re-audit: this test used to early-return unless
+        // PKR_F5_SEQUENTIAL=1 was in the environment — but sequential
+        // folding IS the production default (TrainConfig::default),
+        // so the clamp-semantics regression this pins never ran in a
+        // normal `cargo test`. Drive the mode explicitly instead.
         let table = CompactRegretTable::with_capacity(4096);
         let i1 = table.get_or_create_idx(0xCAFE_0001);
-        // r=0; iter1 delta=+10 (t=1 < TAU -> no discount); iter2 delta=-6.
-        //
-        // Sequential PCFR+ on the i64 fixed-point path (SCALE=1000,
-        // gamma = 1/sqrt(t+1)):
-        //   t=1: pred = round(0.7071*10000) = 7071 -> r = 7071, m = 7071
-        //   t=2: pred = round(0.4226*7071 + 0.5774*(-6000)) = -476
-        //        r = max(0, 7071 - 476) = 6595  => 6.595
-        // Collapsed (old code): one update with delta_sum = +4:
-        //   pred = round(0.7071*4000) = 2828 -> r = 2.828
-        // The sequential result must win. This is the clamp-semantics
-        // regression the audit (F5) is about.
+        // Clamp semantics (audit F5): the RM+ floor must apply BETWEEN
+        // the two deltas, not after summing them. With r=0 and deltas
+        // -10 then +10 (t=1,2 < TAU, so the DCFR discount is a no-op
+        // identity — the stale 6.595 expectation here predated the A3
+        // warmup rule):
+        //   sequential: r = max(0, 0-10) = 0; then max(0, 0+10) = 10
+        //   collapsed:  one update with delta_sum = 0  -> r = 0
+        // The sequential result must win.
         let mut batch = vec![
             BatchItem {
                 index: i1 as u32,
                 action: 0,
                 iteration: 1,
-                delta: 10.0,
+                delta: -10.0,
             },
             BatchItem {
                 index: i1 as u32,
                 action: 0,
                 iteration: 2,
-                delta: -6.0,
+                delta: 10.0,
             },
         ];
-        table.flush_cpu_batch(&mut batch);
+        table.flush_cpu_batch_with(
+            &mut batch,
+            FlushMode {
+                sequential: true,
+                momentum: false,
+            },
+        );
         let r = table.get_regret(0xCAFE_0001, 0);
         assert!(
-            (r - 6.595).abs() < 0.05,
-            "expected ~6.595 (sequential fold), got {r}"
+            (r - 10.0).abs() < 0.05,
+            "expected 10.0 (sequential fold), got {r}"
         );
+
+        // The collapsed (batched-sum) path on a fresh table yields 0
+        // for the same items — this is exactly the difference F5 is
+        // about, and it is what makes the two modes non-interchangeable.
+        let table2 = CompactRegretTable::with_capacity(4096);
+        let i2 = table2.get_or_create_idx(0xCAFE_0002);
+        let mut batch2 = vec![
+            BatchItem {
+                index: i2 as u32,
+                action: 0,
+                iteration: 1,
+                delta: -10.0,
+            },
+            BatchItem {
+                index: i2 as u32,
+                action: 0,
+                iteration: 2,
+                delta: 10.0,
+            },
+        ];
+        table2.flush_cpu_batch_with(
+            &mut batch2,
+            FlushMode {
+                sequential: false,
+                momentum: false,
+            },
+        );
+        let r2 = table2.get_regret(0xCAFE_0002, 0);
+        assert!(r2.abs() < 0.05, "collapsed fold must yield 0, got {r2}");
     }
 }
 
@@ -1866,7 +1933,7 @@ mod f7_allocation_tests {
     /// A freshly constructed table with a large capacity must not be
     /// resident in full. We can't assert RSS from inside the test, but
     /// we can assert the allocation succeeds (would fail at capacity
-    /// * 112 B = 6.72 GB virtual on a 16 GB machine if it eagerly
+    /// x 112 B = 6.72 GB virtual on a 16 GB machine if it eagerly
     /// touched all pages).
     #[test]
     #[ignore]
