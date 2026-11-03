@@ -1152,6 +1152,7 @@ dependencies = [
  "rand",
  "rayon",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

@@ -22,3 +22,6 @@ bytemuck = { workspace = true }
 [features]
 fast-eval = ["pkr-eval/fast-eval"]
 default = ["fast-eval"]
+
+[dev-dependencies]
+tempfile = "3"
