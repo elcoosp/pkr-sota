@@ -29,6 +29,10 @@ pub static VSEARCH_BOUND_BLENDED: AtomicU64 = AtomicU64::new(0);
 pub static VSEARCH_BOUND_FELL_BACK: AtomicU64 = AtomicU64::new(0);
 pub static VSEARCH_GADGET_SOLVES: AtomicU64 = AtomicU64::new(0);
 
+/// 2026-11-03 re-audit: aliased to satisfy `clippy::type_complexity`.
+/// (root strategy rows, optional M-4.3 trace: actions, buckets, matrix)
+pub(crate) type SolveOutcome = (Vec<(Act, f32)>, Option<(Vec<Act>, Vec<u8>, Vec<Vec<f32>>)>);
+
 pub struct VSearchCfg {
     pub bet_fracs: Vec<f32>,
     pub max_raises: u8,
@@ -142,16 +146,14 @@ pub fn solve_root_bounded(
     // cost ~40 s because only `iterate_budgeted` was clocked.
     if cfg.time_budget_ms > 0 {
         solver.set_deadline(Some(
-            std::time::Instant::now()
-                + std::time::Duration::from_millis(cfg.time_budget_ms),
+            std::time::Instant::now() + std::time::Duration::from_millis(cfg.time_budget_ms),
         ));
     }
 
     let mut sig_buf = [0u8; 8];
     let sig_len = st.infoset_signature_into(&mut sig_buf);
     let history_sig = &sig_buf[..sig_len];
-    let Some(bp_root) =
-        solver.blueprint_root_strategy(abs, tbl, history_sig, st.street as u8, st)
+    let Some(bp_root) = solver.blueprint_root_strategy(abs, tbl, history_sig, st.street as u8, st)
     else {
         return Some(solver.root_strategy(our_hand));
     };
@@ -197,7 +199,9 @@ pub fn solve_root_bounded(
         let mut hi = 1.0f32;
         let mut best = bp_root.clone();
         for _ in 0..cfg.bound_max_steps.max(1) {
-            if timed && t0.elapsed() >= budget { break; }
+            if timed && t0.elapsed() >= budget {
+                break;
+            }
             let mid = 0.5 * (lo + hi);
             let mixed = Solver::blend_root(&search_root, &bp_root, mid);
             solver.set_root_strategy(&mixed);
@@ -244,7 +248,7 @@ pub fn solve_root_bounded_traced(
     cfg: &VSearchCfg,
     abs: &dyn pkr_contracts::AbstractionBuilder,
     tbl: &pkr_cfr::table::CompactRegretTable,
-) -> Option<(Vec<(Act, f32)>, Option<(Vec<Act>, Vec<u8>, Vec<Vec<f32>>)>)> {
+) -> Option<SolveOutcome> {
     if !cfg.enabled_streets[st.street as usize] {
         return None;
     }
@@ -259,15 +263,13 @@ pub fn solve_root_bounded_traced(
     iterate_budgeted(&mut solver, cfg);
     if cfg.time_budget_ms > 0 {
         solver.set_deadline(Some(
-            std::time::Instant::now()
-                + std::time::Duration::from_millis(cfg.time_budget_ms),
+            std::time::Instant::now() + std::time::Duration::from_millis(cfg.time_budget_ms),
         ));
     }
     let mut sig_buf = [0u8; 8];
     let sig_len = st.infoset_signature_into(&mut sig_buf);
     let history_sig = &sig_buf[..sig_len];
-    let Some(bp_root) =
-        solver.blueprint_root_strategy(abs, tbl, history_sig, st.street as u8, st)
+    let Some(bp_root) = solver.blueprint_root_strategy(abs, tbl, history_sig, st.street as u8, st)
     else {
         return Some((solver.root_strategy(our_hand), None));
     };
@@ -303,7 +305,9 @@ pub fn solve_root_bounded_traced(
         let mut hi = 1.0f32;
         let mut best = bp_root.clone();
         for _ in 0..cfg.bound_max_steps.max(1) {
-            if timed && t0.elapsed() >= budget { break; }
+            if timed && t0.elapsed() >= budget {
+                break;
+            }
             let mid = 0.5 * (lo + hi);
             let mixed = Solver::blend_root(&search_root, &bp_root, mid);
             solver.set_root_strategy(&mixed);
@@ -316,9 +320,13 @@ pub fn solve_root_bounded_traced(
                         hi = mid;
                     }
                 }
-                None => { break; }
+                None => {
+                    break;
+                }
             }
-            if hi - lo < 1e-3 { break; }
+            if hi - lo < 1e-3 {
+                break;
+            }
         }
         (best, false)
     };
@@ -333,7 +341,17 @@ pub fn solve_root_bounded_traced(
         // SAME scalars `spec_from_state`/`action_bucket` used to build
         // the tree. The session matches `applied_bucket` (also computed
         // by `action_bucket`) against these, so the two agree exactly.
-        let stack = st.stacks[st.actor] + st.street_bets[st.actor];
+        //
+        // 2026-11-03 re-audit: `action_bucket`'s `stacks` parameter is
+        // chips BEHIND (its jam test is `amount >= stacks +
+        // street_bets`). The old `stack + street_bets` here inflated
+        // the jam threshold, so an all-in jam mapped to a fractional
+        // bucket (e.g. 3) instead of JAM_BUCKET (6) whenever the actor
+        // had chips already in the street — every other call site
+        // (vector.rs blueprint_root_strategy, session.rs, the range
+        // tracker) passes `st.stacks[actor]` alone. The tracker was
+        // then updated with the wrong bucket's probabilities.
+        let stack = st.stacks[st.actor];
         let street_bets = st.street_bets[st.actor];
         let opp_street_bets = st.street_bets[1 - st.actor];
         let pot = st.pot;
@@ -347,7 +365,11 @@ pub fn solve_root_bounded_traced(
                 Act::Bet(t) => ActionKind::Bet(*t),
             };
             buckets.push(pkr_core::abstraction::action_bucket(
-                &kind, stack, street_bets, opp_street_bets, pot,
+                &kind,
+                stack,
+                street_bets,
+                opp_street_bets,
+                pot,
             ));
         }
         Some((acts_list, buckets, final_root))
@@ -382,7 +404,12 @@ pub fn solve_root_gadgetted(
     } else {
         [ranges[1].clone(), ranges[0].clone()]
     };
-    let spec = spec_from_state(&work, ranges_w.clone(), cfg.bet_fracs.clone(), cfg.max_raises);
+    let spec = spec_from_state(
+        &work,
+        ranges_w.clone(),
+        cfg.bet_fracs.clone(),
+        cfg.max_raises,
+    );
     if spec.root_actor != 0 {
         return None;
     }
@@ -404,13 +431,18 @@ pub fn solve_root_gadgetted(
         let mut hs = Vec::new();
         let mut ps = Vec::new();
         for h in 0..r.len() {
-            if r[h] > 0.0 { hs.push(holes[h]); ps.push(r[h] as f64); }
+            if r[h] > 0.0 {
+                hs.push(holes[h]);
+                ps.push(r[h] as f64);
+            }
         }
         (hs, ps)
     };
     let (h0, p0) = to_hp(&ranges_w[0]);
     let (h1, p1) = to_hp(&ranges_w[1]);
-    if h0.is_empty() || h1.is_empty() { return None; }
+    if h0.is_empty() || h1.is_empty() {
+        return None;
+    }
     let ev = pkr_eval::NlheEvaluator;
     let poc = pkr_subgame::POCConfig {
         root: work.clone(),
@@ -420,7 +452,10 @@ pub fn solve_root_gadgetted(
         evaluator: &ev,
         blueprint: Some((abs, tbl)),
     };
-    let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc).iter().map(|&x| x as f32).collect();
+    let cbv: Vec<f32> = pkr_subgame::p1_cbv_per_hand(&poc)
+        .iter()
+        .map(|&x| x as f32)
+        .collect();
     solver.install_gadget(cbv, 1);
     // M-29: budget the gadget solve too.
     iterate_budgeted(&mut solver, cfg);
@@ -430,6 +465,61 @@ pub fn solve_root_gadgetted(
 /// Iteration chunk size for the wall-clock check. Small enough to
 /// respect the budget; large enough to stay off the hot path.
 const BUDGET_CHECK_EVERY: u32 = 5;
+
+/// 2026-11-03 re-audit (item 8): the OPPONENT's 1326-hand posterior for
+/// the vector solver. Zeroes (a) every hand sharing a card with the
+/// board and (b) every hand sharing a card with OUR hole — we hold
+/// those cards, so the opponent cannot. `VSearchHandle::decide` did
+/// this inline; the session's `advise_vsearch` used to feed the RAW
+/// tracker range to the solver, handing the opponent our hole's 6
+/// combos (the tracker maintains the two marginals independently and
+/// does not cross-remove). Both call sites share this helper now.
+///
+/// Returns `None` when masking removed ALL mass (e.g. the caller passed
+/// a range that only contained our cards or board cards): the caller
+/// must fall back instead of solving a degenerate game that would look
+/// like a real answer.
+pub(crate) fn masked_opp_range(
+    opp_range: &[f64; pkr_subgame::range_tracker::N_HANDS],
+    board: &[u8],
+    our_hole: &[u8; 2],
+) -> Option<Vec<f32>> {
+    let mut opp_r = vec![0.0f32; pkr_subgame::vector::N];
+    let mut opp_mass = 0.0f64;
+    for h in 0..pkr_subgame::vector::N {
+        let hh = pkr_subgame::range_tracker::hole_at(h);
+        if hh.iter().any(|c| board.contains(c)) {
+            continue;
+        }
+        if hh.iter().any(|c| our_hole.contains(c)) {
+            continue;
+        }
+        let w = opp_range[h];
+        if w > 0.0 {
+            opp_r[h] = w as f32;
+            opp_mass += w;
+        }
+    }
+    if opp_mass <= 1e-9 {
+        None
+    } else {
+        Some(opp_r)
+    }
+}
+
+/// 2026-11-03 re-audit (item 8): our own solver range as a point mass
+/// at `our_hole` (we know our cards exactly). `None` when the hole
+/// overlaps the board — an impossible holding; the caller must fall
+/// back rather than solve with a nonsense point mass. Mirrors the
+/// inline construction in `VSearchHandle::decide`.
+pub(crate) fn our_point_mass(our_hole: &[u8; 2], board: &[u8]) -> Option<Vec<f32>> {
+    if our_hole.iter().any(|c| board.contains(c)) {
+        return None;
+    }
+    let mut r = vec![0.0f32; pkr_subgame::vector::N];
+    r[pkr_subgame::vector::index_of(*our_hole)] = 1.0;
+    Some(r)
+}
 
 /// `solver.iterate` with a wall-clock cap: stops after `cfg.iters` OR
 /// `cfg.time_budget_ms` elapsed, whichever first.
@@ -460,14 +550,32 @@ mod tests {
         let mut s = GameState::new(200.0, 1.0, 2.0);
         s.set_hole_cards([0, 5], [10, 15]);
         // check-check to the river
-        s.apply_action_in_place(&pkr_core::state::Action { player: 0, kind: pkr_core::state::ActionKind::Call });
-        s.apply_action_in_place(&pkr_core::state::Action { player: 1, kind: pkr_core::state::ActionKind::Check });
+        s.apply_action_in_place(&pkr_core::state::Action {
+            player: 0,
+            kind: pkr_core::state::ActionKind::Call,
+        });
+        s.apply_action_in_place(&pkr_core::state::Action {
+            player: 1,
+            kind: pkr_core::state::ActionKind::Check,
+        });
         s.advance_street_in_place(&[20, 25, 30]);
-        s.apply_action_in_place(&pkr_core::state::Action { player: 0, kind: pkr_core::state::ActionKind::Check });
-        s.apply_action_in_place(&pkr_core::state::Action { player: 1, kind: pkr_core::state::ActionKind::Check });
+        s.apply_action_in_place(&pkr_core::state::Action {
+            player: 0,
+            kind: pkr_core::state::ActionKind::Check,
+        });
+        s.apply_action_in_place(&pkr_core::state::Action {
+            player: 1,
+            kind: pkr_core::state::ActionKind::Check,
+        });
         s.advance_street_in_place(&[35]);
-        s.apply_action_in_place(&pkr_core::state::Action { player: 0, kind: pkr_core::state::ActionKind::Check });
-        s.apply_action_in_place(&pkr_core::state::Action { player: 1, kind: pkr_core::state::ActionKind::Check });
+        s.apply_action_in_place(&pkr_core::state::Action {
+            player: 0,
+            kind: pkr_core::state::ActionKind::Check,
+        });
+        s.apply_action_in_place(&pkr_core::state::Action {
+            player: 1,
+            kind: pkr_core::state::ActionKind::Check,
+        });
         s.advance_street_in_place(&[44]);
         s
     }
@@ -478,13 +586,94 @@ mod tests {
         let holes = pkr_subgame::vector::hole_table();
         let mut r = vec![0.0f32; 1326];
         for h in 0..1326 {
-            if !holes[h].iter().any(|c| st.board[..st.board_len as usize].contains(c)) { r[h] = 1.0; }
+            if !holes[h]
+                .iter()
+                .any(|c| st.board[..st.board_len as usize].contains(c))
+            {
+                r[h] = 1.0;
+            }
         }
-        let out = solve_root(&st, [r.clone(), r], [20, 21], &VSearchCfg { iters: 50, ..Default::default() });
+        let out = solve_root(
+            &st,
+            [r.clone(), r],
+            [20, 21],
+            &VSearchCfg {
+                iters: 50,
+                ..Default::default()
+            },
+        );
         if let Some(s) = out {
             let sum: f32 = s.iter().map(|(_, p)| *p).sum();
-            assert!((sum - 1.0).abs() < 1e-2, "root strategy must sum ~1, got {sum}");
+            assert!(
+                (sum - 1.0).abs() < 1e-2,
+                "root strategy must sum ~1, got {sum}"
+            );
         }
+    }
+
+    /// 2026-11-03 re-audit (item 8): the shared opponent-range mask.
+    /// The session's `advise_vsearch` used to feed `tracker.range(opp)`
+    /// straight into the solver WITHOUT removing our hole's 6 combos
+    /// (`VSearchHandle::decide` always masked them). Both call sites
+    /// now share `masked_opp_range`; this pins its contract.
+    #[test]
+    fn masked_opp_range_removes_our_hole_and_board_cards() {
+        let our = [10u8, 15u8];
+        let board = [20u8, 25u8, 30u8, 35u8, 44u8];
+        // Uniform posterior over ALL 1326 hands — the tracker does not
+        // remove our cards from the opponent marginal.
+        let n = pkr_subgame::range_tracker::N_HANDS as f64;
+        let mut raw = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        for v in raw.iter_mut() {
+            *v = 1.0 / n;
+        }
+        let our_idx = pkr_subgame::vector::index_of(our);
+        assert!(
+            raw[our_idx] > 0.0,
+            "fixture: our holding carries mass pre-mask"
+        );
+
+        let masked = masked_opp_range(&raw, &board, &our)
+            .expect("masking our two cards must not empty a uniform range");
+        // Our exact holding must have ZERO mass after masking.
+        assert_eq!(
+            masked[our_idx], 0.0,
+            "our hole must be masked from the opp range"
+        );
+        let holes = pkr_subgame::vector::hole_table();
+        for h in 0..pkr_subgame::vector::N {
+            let hh = holes[h];
+            if hh.iter().any(|c| our.contains(c)) || hh.iter().any(|c| board.contains(c)) {
+                assert_eq!(
+                    masked[h], 0.0,
+                    "hand {h:?} shares a card and must be masked"
+                );
+            } else {
+                assert!(masked[h] > 0.0, "live hand {h:?} must keep its mass");
+            }
+        }
+
+        // Degenerate case: a posterior that ONLY contains our cards
+        // masks to zero mass -> None (caller must fall back).
+        let mut only_ours = [0.0f64; pkr_subgame::range_tracker::N_HANDS];
+        only_ours[our_idx] = 1.0;
+        assert!(masked_opp_range(&only_ours, &board, &our).is_none());
+    }
+
+    /// 2026-11-03 re-audit (item 8): our own solver range is a point
+    /// mass at our hole (we know our cards), `None` on board overlap.
+    #[test]
+    fn our_point_mass_is_a_point_mass() {
+        let board = [20u8, 25u8, 30u8];
+        let our = [10u8, 15u8];
+        let r = our_point_mass(&our, &board).expect("no overlap -> Some");
+        let idx = pkr_subgame::vector::index_of(our);
+        assert_eq!(r[idx], 1.0, "point mass at our hole");
+        assert!((r.iter().sum::<f32>() - 1.0).abs() < 1e-6, "sums to 1");
+        assert!(
+            our_point_mass(&[20u8, 15u8], &board).is_none(),
+            "hole overlapping the board must be None"
+        );
     }
 }
 
@@ -497,6 +686,7 @@ mod tests {
 /// Ranges handed in via `decide` are only the OPPONENT's. Our own range
 /// is a point mass at `our_hole` (masked for board compatibility),
 /// because we know our cards exactly.
+#[derive(Default)]
 pub struct VSearchHandle {
     pub cfg: VSearchCfg,
     /// Blueprint sources for the root safety bound (`cfg.bound`). When
@@ -508,7 +698,11 @@ pub struct VSearchHandle {
 
 impl VSearchHandle {
     pub fn new(cfg: VSearchCfg) -> Self {
-        VSearchHandle { cfg, bound_abs: None, bound_tbl: None }
+        VSearchHandle {
+            cfg,
+            bound_abs: None,
+            bound_tbl: None,
+        }
     }
 
     /// Construct with the blueprint sources required by the safety bound.
@@ -517,13 +711,11 @@ impl VSearchHandle {
         abs: std::sync::Arc<dyn pkr_contracts::AbstractionBuilder>,
         tbl: std::sync::Arc<pkr_cfr::table::CompactRegretTable>,
     ) -> Self {
-        VSearchHandle { cfg, bound_abs: Some(abs), bound_tbl: Some(tbl) }
-    }
-}
-
-impl Default for VSearchHandle {
-    fn default() -> Self {
-        VSearchHandle { cfg: VSearchCfg::default(), bound_abs: None, bound_tbl: None }
+        VSearchHandle {
+            cfg,
+            bound_abs: Some(abs),
+            bound_tbl: Some(tbl),
+        }
     }
 }
 
@@ -543,12 +735,9 @@ impl crate::subgame::SearchHandle for VSearchHandle {
         let board: &[u8] = &state.board[..state.board_len as usize];
 
         // Our range: point mass at our hole, masked if it overlaps board.
-        let mut our_r = vec![0.0f32; pkr_subgame::vector::N];
-        if !our_hole.iter().any(|c| board.contains(c)) {
-            our_r[pkr_subgame::vector::index_of(*our_hole)] = 1.0;
-        } else {
-            return None;
-        }
+        // 2026-11-03 re-audit (item 8): extracted into `our_point_mass`
+        // so the session path constructs ranges identically.
+        let our_r = our_point_mass(our_hole, board)?;
 
         // Opponent range: mask board cards and cards we hold (they cannot
         // be in the opponent's hand), then f64 -> f32.
@@ -559,25 +748,11 @@ impl crate::subgame::SearchHandle for VSearchHandle {
         // a uniform strategy — indistinguishable from a real answer,
         // and wrong. The sampled `SubgameHandle` guards the same way;
         // the vector path previously did not.
-        let mut opp_r = vec![0.0f32; pkr_subgame::vector::N];
-        let mut opp_mass = 0.0f64;
-        for h in 0..pkr_subgame::vector::N {
-            let hh = pkr_subgame::range_tracker::hole_at(h);
-            if hh.iter().any(|c| board.contains(c)) {
-                continue;
-            }
-            if hh.iter().any(|c| our_hole.contains(c)) {
-                continue;
-            }
-            let w = opp_range[h];
-            if w > 0.0 {
-                opp_r[h] = w as f32;
-                opp_mass += w;
-            }
-        }
-        if opp_mass <= 1e-9 {
-            return None;
-        }
+        //
+        // 2026-11-03 re-audit (item 8): extracted into
+        // `masked_opp_range`, shared with the session's advise_vsearch
+        // path (which previously fed the unmasked tracker range).
+        let opp_r = masked_opp_range(opp_range, board, our_hole)?;
 
         // Solver seats: 0 = OOP (postflop non-dealer), 1 = IP.
         let oop = 1 - state.dealer;
@@ -592,28 +767,26 @@ impl crate::subgame::SearchHandle for VSearchHandle {
                 (Some(abs), Some(tbl)) => {
                     let a: &dyn pkr_contracts::AbstractionBuilder = abs.as_ref();
                     let t: &pkr_cfr::table::CompactRegretTable = tbl.as_ref();
-                    match solve_root_gadgetted(state, [r0.clone(), r1.clone()], *our_hole, &self.cfg, a, t) {
+                    match solve_root_gadgetted(
+                        state,
+                        [r0.clone(), r1.clone()],
+                        *our_hole,
+                        &self.cfg,
+                        a,
+                        t,
+                    ) {
                         Some(v) => v,
-                        None => match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
-                            Some(v) => v,
-                            None => return None,
-                        },
+                        None => solve_root(state, [r0, r1], *our_hole, &self.cfg)?,
                     }
                 }
-                _ => match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
-                    Some(v) => v,
-                    None => return None,
-                },
+                _ => solve_root(state, [r0, r1], *our_hole, &self.cfg)?,
             }
         } else if self.cfg.bound {
             match (self.bound_abs.as_ref(), self.bound_tbl.as_ref()) {
                 (Some(abs), Some(tbl)) => {
                     let a: &dyn pkr_contracts::AbstractionBuilder = abs.as_ref();
                     let t: &pkr_cfr::table::CompactRegretTable = tbl.as_ref();
-                    match solve_root_bounded(state, [r0, r1], *our_hole, &self.cfg, a, t) {
-                        Some(v) => v,
-                        None => return None,
-                    }
+                    solve_root_bounded(state, [r0, r1], *our_hole, &self.cfg, a, t)?
                 }
                 _ => {
                     // bound requested without sources: fall back to raw
@@ -626,17 +799,11 @@ impl crate::subgame::SearchHandle for VSearchHandle {
                             "[vsearch] bound=true but no abstraction/table supplied;                              using the RAW (unbounded) solve"
                         );
                     }
-                    match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
-                        Some(v) => v,
-                        None => return None,
-                    }
+                    solve_root(state, [r0, r1], *our_hole, &self.cfg)?
                 }
             }
         } else {
-            match solve_root(state, [r0, r1], *our_hole, &self.cfg) {
-                Some(v) => v,
-                None => return None,
-            }
+            solve_root(state, [r0, r1], *our_hole, &self.cfg)?
         };
 
         let mut out = [0.0f64; crate::subgame::SUBGAME_BUCKETS];
@@ -681,14 +848,32 @@ mod handle_tests {
     fn river_state() -> GameState {
         let mut s = GameState::new(200.0, 1.0, 2.0);
         s.set_hole_cards([0, 5], [10, 15]);
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         s.advance_street_in_place(&[20, 25, 30]);
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         s.advance_street_in_place(&[35]);
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         s.advance_street_in_place(&[44]);
         s
     }
@@ -702,8 +887,14 @@ mod handle_tests {
         // check-call to the flop (board has 3 cards).
         let mut s = GameState::new(200.0, 1.0, 2.0);
         s.set_hole_cards([0, 5], [10, 15]);
-        s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        s.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        s.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         s.advance_street_in_place(&[20, 25, 30]);
         assert_eq!(s.street as usize, 1, "must be on the flop");
 
@@ -720,12 +911,18 @@ mod handle_tests {
         let holes = pkr_subgame::vector::hole_table();
         let mut r = vec![0.0f32; 1326];
         for h in 0..1326 {
-            if !holes[h].iter().any(|c| s.board[..s.board_len as usize].contains(c)) {
+            if !holes[h]
+                .iter()
+                .any(|c| s.board[..s.board_len as usize].contains(c))
+            {
                 r[h] = 1.0;
             }
         }
         let out = solve_root(&s, [r.clone(), r], [0, 5], &cfg);
-        assert!(out.is_none(), "flop solve must be refused by enabled_streets");
+        assert!(
+            out.is_none(),
+            "flop solve must be refused by enabled_streets"
+        );
     }
 
     /// The trait path must return a normalized distribution over buckets
@@ -750,13 +947,22 @@ mod handle_tests {
         let mut n = 0usize;
         for i in 0..pkr_subgame::range_tracker::N_HANDS {
             let hh = pkr_subgame::range_tracker::hole_at(i);
-            if hh.iter().any(|c| board.contains(c)) { continue; }
-            if hh.iter().any(|c| our.contains(c)) { continue; }
-            r[i] = 1.0; n += 1;
+            if hh.iter().any(|c| board.contains(c)) {
+                continue;
+            }
+            if hh.iter().any(|c| our.contains(c)) {
+                continue;
+            }
+            r[i] = 1.0;
+            n += 1;
         }
         assert!(n > 100, "expected a nonempty opponent range");
         let u = 1.0 / n as f64;
-        for x in r.iter_mut() { if *x > 0.0 { *x = u; } }
+        for x in r.iter_mut() {
+            if *x > 0.0 {
+                *x = u;
+            }
+        }
 
         let out = h.decide(&st, &our, &r);
         let Some(dist) = out else {
@@ -804,14 +1010,26 @@ mod handle_tests {
         let mut n = 0usize;
         for i in 0..pkr_subgame::range_tracker::N_HANDS {
             let hh = pkr_subgame::range_tracker::hole_at(i);
-            if hh.iter().any(|c| board.contains(c)) { continue; }
-            if hh.iter().any(|c| our.contains(c)) { continue; }
-            r[i] = 1.0; n += 1;
+            if hh.iter().any(|c| board.contains(c)) {
+                continue;
+            }
+            if hh.iter().any(|c| our.contains(c)) {
+                continue;
+            }
+            r[i] = 1.0;
+            n += 1;
         }
         let u = 1.0 / n as f64;
-        for x in r.iter_mut() { if *x > 0.0 { *x = u; } }
+        for x in r.iter_mut() {
+            if *x > 0.0 {
+                *x = u;
+            }
+        }
         let out = crate::subgame::SearchHandle::decide(&h, &st, &our, &r);
-        assert!(out.is_some(), "gadget without sources falls back to raw solve");
+        assert!(
+            out.is_some(),
+            "gadget without sources falls back to raw solve"
+        );
         let sum: f64 = out.unwrap().iter().sum();
         assert!((sum - 1.0).abs() < 1e-6);
     }
@@ -837,14 +1055,26 @@ mod handle_tests {
         let mut n = 0usize;
         for i in 0..pkr_subgame::range_tracker::N_HANDS {
             let hh = pkr_subgame::range_tracker::hole_at(i);
-            if hh.iter().any(|c| board.contains(c)) { continue; }
-            if hh.iter().any(|c| our.contains(c)) { continue; }
-            r[i] = 1.0; n += 1;
+            if hh.iter().any(|c| board.contains(c)) {
+                continue;
+            }
+            if hh.iter().any(|c| our.contains(c)) {
+                continue;
+            }
+            r[i] = 1.0;
+            n += 1;
         }
         let u = 1.0 / n as f64;
-        for x in r.iter_mut() { if *x > 0.0 { *x = u; } }
+        for x in r.iter_mut() {
+            if *x > 0.0 {
+                *x = u;
+            }
+        }
         let out = crate::subgame::SearchHandle::decide(&h, &st, &our, &r);
-        assert!(out.is_some(), "bound without sources must fall back to raw solve");
+        assert!(
+            out.is_some(),
+            "bound without sources must fall back to raw solve"
+        );
         let sum: f64 = out.unwrap().iter().sum();
         assert!((sum - 1.0).abs() < 1e-6, "distribution must sum to 1");
     }
@@ -895,12 +1125,16 @@ mod handle_tests {
         for i in 0..pkr_subgame::range_tracker::N_HANDS {
             let hh = pkr_subgame::range_tracker::hole_at(i);
             if hh.contains(&20) {
-                r[i] = 1.0; any = true;
+                r[i] = 1.0;
+                any = true;
             }
         }
         assert!(any, "fixture sanity: at least one hand contains card 20");
         let out = h.decide(&st, &[0, 5], &r);
-        assert!(out.is_none(), "empty masked opponent range must return None");
+        assert!(
+            out.is_none(),
+            "empty masked opponent range must return None"
+        );
     }
 
     /// Our hole overlapping the board must return None, not panic or

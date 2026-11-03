@@ -10,13 +10,13 @@
 //!
 //! Usage: pkr-bot-pipe <blueprint.bin> <tables_dir> [--sig N]
 
-use pkr_runtime::{MmapReader, SolverHandle};
 use pkr_contracts::AbstractionBuilder;
 use pkr_core::state::{Action, ActionKind, GameState, Street};
-use std::io::{BufRead, Write};
-use rand::RngExt;
+use pkr_runtime::{MmapReader, SolverHandle};
 use rand::rngs::SmallRng;
+use rand::RngExt;
 use rand::SeedableRng;
+use std::io::{BufRead, Write};
 
 fn action_from_json(v: &serde_json::Value) -> Option<Action> {
     let player = v.get("player")?.as_u64()? as usize;
@@ -30,6 +30,103 @@ fn action_from_json(v: &serde_json::Value) -> Option<Action> {
     Some(Action { player, kind })
 }
 
+/// One validated line-protocol request.
+///
+/// 2026-11-03 re-audit (item 4): the old loop built a `GameState` and
+/// called `set_hole_cards([40, 41], [40, 42])` BEFORE looking at the
+/// input, so (a) the two placeholder hands shared card 40 — a debug
+/// panic on every request — and (b) the placeholders could collide with
+/// real board cards, poisoning the infoset hash. The request is now
+/// fully validated before any state is constructed.
+#[derive(Debug, Clone, PartialEq)]
+struct PipeRequest {
+    /// The ACTING player's hole cards (validated: in range, distinct,
+    /// no board collision).
+    hole: [u8; 2],
+    board: Vec<u8>,
+    actions: Vec<Action>,
+    seed: Option<u64>,
+}
+
+/// Parse and VALIDATE one stdin line. `Err` carries a human-readable
+/// reason (emitted to the host as a JSON error response; the loop then
+/// continues with the next line).
+fn parse_request_or_error(line: &str) -> Result<PipeRequest, String> {
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| format!("bad json: {e}"))?;
+
+    // Hole cards are REQUIRED: without them we used to hash a
+    // placeholder infoset and silently return blueprint advice for the
+    // wrong holding.
+    let hole_val = v.get("hole").ok_or_else(|| "missing hole".to_string())?;
+    let hole_arr = hole_val
+        .as_array()
+        .ok_or_else(|| "hole must be an array of 2 card ids".to_string())?;
+    if hole_arr.len() != 2 {
+        return Err(format!(
+            "hole must have exactly 2 cards, got {}",
+            hole_arr.len()
+        ));
+    }
+    let mut hole = [0u8; 2];
+    for (i, c) in hole_arr.iter().enumerate() {
+        let n = c
+            .as_u64()
+            .ok_or_else(|| "hole cards must be integer card ids".to_string())?;
+        if n >= 52 {
+            return Err(format!("hole card {n} out of range 0..52"));
+        }
+        hole[i] = n as u8;
+    }
+    if hole[0] == hole[1] {
+        return Err(format!("hole cards collide (both {})", hole[0]));
+    }
+
+    let board: Vec<u8> = v
+        .get("board")
+        .and_then(|b| b.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_u64())
+                .filter(|&x| x < 52)
+                .map(|x| x as u8)
+                .collect()
+        })
+        .unwrap_or_default();
+    if board.contains(&hole[0]) || board.contains(&hole[1]) {
+        return Err(format!(
+            "hole card collides with the board: hole={hole:?} board={board:?}"
+        ));
+    }
+
+    let mut actions = Vec::new();
+    if let Some(arr) = v.get("actions").and_then(|a| a.as_array()) {
+        for a in arr {
+            if let Some(act) = action_from_json(a) {
+                actions.push(act);
+            }
+        }
+    }
+    let seed = v.get("seed").and_then(|s| s.as_u64());
+    Ok(PipeRequest {
+        hole,
+        board,
+        actions,
+        seed,
+    })
+}
+
+/// 2026-11-03 re-audit (item 5): the incr token for an action. The old
+/// inline `format!("b{}", t as i64)` TRUNCATED fractional bet totals
+/// (97.99 -> "b97"); round to the nearest chip instead.
+fn action_token(kind: &ActionKind) -> String {
+    match kind {
+        ActionKind::Fold => "f".to_string(),
+        ActionKind::Check => "k".to_string(),
+        ActionKind::Call => "c".to_string(),
+        ActionKind::Bet(t) => format!("b{}", t.round() as i64),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
@@ -40,13 +137,20 @@ fn main() {
     // tables dir + sig read but the solver path is wired in the host app;
     // this bin establishes the protocol and the shared decision entry.
     let _tables = &args[2];
-    let sig: u8 = args.iter().position(|a| a == "--sig")
-        .and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(3);
+    let sig: u8 = args
+        .iter()
+        .position(|a| a == "--sig")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
     // C6 (audit 2026-10-10): the fingerprint check needs the preflop K to
     // reconstruct the CURRENT fingerprint. Absent a value, we cannot check;
     // refuse loudly rather than silently load a mismatched blueprint.
-    let preflop_k: Option<usize> = args.iter().position(|a| a == "--preflop-k")
-        .and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok());
+    let preflop_k: Option<usize> = args
+        .iter()
+        .position(|a| a == "--preflop-k")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok());
     // Apply BEFORE any signature / fingerprint call (OnceLocks).
     // Before this fix the flag was parsed into `_sig` and discarded: a
     // user passing --sig 4 silently hashed with the default (V3) and
@@ -76,19 +180,33 @@ fn main() {
 
     let reader = match MmapReader::new(bp) {
         Ok(r) => r,
-        Err(e) => { eprintln!("load blueprint: {e:?}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("load blueprint: {e:?}");
+            std::process::exit(1);
+        }
     };
     let solver = SolverHandle::new(reader);
     // Load the abstraction tables (needed to hash infosets).
-    let store = pkr_abstraction::load_centroids(
-        &format!("{}/centroids.bin", args[2])).unwrap_or_else(|e| {
-            eprintln!("centroids: {e}"); std::process::exit(1); });
+    let store = pkr_abstraction::load_centroids(&format!("{}/centroids.bin", args[2]))
+        .unwrap_or_else(|e| {
+            eprintln!("centroids: {e}");
+            std::process::exit(1);
+        });
     let abs = pkr_abstraction::KMeansAbstraction::from_store(
-        store, std::sync::Arc::new(pkr_eval::NlheEvaluator));
-    for (i, f) in [(0u8, "preflop_abstraction.bin"), (1, "abstraction.bin"),
-                   (2, "turn_abstraction.bin"), (3, "river_buckets.bin")] {
-        abs.init_table(i, &format!("{}/{}", args[2], f)).unwrap_or_else(|e| {
-            eprintln!("init table {f}: {e:?}"); std::process::exit(1); });
+        store,
+        std::sync::Arc::new(pkr_eval::NlheEvaluator),
+    );
+    for (i, f) in [
+        (0u8, "preflop_abstraction.bin"),
+        (1, "abstraction.bin"),
+        (2, "turn_abstraction.bin"),
+        (3, "river_buckets.bin"),
+    ] {
+        abs.init_table(i, &format!("{}/{}", args[2], f))
+            .unwrap_or_else(|e| {
+                eprintln!("init table {f}: {e:?}");
+                std::process::exit(1);
+            });
     }
     // C6 (audit 2026-10-10): the blueprint carries a fingerprint of the
     // abstraction it was trained against. Loading a mismatched blueprint
@@ -115,47 +233,57 @@ fn main() {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {
-        let line = match line { Ok(l) => l, Err(_) => break };
-        if line.trim().is_empty() { continue; }
-        let v: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(e) => { eprintln!("bad json: {e}"); continue; }
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        // 2026-11-03 re-audit (item 4): validate the WHOLE request (hole
+        // present, in range, non-colliding with itself and the board)
+        // BEFORE any GameState is built. The old code constructed the
+        // state with colliding placeholder hole cards ([40,41] /
+        // [40,42]) which debug-panics in `set_hole_cards` and can
+        // collide with real board cards. On a bad request, emit a JSON
+        // error response and continue with the next line.
+        let req = match parse_request_or_error(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                let reason = serde_json::to_string(&e).unwrap_or_else(|_| "\"parse error\"".into());
+                let _ = writeln!(out, "{{\"error\":{reason}}}");
+                let _ = out.flush();
+                continue;
+            }
         };
         // Rebuild state: fresh deal, real hole, then replay the action
         // record AND advance the board when each street closes. Without
         // the street advance a "river" request resolved to a PREFLOP
         // decision (the board was discarded).
         let mut st = GameState::new(pkr_core::state::stack_chips(), 1.0, 2.0);
-        let board_cards: Vec<u8> = v.get("board").and_then(|b| b.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as u8).collect())
-            .unwrap_or_default();
-        // The host passes the ACTING player's hole. It must be assigned to
-        // the ACTING seat (st.actor), not always seat 0 - otherwise a
-        // seat-1 decision hashes a placeholder instead of the real cards.
-        let hero_hole: Option<[u8; 2]> = v.get("hole").and_then(|h| h.as_array())
-            .and_then(|a| {
-                let hv: Vec<u8> = a.iter().filter_map(|x| x.as_u64()).map(|x| x as u8).collect();
-                if hv.len() == 2 { Some([hv[0], hv[1]]) } else { None }
-            });
-        st.set_hole_cards([40, 41], [40, 42]); // deterministic placeholders
+        // Deterministic placeholder cards for the two seat slots: the
+        // first four card ids not used by the hero hole or the board, so
+        // `set_hole_cards`'s debug asserts (no duplicates, no board
+        // collision) can never fire. The acting seat's slot is
+        // overwritten with the real hole below, before any hashing.
+        let mut used: Vec<u8> = req.board.clone();
+        used.extend_from_slice(&req.hole);
+        let ph: Vec<u8> = (0u8..52).filter(|c| !used.contains(c)).take(4).collect();
+        st.set_hole_cards([ph[0], ph[1]], [ph[2], ph[3]]);
         let mut dealt = 0usize;
-        if let Some(arr) = v.get("actions").and_then(|a| a.as_array()) {
-            for a in arr {
-                if let Some(act) = action_from_json(a) {
-                    st.apply_action_in_place(&act);
-                    if st.is_street_complete() && st.street != Street::River {
-                        let need = match st.street {
-                            Street::Preflop => 3,
-                            Street::Flop => 1,
-                            Street::Turn => 1,
-                            Street::River => 0,
-                        };
-                        if dealt + need <= board_cards.len() {
-                            let chunk = board_cards[dealt..dealt + need].to_vec();
-                            dealt += need;
-                            st.advance_street_in_place(&chunk);
-                        }
-                    }
+        for a in &req.actions {
+            st.apply_action_in_place(a);
+            if st.is_street_complete() && st.street != Street::River {
+                let need = match st.street {
+                    Street::Preflop => 3,
+                    Street::Flop => 1,
+                    Street::Turn => 1,
+                    Street::River => 0,
+                };
+                if dealt + need <= req.board.len() {
+                    let chunk = req.board[dealt..dealt + need].to_vec();
+                    dealt += need;
+                    st.advance_street_in_place(&chunk);
                 }
             }
         }
@@ -168,20 +296,26 @@ fn main() {
                 Street::Turn => 1,
                 Street::River => 0,
             };
-            if need == 0 || dealt + need > board_cards.len() { break; }
-            let chunk = board_cards[dealt..dealt + need].to_vec();
+            if need == 0 || dealt + need > req.board.len() {
+                break;
+            }
+            let chunk = req.board[dealt..dealt + need].to_vec();
             dealt += need;
             st.advance_street_in_place(&chunk);
         }
         // Assign the real hole to the ACTING seat now that the actor is known.
-        if let Some(hh) = hero_hole {
-            st.hole[st.actor] = hh;
-        }
+        st.hole[st.actor] = req.hole;
         // Decide: hash the acting player's infoset via the abstraction
         // loaded from the tables dir, then read the blueprint advice.
         if std::env::var("PKR_BOT_DEBUG").is_ok() {
-            eprintln!("DEBUG actor={} hole={:?} board_len={} street={:?} face={}",
-                st.actor, st.hole[st.actor], st.board_len, st.street, st.bet_to_call());
+            eprintln!(
+                "DEBUG actor={} hole={:?} board_len={} street={:?} face={}",
+                st.actor,
+                st.hole[st.actor],
+                st.board_len,
+                st.street,
+                st.bet_to_call()
+            );
         }
         let hole = st.hole[st.actor];
         let mut sig = [0u8; 8];
@@ -191,7 +325,10 @@ fn main() {
 
         // CONCRETE DECISION: decode the blueprint CDF, map to legal
         // actions by bucket, sample one, emit the incr token.
-        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = st.legal_actions_into(&mut buf);
         // C1 (audit 2026-10-10): on a blueprint MISS the old code left
         // `probs` all-zero, `total <= 1e-9`, and the pick fell through to
@@ -204,8 +341,8 @@ fn main() {
         let mut probs = [0.0f32; pkr_core::abstraction::NUM_ACTION_BUCKETS];
         let mut prev = 0u16;
         let m = (advice.len as usize).min(pkr_core::abstraction::NUM_ACTION_BUCKETS);
-        for i in 0..m {
-            let cc = advice.cdf_probabilities[i] as u16;
+        for (i, &cc_u8) in advice.cdf_probabilities.iter().take(m).enumerate() {
+            let cc = cc_u8 as u16;
             probs[i] = (cc.saturating_sub(prev)) as f32 / 255.0;
             prev = cc;
         }
@@ -223,22 +360,98 @@ fn main() {
             // Common random numbers: if the host passes a per-decision
             // "seed", use a deterministic RNG so paired runs draw the
             // same sample (A-vs-A must be exactly 0).
-            let r: f64 = match v.get("seed").and_then(|s| s.as_u64()) {
+            let r: f64 = match req.seed {
                 Some(sd) => SmallRng::seed_from_u64(sd).random::<f64>(),
                 None => rand::rng().random::<f64>(),
             };
             pkr_core::abstraction::sample_legal_index(&probs, &b2a, r)
                 .map(|i| buf[i as usize])
-                .or_else(|| (0..pkr_core::abstraction::NUM_ACTION_BUCKETS).find_map(|b| b2a[b].map(|i| buf[i as usize])))
+                .or_else(|| {
+                    (0..pkr_core::abstraction::NUM_ACTION_BUCKETS)
+                        .find_map(|b| b2a[b].map(|i| buf[i as usize]))
+                })
         };
         let token = match chosen.map(|a| a.kind) {
-            Some(ActionKind::Fold) => "f".to_string(),
-            Some(ActionKind::Check) => "k".to_string(),
-            Some(ActionKind::Call) => "c".to_string(),
-            Some(ActionKind::Bet(t)) => format!("b{}", t as i64),
+            // 2026-11-03 re-audit (item 5): token formatting (incl. the
+            // fractional-bet round) is extracted and unit-tested.
+            Some(kind) => action_token(&kind),
             None => "f".to_string(),
         };
         let _ = writeln!(out, "{token}");
         let _ = out.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rejects_missing_hole() {
+        let line = r#"{"board":[5,6,7],"actor":0,"actions":[]}"#;
+        let err = parse_request_or_error(line).unwrap_err();
+        assert!(err.contains("hole"), "error should mention hole: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_malformed_hole() {
+        assert!(parse_request_or_error(r#"{"hole":[5],"board":[],"actions":[]}"#).is_err());
+        assert!(parse_request_or_error(r#"{"hole":"as","board":[],"actions":[]}"#).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_colliding_hole_cards() {
+        let line = r#"{"hole":[7,7],"board":[],"actions":[]}"#;
+        let err = parse_request_or_error(line).unwrap_err();
+        assert!(err.contains("collid"), "{err}");
+    }
+
+    #[test]
+    fn parse_rejects_hole_colliding_with_board() {
+        let line = r#"{"hole":[7,8],"board":[7,9,10],"actions":[]}"#;
+        let err = parse_request_or_error(line).unwrap_err();
+        assert!(err.contains("board"), "{err}");
+    }
+
+    #[test]
+    fn parse_rejects_out_of_range_cards() {
+        assert!(parse_request_or_error(r#"{"hole":[60,8],"board":[],"actions":[]}"#).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_bad_json() {
+        assert!(parse_request_or_error("not json").is_err());
+    }
+
+    #[test]
+    fn parse_accepts_valid_request() {
+        let line = concat!(
+            r#"{"hole":[40,41],"board":[5,6,7],"#,
+            r#""actions":[{"player":0,"kind":"bet","amt":10},{"player":1,"kind":"call"}],"#,
+            r#""seed":42}"#
+        );
+        let req = parse_request_or_error(line).expect("valid request must parse");
+        assert_eq!(req.hole, [40, 41]);
+        assert_eq!(req.board, vec![5, 6, 7]);
+        assert_eq!(req.actions.len(), 2);
+        assert!(matches!(req.actions[0].kind, ActionKind::Bet(t) if t == 10.0));
+        assert!(matches!(req.actions[1].kind, ActionKind::Call));
+        assert_eq!(req.seed, Some(42));
+    }
+
+    #[test]
+    fn action_token_formats_kinds() {
+        assert_eq!(action_token(&ActionKind::Fold), "f");
+        assert_eq!(action_token(&ActionKind::Check), "k");
+        assert_eq!(action_token(&ActionKind::Call), "c");
+        assert_eq!(action_token(&ActionKind::Bet(100.0)), "b100");
+    }
+
+    #[test]
+    fn action_token_rounds_fractional_bet_totals() {
+        // 2026-11-03 re-audit (item 5): `t as i64` truncated 97.99 -> 97.
+        assert_eq!(action_token(&ActionKind::Bet(97.99)), "b98");
+        assert_eq!(action_token(&ActionKind::Bet(50.4)), "b50");
+        assert_eq!(action_token(&ActionKind::Bet(0.5)), "b1");
     }
 }

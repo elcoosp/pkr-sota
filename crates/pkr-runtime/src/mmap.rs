@@ -87,7 +87,43 @@ impl MmapReader {
         self.fmph.as_ref()
     }
 
+    /// 2026-11-03 re-audit (item 6): startup-only validation of the key
+    /// table's ORDER. The binary search in `lookup.rs` assumes strictly
+    /// ascending keys; a corrupt (unsorted / duplicated) table silently
+    /// degrades lookups past the disorder point to misses — the worst
+    /// kind of failure because the bot keeps answering with fallback
+    /// advice and nothing complains. Scan the keys once (O(n), a few ms
+    /// for even the largest blueprints) and, if the order is broken,
+    /// print a LOUD warning naming the file and the first out-of-order
+    /// index. We deliberately do NOT fail the load: the miss/fallback
+    /// path is safe (it never returns a wrong key's advice, see
+    /// `get_advice_fast`), and refusing to boot over a recoverable
+    /// condition would take a live bot down.
+    ///
+    /// Returns `(first_bad_index, prev_key, key)` for the first `i >= 1`
+    /// with `keys[i] <= keys[i-1]`, or `None` when the table is strictly
+    /// ascending. `keys_bytes` is the raw little-endian u64 section (it
+    /// may not be 8-aligned in adversarial files, so read per-key).
+    fn scan_key_order(keys_bytes: &[u8]) -> Option<(usize, u64, u64)> {
+        let n = keys_bytes.len() / 8;
+        if n < 2 {
+            return None;
+        }
+        let key_at =
+            |i: usize| u64::from_le_bytes(keys_bytes[i * 8..i * 8 + 8].try_into().unwrap());
+        let mut prev = key_at(0);
+        for i in 1..n {
+            let cur = key_at(i);
+            if cur <= prev {
+                return Some((i, prev, cur));
+            }
+            prev = cur;
+        }
+        None
+    }
+
     pub fn new(path: impl AsRef<Path>) -> Result<Self, MmapError> {
+        let path = path.as_ref();
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
         // P17 (audit 2026-10-10): the blueprint is accessed by random
@@ -226,6 +262,21 @@ impl MmapReader {
                 None
             }
         };
+
+        // 2026-11-03 re-audit (item 6): order validation AFTER the
+        // structural checks above. Warn only; see `scan_key_order`.
+        if let Some((idx, prev, cur)) =
+            Self::scan_key_order(&mmap[offset_keys..offset_keys + keys_bytes])
+        {
+            eprintln!(
+                "WARNING [mmap]: blueprint {} has an UNSORTED key table: \
+                 keys[{idx}]={cur:#018x} <= keys[{}]={prev:#018x}. Lookups at or past this \
+                 index will MISS and fall back (never return another key's advice). \
+                 The file is corrupt or was written by a broken exporter; re-export the blueprint.",
+                path.display(),
+                idx - 1,
+            );
+        }
 
         Ok(MmapReader {
             mmap,
@@ -417,5 +468,40 @@ mod tests {
         std::fs::write(tmp.path(), &data).unwrap();
         let r = MmapReader::new(tmp.path());
         assert!(r.is_err(), "cdf_len != key_count * k must be rejected");
+    }
+
+    // ------------------------------------------------------------------
+    // 2026-11-03 re-audit (item 6): key-order validation.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn scan_key_order_finds_first_disorder() {
+        // Strictly ascending -> None.
+        let mut ok = Vec::new();
+        for k in [1u64, 2, 3, 10] {
+            ok.extend_from_slice(&k.to_le_bytes());
+        }
+        assert_eq!(MmapReader::scan_key_order(&ok), None);
+        // Duplicate is a violation too (keys must be unique).
+        let mut dup = Vec::new();
+        for k in [1u64, 2, 2, 3] {
+            dup.extend_from_slice(&k.to_le_bytes());
+        }
+        assert_eq!(MmapReader::scan_key_order(&dup), Some((2, 2, 2)));
+        // First disorder wins: [1, 9, 5, 4] -> index 2 (9 -> 5).
+        let mut bad = Vec::new();
+        for k in [1u64, 9, 5, 4] {
+            bad.extend_from_slice(&k.to_le_bytes());
+        }
+        assert_eq!(MmapReader::scan_key_order(&bad), Some((2, 9, 5)));
+        // Degenerate inputs: empty / single key.
+        assert_eq!(MmapReader::scan_key_order(&[]), None);
+        assert_eq!(MmapReader::scan_key_order(&7u64.to_le_bytes()), None);
+        // A ragged tail (< 8 bytes) is not a key and must not panic.
+        let mut ragged = Vec::new();
+        ragged.extend_from_slice(&1u64.to_le_bytes());
+        ragged.extend_from_slice(&2u64.to_le_bytes());
+        ragged.extend_from_slice(&[0xAB]);
+        assert_eq!(MmapReader::scan_key_order(&ragged), None);
     }
 }

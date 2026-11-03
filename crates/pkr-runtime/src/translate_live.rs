@@ -124,10 +124,15 @@ pub fn observed_bet_bucket(
     // Task 1.2: log each translation so threshold-camping is visible.
     if std::env::var("PKR_TRANSLATE_LOG").is_ok() {
         if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true).append(true).open("/tmp/translate.jsonl")
+            .create(true)
+            .append(true)
+            .open("/tmp/translate.jsonl")
         {
             use std::io::Write;
-            let _ = writeln!(f, "{{\"x\":{x:.4},\"jam_frac\":{jam_frac:.4},\"bucket\":{b}}}");
+            let _ = writeln!(
+                f,
+                "{{\"x\":{x:.4},\"jam_frac\":{jam_frac:.4},\"bucket\":{b}}}"
+            );
         }
     }
     Some(b)
@@ -136,8 +141,8 @@ pub fn observed_bet_bucket(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::SmallRng;
+    use rand::SeedableRng;
 
     #[test]
     fn boundaries_are_deterministic() {
@@ -219,11 +224,20 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(2024);
         let mut st = GameState::new(200.0, 1.0, 2.0);
         st.set_hole_cards([0, 5], [10, 15]);
-        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         st.advance_street_in_place(&[20, 25, 30]);
         // Now P0 to act postflop.
-        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = st.legal_actions_into(&mut buf);
         let a = st.actor;
         let mut checked = 0;
@@ -234,8 +248,11 @@ mod tests {
                 let x = (total - committed).max(0.0) / pot;
                 let jam_frac = (st.stacks[a] + st.street_bets[a] - committed) / pot;
                 let want = action_bucket(
-                    &act.kind, st.stacks[a], st.street_bets[a],
-                    st.street_bets[1 - a], st.pot,
+                    &act.kind,
+                    st.stacks[a],
+                    st.street_bets[a],
+                    st.street_bets[1 - a],
+                    st.pot,
                 );
                 for _ in 0..500 {
                     let got = translate_bet(x, jam_frac, &mut rng);
@@ -271,8 +288,10 @@ mod tests {
         // No jam window: a size beyond the last anchor clamps to the
         // last anchor's bucket (K=7: 3.0 -> 5).
         for _ in 0..50 {
-            assert_eq!(translate_bet(5.0, f32::INFINITY, &mut rng),
-                       2 + (BET_SIZINGS.len() - 1) as u8);
+            assert_eq!(
+                translate_bet(5.0, f32::INFINITY, &mut rng),
+                2 + (BET_SIZINGS.len() - 1) as u8
+            );
         }
     }
 }

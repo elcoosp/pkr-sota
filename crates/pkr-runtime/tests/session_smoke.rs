@@ -15,7 +15,10 @@ fn ws() -> std::path::PathBuf {
     m.parent().unwrap().parent().unwrap().to_path_buf()
 }
 fn out(rel: &str) -> String {
-    ws().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    ws().join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn build_handle() -> SubgameHandle {
@@ -29,7 +32,9 @@ fn build_handle() -> SubgameHandle {
 
     let table = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    table
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
 
     SubgameHandle::new(SubgameConfig {
         evaluator: Arc::new(pkr_eval::NlheEvaluator),
@@ -57,7 +62,9 @@ fn session_owns_tracker_and_updates() {
 
     let table = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    table
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
     let tbl_ref = &table;
 
     let ev = pkr_eval::NlheEvaluator;
@@ -73,27 +80,63 @@ fn session_owns_tracker_and_updates() {
     assert!(session.is_active(), "deal active");
 
     // Play a scripted preflop -> flop -> turn -> river line.
-    session.observe_action(Action { player: 0, kind: ActionKind::Call });
-    session.observe_action(Action { player: 1, kind: ActionKind::Check });
+    session.observe_action(Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    session.observe_action(Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     session.observe_street(&[0, 4, 8]);
-    session.observe_action(Action { player: 0, kind: ActionKind::Check });
-    session.observe_action(Action { player: 1, kind: ActionKind::Check });
+    session.observe_action(Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    session.observe_action(Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     session.observe_street(&[12]);
-    session.observe_action(Action { player: 0, kind: ActionKind::Check });
-    session.observe_action(Action { player: 1, kind: ActionKind::Check });
+    session.observe_action(Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    session.observe_action(Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     session.observe_street(&[16]);
 
     // Build the same scripted state to query the session.
     let mut st = GameState::new(200.0, 1.0, 2.0);
     st.set_hole_cards([30, 31], [40, 41]);
-    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    st.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    st.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     st.advance_street_in_place(&[0, 4, 8]);
-    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    st.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    st.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     st.advance_street_in_place(&[12]);
-    st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    st.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    st.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     st.advance_street_in_place(&[16]);
 
     // Sanity: this is a river decision. The actor may be 0 or 1
@@ -103,7 +146,9 @@ fn session_owns_tracker_and_updates() {
     // Note: the session's internal tracker has a DIFFERENT root (no hole
     // cards set), but for a smoke test we only check the wrapper
     // mechanics — the tracker's posterior is exercised by tracker_probe.
-    let opp_range = session.opp_range().expect("range available after deal_start");
+    let opp_range = session
+        .opp_range()
+        .expect("range available after deal_start");
     let sum: f64 = opp_range.iter().sum();
     assert!(
         (sum - 1.0).abs() < 1e-6,
@@ -122,10 +167,16 @@ fn session_owns_tracker_and_updates() {
 
     // Contract 2: after the opponent acts, it's our turn and advise()
     // returns a normalized strategy.
-    st.apply_action_in_place(&Action { player: st.actor, kind: ActionKind::Check });
+    st.apply_action_in_place(&Action {
+        player: st.actor,
+        kind: ActionKind::Check,
+    });
     assert_eq!(st.actor, 0, "P0 should act after P1's check");
     let advice = session.advise(&st, &[30, 31]);
-    assert!(advice.is_some(), "advise should return Some at river on our turn");
+    assert!(
+        advice.is_some(),
+        "advise should return Some at river on our turn"
+    );
     let s = advice.unwrap();
     let ssum: f64 = s.iter().sum();
     assert!(
@@ -152,7 +203,9 @@ fn session_deal_start_resets_tracker() {
 
     let table = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    table
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
     let tbl_ref = &table;
 
     let ev = pkr_eval::NlheEvaluator;
@@ -164,8 +217,14 @@ fn session_deal_start_resets_tracker() {
 
     // Deal 1: play some actions.
     session.deal_start(root.clone());
-    session.observe_action(Action { player: 0, kind: ActionKind::Call });
-    session.observe_action(Action { player: 1, kind: ActionKind::Check });
+    session.observe_action(Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    session.observe_action(Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     let r1_after_actions: Vec<f64> = session.opp_range().unwrap().to_vec();
 
     // Deal 2: fresh start, same root.
@@ -201,7 +260,6 @@ fn session_deal_start_resets_tracker() {
     assert!(differs, "post-action range must differ from fresh uniform");
 }
 
-
 #[test]
 #[ignore]
 fn advise_or_blueprint_always_returns_a_strategy() {
@@ -220,7 +278,9 @@ fn advise_or_blueprint_always_returns_a_strategy() {
 
     let table = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    table
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
     let tbl_ref = &table;
 
     let ev = pkr_eval::NlheEvaluator;
@@ -237,7 +297,10 @@ fn advise_or_blueprint_always_returns_a_strategy() {
         .advise_or_blueprint(&st, &[30, 31], 0xDEAD_BEEF)
         .expect("advise_or_blueprint must return Some even with an unknown hash");
     let sum: f64 = s.iter().sum();
-    assert!((sum - 1.0).abs() < 1e-6, "strategy must be normalized: sum = {sum}");
+    assert!(
+        (sum - 1.0).abs() < 1e-6,
+        "strategy must be normalized: sum = {sum}"
+    );
 
     // Also with a large fake hash (likely also absent from the blueprint):
     // still must return Some.
@@ -245,7 +308,10 @@ fn advise_or_blueprint_always_returns_a_strategy() {
         .advise_or_blueprint(&st, &[30, 31], 0xFFFF_FFFF_FFFF_FFFF)
         .expect("advise_or_blueprint must return Some with an arbitrary hash");
     let sum2: f64 = s2.iter().sum();
-    assert!((sum2 - 1.0).abs() < 1e-6, "strategy must be normalized: sum = {sum2}");
+    assert!(
+        (sum2 - 1.0).abs() < 1e-6,
+        "strategy must be normalized: sum = {sum2}"
+    );
 }
 
 /// The whole point of RuntimeSession is that it returns a strategy that
@@ -268,7 +334,9 @@ fn subgame_strategy_differs_from_blueprint_at_river() {
 
     let table = CompactRegretTable::with_capacity(60_000_000);
     let fp = AbstractionFingerprint::from_constants(200);
-    table.load_checkpoint(&out("train.ckpt"), &fp).expect("ckpt");
+    table
+        .load_checkpoint(&out("train.ckpt"), &fp)
+        .expect("ckpt");
     let tbl_ref = &table;
 
     let ev = pkr_eval::NlheEvaluator;
@@ -297,7 +365,10 @@ fn subgame_strategy_differs_from_blueprint_at_river() {
             st.advance_street_in_place(cards);
             session.observe_street(cards);
         } else {
-            let a = Action { player: *player, kind: *kind };
+            let a = Action {
+                player: *player,
+                kind: *kind,
+            };
             st.apply_action_in_place(&a);
             session.observe_action(a);
         }
@@ -309,7 +380,10 @@ fn subgame_strategy_differs_from_blueprint_at_river() {
     // the preflop/flop/turn check-check prelude). P0 is "our_seat".
     // Advance P1's check so P0 acts.
     if st.actor != 0 {
-        let a = Action { player: st.actor, kind: ActionKind::Check };
+        let a = Action {
+            player: st.actor,
+            kind: ActionKind::Check,
+        };
         st.apply_action_in_place(&a);
         session.observe_action(a);
     }
@@ -333,8 +407,12 @@ fn subgame_strategy_differs_from_blueprint_at_river() {
     let mut max_diff = 0.0f64;
     for (a, b) in sub.iter().zip(bp.iter()) {
         let d = (a - b).abs();
-        if d > max_diff { max_diff = d; }
-        if d > 1e-6 { any_diff = true; }
+        if d > max_diff {
+            max_diff = d;
+        }
+        if d > 1e-6 {
+            any_diff = true;
+        }
     }
     println!();
     println!("subgame:    {:?}", sub);

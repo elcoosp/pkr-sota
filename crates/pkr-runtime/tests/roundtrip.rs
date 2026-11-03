@@ -166,8 +166,8 @@ fn batch_matches_single_lookup_byte_for_byte() {
     let cdfs: Vec<[u8; K]> = (0..keys.len())
         .map(|i| {
             let mut c = [0u8; K];
-            for j in 0..K {
-                c[j] = ((i + j * 7) % 256) as u8;
+            for (j, slot) in c.iter_mut().enumerate() {
+                *slot = ((i + j * 7) % 256) as u8;
             }
             c[K - 1] = 255;
             c
@@ -180,15 +180,16 @@ fn batch_matches_single_lookup_byte_for_byte() {
 
     // Lookups: some hit, some miss, some hit again (duplicates), all
     // unsorted. Order in input must be preserved in output.
-    let mut queries: Vec<u64> = Vec::new();
-    queries.push(keys[0]);
-    queries.push(0xDEAD_BEEF_DEAD_BEEFu64); // miss
-    queries.push(keys[32]);
-    queries.push(keys[0]); // duplicate hit
-    queries.push(keys[63]);
-    queries.push(keys[63]); // duplicate hit
-    queries.push(0x0);      // miss (below)
-    queries.push(u64::MAX); // miss (above)
+    let queries: Vec<u64> = vec![
+        keys[0],
+        0xDEAD_BEEF_DEAD_BEEFu64, // miss
+        keys[32],
+        keys[0], // duplicate hit
+        keys[63],
+        keys[63], // duplicate hit
+        0x0,      // miss (below)
+        u64::MAX, // miss (above)
+    ];
 
     let batch = handle.get_advice_batch(&queries);
     assert_eq!(batch.len(), queries.len());
@@ -201,10 +202,7 @@ fn batch_matches_single_lookup_byte_for_byte() {
             "presence differs at index {i} for hash 0x{h:016x}"
         );
         if let (Some(b), Some(s)) = (&batch[i], &single) {
-            assert_eq!(
-                b.len, s.len,
-                "len differs at index {i} for hash 0x{h:016x}"
-            );
+            assert_eq!(b.len, s.len, "len differs at index {i} for hash 0x{h:016x}");
             assert_eq!(
                 &b.cdf_probabilities[..b.len as usize],
                 &s.cdf_probabilities[..s.len as usize],
@@ -274,7 +272,9 @@ fn health_check_reports_hits_and_latency() {
     let cdfs: Vec<[u8; K]> = (0..keys.len())
         .map(|i| {
             let mut c = [0u8; K];
-            for j in 0..K { c[j] = ((i * 3 + j * 11) % 256) as u8; }
+            for (j, slot) in c.iter_mut().enumerate() {
+                *slot = ((i * 3 + j * 11) % 256) as u8;
+            }
             c[K - 1] = 255;
             c
         })

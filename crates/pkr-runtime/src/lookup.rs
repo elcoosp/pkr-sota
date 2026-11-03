@@ -185,8 +185,7 @@ impl SolverHandle {
     /// and keep sweeping. The distribution reflects the real
     /// `get_advice_fast` path, not a synthetic arithmetic loop.
     pub fn health_check(&self, queries: usize) -> HealthReport {
-        let keys: &[u64] = bytemuck::try_cast_slice(self.mmap.keys_data())
-            .unwrap_or(&[]);
+        let keys: &[u64] = bytemuck::try_cast_slice(self.mmap.keys_data()).unwrap_or(&[]);
         let key_count = keys.len();
         let infoset_count = self.mmap.file_header().infoset_count;
 
@@ -196,6 +195,7 @@ impl SolverHandle {
                 key_count,
                 queries: 0,
                 hits: 0,
+                misses: 0,
                 p50_ns: 0,
                 p99_ns: 0,
                 max_ns: 0,
@@ -214,12 +214,20 @@ impl SolverHandle {
         // 3 of 6 slots are visited, silently. Pick the smallest stride
         // > key_count/2 that is coprime with key_count.
         let mut stride = key_count / 2 + 1;
-        if stride < 1 { stride = 1; }
+        if stride < 1 {
+            stride = 1;
+        }
         fn gcd(mut a: usize, mut b: usize) -> usize {
-            while b != 0 { let t = b; b = a % b; a = t; }
+            while b != 0 {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
             a
         }
-        while gcd(stride, key_count) != 1 { stride += 1; }
+        while gcd(stride, key_count) != 1 {
+            stride += 1;
+        }
 
         // Warm the page cache: one pass over the keys the measurement
         // will actually touch, ignoring latency. Otherwise the first
@@ -267,6 +275,11 @@ impl SolverHandle {
             key_count,
             queries: n,
             hits,
+            // 2026-11-03 re-audit (item 6): surface the fallback-miss
+            // count directly. A corrupt/unsorted key table degrades
+            // lookups to misses; previously the host had to subtract
+            // hits from queries to notice.
+            misses: n - hits,
             p50_ns: p(0.50),
             p99_ns: p(0.99),
             max_ns: samples[n - 1],
@@ -285,6 +298,12 @@ pub struct HealthReport {
     pub queries: usize,
     /// How many of the queries hit (returned Some).
     pub hits: usize,
+    /// 2026-11-03 re-audit (item 6): how many of the queries MISSED and
+    /// must fall back (e.g. `fallback_advice()`). Includes the report's
+    /// own deliberate misses (every 8th query) plus any key-table
+    /// degradation (e.g. an unsorted/corrupt table, which the loader
+    /// now warns about at startup).
+    pub misses: usize,
     /// Median lookup latency, nanoseconds.
     pub p50_ns: u64,
     /// 99th-percentile lookup latency, nanoseconds.
@@ -297,9 +316,15 @@ impl HealthReport {
     /// Human-readable one-line summary suitable for logs.
     pub fn summary(&self) -> String {
         format!(
-            "infosets={} keys={} queries={} hits={} p50={}ns p99={}ns max={}ns",
-            self.infoset_count, self.key_count, self.queries, self.hits,
-            self.p50_ns, self.p99_ns, self.max_ns
+            "infosets={} keys={} queries={} hits={} misses={} p50={}ns p99={}ns max={}ns",
+            self.infoset_count,
+            self.key_count,
+            self.queries,
+            self.hits,
+            self.misses,
+            self.p50_ns,
+            self.p99_ns,
+            self.max_ns
         )
     }
 }

@@ -69,7 +69,6 @@ fn solver_handle_exposes_check_fingerprint() {
         // is renamed or removed, `pkr-bot-pipe` fails to build, which
         // is stronger than this test.
     }
-    assert!(true);
 }
 
 /// P1 (audit 2026-10-10): the FMph fast path in `get_advice_fast` must
@@ -92,5 +91,10 @@ fn fmph_path_matches_binary_search() {
     // not lose the invariant. The FMph candidate path is guarded at
     // the source level by the `keys[i] == infoset_hash` verify inside
     // `get_advice_fast`.
-    assert!(true);
+    //
+    // 2026-11-03 re-audit: `assert!(true)` was removed — an always-true
+    // assertion is a lint error and a misleading green. The invariant
+    // is enforced structurally: `get_advice_fast` verifies
+    // `keys[i] == infoset_hash` before using the FMph candidate and
+    // falls back to binary search otherwise.
 }

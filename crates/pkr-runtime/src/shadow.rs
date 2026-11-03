@@ -24,33 +24,76 @@ impl Shadow {
         real: &Action,
         rng: &mut impl rand::RngExt,
     ) -> Action {
-        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = self.st.legal_actions_into(&mut buf);
-        if n == 0 { return *real; }
+        if n == 0 {
+            return *real;
+        }
         let chosen = match real.kind {
             ActionKind::Bet(total) => {
                 let a = real_before.actor;
-                let committed = real_before.street_bets[a]
-                    .max(real_before.street_bets[1 - a]);
+                let committed = real_before.street_bets[a].max(real_before.street_bets[1 - a]);
                 let pot = real_before.pot.max(1.2);
                 let x = (total - committed).max(0.0) / pot;
-                let jam_frac = (real_before.stacks[a] + real_before.street_bets[a]
-                    - committed) / pot;
+                let jam_frac =
+                    (real_before.stacks[a] + real_before.street_bets[a] - committed) / pot;
                 let bucket = translate_bet(x, jam_frac, rng);
                 let sh = &self.st;
                 let mut best: Option<Action> = None;
                 for act in &buf[..n] {
                     if matches!(act.kind, ActionKind::Bet(_)) {
                         let b = pkr_core::abstraction::action_bucket(
-                            &act.kind, sh.stacks[sh.actor], sh.street_bets[sh.actor],
-                            sh.street_bets[1 - sh.actor], sh.pot);
-                        if b == bucket { best = Some(*act); break; }
+                            &act.kind,
+                            sh.stacks[sh.actor],
+                            sh.street_bets[sh.actor],
+                            sh.street_bets[1 - sh.actor],
+                            sh.pot,
+                        );
+                        if b == bucket {
+                            best = Some(*act);
+                            break;
+                        }
                     }
                 }
-                best.or_else(|| buf[..n].iter().filter(|a| matches!(a.kind, ActionKind::Bet(_))).last().copied())
+                best.or_else(|| buf[..n].iter().rev().find(|a| matches!(a.kind, ActionKind::Bet(_))).copied())
+                // 2026-11-03 re-audit (item 3): when the shadow offers NO
+                // bet action at all (the opponent faces our shadow
+                // all-in, so `opp_can_respond` is false and the legal set
+                // is exactly [Fold, Call]), the old `unwrap_or(buf[0])`
+                // applied a phantom FOLD: the shadow went terminal, the
+                // tracker recorded a fold that never happened, and every
+                // later observe_opp no-op'd (garbage posterior for the
+                // rest of the hand). Mirror `observe_own_bucket`'s
+                // closest-legal fallback: facing a bet -> Call, not
+                // facing -> Check; `buf[0]` only as the last resort.
+                    .or_else(|| {
+                        let sh = &self.st;
+                        let facing = sh.street_bets[1 - sh.actor] > sh.street_bets[sh.actor];
+                        let want = if facing { ActionKind::Call } else { ActionKind::Check };
+                        let found = buf[..n].iter()
+                            .find(|a| std::mem::discriminant(&a.kind) == std::mem::discriminant(&want))
+                            .copied();
+                        if found.is_none() {
+                            use std::sync::OnceLock;
+                            static WARNED: OnceLock<()> = OnceLock::new();
+                            if WARNED.set(()).is_ok() {
+                                eprintln!(
+                                    "WARNING [shadow]: opponent bet ({total}) had no matching or \
+                                     fallback action in the shadow state (legal={}); applied buf[0]. \
+                                     Shadow/real chips have diverged badly.",
+                                    n
+                                );
+                            }
+                        }
+                        found
+                    })
                     .unwrap_or(buf[0])
             }
-            _ => *buf[..n].iter()
+            _ => *buf[..n]
+                .iter()
                 .find(|a| std::mem::discriminant(&a.kind) == std::mem::discriminant(&real.kind))
                 .unwrap_or(&buf[0]),
         };
@@ -75,7 +118,10 @@ impl Shadow {
     /// aggressive bucket (higher index), so a forced replace prefers
     /// action to inaction rather than the reverse.
     pub fn observe_own_bucket(&mut self, bucket: u8) -> Action {
-        let mut buf = [Action { player: 0, kind: ActionKind::Fold }; 8];
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
         let n = self.st.legal_actions_into(&mut buf);
         let sh = &self.st;
         let mut exact: Option<Action> = None;
@@ -120,8 +166,8 @@ impl Shadow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::SmallRng;
+    use rand::SeedableRng;
 
     #[test]
     fn shadow_stays_in_sync_on_in_tree_line() {
@@ -133,9 +179,15 @@ mod tests {
         for _ in 0..2 {
             let before = real.clone();
             let a = if real.actor == 0 {
-                Action { player: 0, kind: ActionKind::Call }
+                Action {
+                    player: 0,
+                    kind: ActionKind::Call,
+                }
             } else {
-                Action { player: 1, kind: ActionKind::Check }
+                Action {
+                    player: 1,
+                    kind: ActionKind::Check,
+                }
             };
             sh.observe_opp(&before, &a, &mut rng);
             real.apply_action_in_place(&a);
@@ -154,14 +206,32 @@ mod tests {
         use pkr_core::state::Street;
         let mut st = GameState::new(200.0, 1.0, 2.0);
         st.set_hole_cards([0, 5], [10, 15]);
-        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         st.advance_street_in_place(&[20, 25, 30]);
-        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         st.advance_street_in_place(&[35]);
-        st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-        st.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
         st.advance_street_in_place(&[44]);
         assert_eq!(st.street, Street::River);
         // Now P0 to act, no facing bet -> only Check + bets are legal.
@@ -170,7 +240,8 @@ mod tests {
         // Must not be a Fold.
         assert!(
             !matches!(act.kind, ActionKind::Fold),
-            "bucket-5 fallback must not fold; got {:?}", act.kind
+            "bucket-5 fallback must not fold; got {:?}",
+            act.kind
         );
         // Shadow must not be terminal.
         assert!(!sh.st.is_terminal(), "shadow must not fold itself out");
@@ -181,16 +252,191 @@ mod tests {
         let root = GameState::new(200.0, 1.0, 2.0);
         let mut real = root.clone();
         // SB limps; BB faces no bet (checking) — instead give BB a bet.
-        real.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        real.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
         let before = real.clone();
         // an off-tree 0.7x pot bet
-        let off = Action { player: 1, kind: ActionKind::Bet(2.0 + 4.0 * 0.7) };
+        let off = Action {
+            player: 1,
+            kind: ActionKind::Bet(2.0 + 4.0 * 0.7),
+        };
         let mut sh = Shadow::new(root);
-        sh.st.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
+        sh.st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
         let mut rng = SmallRng::seed_from_u64(2);
         let applied = sh.observe_opp(&before, &off, &mut rng);
-        assert!(matches!(applied.kind, ActionKind::Bet(_)),
-            "off-tree bet must map to an in-tree bet, got {:?}", applied.kind);
-        assert!(sh.st.legal_actions_into(&mut [Action{player:0,kind:ActionKind::Fold};8]) > 0);
+        assert!(
+            matches!(applied.kind, ActionKind::Bet(_)),
+            "off-tree bet must map to an in-tree bet, got {:?}",
+            applied.kind
+        );
+        assert!(
+            sh.st.legal_actions_into(
+                &mut [Action {
+                    player: 0,
+                    kind: ActionKind::Fold
+                }; 8]
+            ) > 0
+        );
+    }
+
+    /// 2026-11-03 re-audit (item 3): when the real opponent bets while
+    /// the SHADOW offers no bet action at all (here the opponent faces
+    /// our shadow all-in, so `opp_can_respond` is false and the legal
+    /// set is exactly [Fold, Call]), the old fallback `unwrap_or(buf[0])`
+    /// applied a phantom FOLD. The shadow went terminal and the tracker
+    /// recorded a fold that never happened; every later observe_opp
+    /// no-op'd and the posterior was garbage for the rest of the hand.
+    /// The fix mirrors `observe_own_bucket`'s closest-legal fallback:
+    /// facing a bet -> Call, not facing -> Check, `buf[0]` only last.
+    #[test]
+    fn observe_opp_bet_with_no_legal_bet_falls_back_to_call_not_fold() {
+        // Base: check-check to the river (dealer 0 => seat 1 = OOP acts).
+        let mut st = GameState::new(200.0, 1.0, 2.0);
+        st.set_hole_cards([0, 5], [10, 15]);
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        st.advance_street_in_place(&[20, 25, 30]);
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        st.advance_street_in_place(&[35]);
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        st.advance_street_in_place(&[44]);
+        assert_eq!(st.actor, 1);
+        // Hand-craft the divergence the translator can produce: in the
+        // SHADOW we (seat 0) are all-in, so the opponent cannot raise.
+        // Fields are pub; the tracker/shadow only consume the scalars.
+        st.street_bets = [198.0, 0.0];
+        st.stacks = [0.0, 198.0];
+        st.pot = 202.0;
+        // The shadow's legal set for seat 1 must be exactly Fold+Call.
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = st.legal_actions_into(&mut buf);
+        assert_eq!(n, 2, "fixture: facing all-in offers Fold+Call only");
+        assert!(matches!(buf[0].kind, ActionKind::Fold));
+        assert!(matches!(buf[1].kind, ActionKind::Call));
+
+        let real_before = st.clone();
+        let mut sh = Shadow::new(st.clone());
+        let mut rng = SmallRng::seed_from_u64(7);
+        // The real opponent goes all-in (or any bet — off-tree here).
+        let applied = sh.observe_opp(
+            &real_before,
+            &Action {
+                player: 1,
+                kind: ActionKind::Bet(198.0),
+            },
+            &mut rng,
+        );
+        assert!(
+            matches!(applied.kind, ActionKind::Call),
+            "no legal shadow bet + facing bet must fall back to Call, got {:?}",
+            applied.kind
+        );
+        assert!(
+            !sh.st.is_terminal(),
+            "shadow must not fold itself out of the hand"
+        );
+        let mut buf2 = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        assert!(
+            sh.st.legal_actions_into(&mut buf2) > 0,
+            "shadow must still have legal actions after the fallback"
+        );
+    }
+
+    /// Same fixture, but the shadow is NOT facing a bet: the fallback
+    /// must then be Check (never Fold).
+    #[test]
+    fn observe_opp_bet_not_facing_falls_back_to_check_not_fold() {
+        // River, seat 1 to act, street_bets equal, but seat 0 is all-in
+        // from a previous street so no bets are legal for seat 1.
+        let mut st = GameState::new(200.0, 1.0, 2.0);
+        st.set_hole_cards([0, 5], [10, 15]);
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Call,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        st.advance_street_in_place(&[20, 25, 30]);
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        st.advance_street_in_place(&[35]);
+        st.apply_action_in_place(&Action {
+            player: 0,
+            kind: ActionKind::Check,
+        });
+        st.apply_action_in_place(&Action {
+            player: 1,
+            kind: ActionKind::Check,
+        });
+        st.advance_street_in_place(&[44]);
+        assert_eq!(st.actor, 1);
+        // Both stacks nearly zeroed by an earlier all-in call; sb equal.
+        st.street_bets = [198.0, 198.0];
+        st.stacks = [0.0, 0.0];
+        st.pot = 400.0;
+        let mut buf = [Action {
+            player: 0,
+            kind: ActionKind::Fold,
+        }; 8];
+        let n = st.legal_actions_into(&mut buf);
+        assert_eq!(n, 1, "fixture: no bet faced and no chips => Check only");
+        assert!(matches!(buf[0].kind, ActionKind::Check));
+
+        let real_before = st.clone();
+        let mut sh = Shadow::new(st.clone());
+        let mut rng = SmallRng::seed_from_u64(9);
+        let applied = sh.observe_opp(
+            &real_before,
+            &Action {
+                player: 1,
+                kind: ActionKind::Bet(50.0),
+            },
+            &mut rng,
+        );
+        assert!(
+            matches!(applied.kind, ActionKind::Check),
+            "no legal shadow bet + no bet faced must fall back to Check, got {:?}",
+            applied.kind
+        );
+        assert!(!sh.st.is_terminal());
     }
 }

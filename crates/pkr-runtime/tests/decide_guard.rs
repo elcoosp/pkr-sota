@@ -13,9 +13,10 @@ use pkr_subgame::range_tracker::N_HANDS;
 use std::sync::Arc;
 
 fn build_handle(enabled_river: bool) -> SubgameHandle {
-    let abs: Arc<dyn AbstractionBuilder> = Arc::new(
-        pkr_abstraction::KMeansAbstraction::new(vec![], Arc::new(pkr_eval::NlheEvaluator)),
-    );
+    let abs: Arc<dyn AbstractionBuilder> = Arc::new(pkr_abstraction::KMeansAbstraction::new(
+        vec![],
+        Arc::new(pkr_eval::NlheEvaluator),
+    ));
     let cfg = SubgameConfig {
         evaluator: Arc::new(pkr_eval::NlheEvaluator),
         abstraction: abs,

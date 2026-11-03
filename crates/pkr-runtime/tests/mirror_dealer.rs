@@ -24,8 +24,14 @@ use pkr_core::state::{Action, ActionKind, GameState, Street};
 fn advance_street_uses_dealer_to_pick_first_actor() {
     let mut s = GameState::new(200.0, 1.0, 2.0);
     // SB calls, BB checks. Preflop complete.
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     assert_eq!(s.street, Street::Preflop);
 
     // Record pre-advance dealer.
@@ -46,8 +52,14 @@ fn advance_street_uses_dealer_to_pick_first_actor() {
 #[test]
 fn swapping_dealer_swaps_next_street_first_actor() {
     let mut base = GameState::new(200.0, 1.0, 2.0);
-    base.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    base.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    base.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    base.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
 
     let mut original = base.clone();
     original.advance_street_in_place(&[0, 4, 8]);

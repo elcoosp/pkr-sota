@@ -22,7 +22,11 @@ fn workspace() -> std::path::PathBuf {
 
 fn table_path(rel: &str) -> String {
     let dir = std::env::var("PKR_DATA_DIR").unwrap_or_else(|_| "outputs/v34long".into());
-    workspace().join(dir).join(rel).to_string_lossy().into_owned()
+    workspace()
+        .join(dir)
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn street_name(s: Street) -> &'static str {
@@ -59,13 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let ev = pkr_eval::NlheEvaluator;
-    let mut session = RuntimeSession::new(
-        handle,
-        0,
-        abs_arc.as_ref(),
-        table.as_ref(),
-        &ev,
-    );
+    let mut session = RuntimeSession::new(handle, 0, abs_arc.as_ref(), table.as_ref(), &ev);
 
     let mut root = GameState::new(200.0, 1.0, 2.0);
     root.set_hole_cards([0, 5], [40, 41]);
@@ -84,7 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Preflop.
     for kind in [ActionKind::Call, ActionKind::Check] {
         let actor = st.actor;
-        let a = Action { player: actor, kind };
+        let a = Action {
+            player: actor,
+            kind,
+        };
         st.apply_action_in_place(&a);
         session.observe_action(a);
         println!("[action] actor={} kind={:?}", actor, a.kind);
@@ -107,10 +108,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         st.advance_street_in_place(cards);
         session.observe_street(cards);
-        println!("[street] {} board_len={}", street_name(st.street), st.board_len);
+        println!(
+            "[street] {} board_len={}",
+            street_name(st.street),
+            st.board_len
+        );
         for _ in 0..2 {
             let actor = st.actor;
-            let a = Action { player: actor, kind: ActionKind::Check };
+            let a = Action {
+                player: actor,
+                kind: ActionKind::Check,
+            };
             st.apply_action_in_place(&a);
             session.observe_action(a);
             println!("[action] actor={} kind=Check", actor);
@@ -120,7 +128,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // River: advance, P1 bets half-pot, P0 to act.
     st.advance_street_in_place(river_card);
     session.observe_street(river_card);
-    println!("[street] {} board_len={}", street_name(st.street), st.board_len);
+    println!(
+        "[street] {} board_len={}",
+        street_name(st.street),
+        st.board_len
+    );
 
     let p1_bet = Action {
         player: 1,
@@ -130,7 +142,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.observe_action(p1_bet);
     println!(
         "[action] actor=1 kind=Bet({:.1}) pot_now={:.1}",
-        st.pot * 0.5, st.pot
+        st.pot * 0.5,
+        st.pot
     );
 
     assert_eq!(st.street, Street::River);

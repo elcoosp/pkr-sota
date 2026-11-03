@@ -13,7 +13,10 @@ fn ws() -> std::path::PathBuf {
     m.parent().unwrap().parent().unwrap().to_path_buf()
 }
 fn out(rel: &str) -> String {
-    ws().join("outputs/v34long").join(rel).to_string_lossy().into_owned()
+    ws().join("outputs/v34long")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn build_handle() -> SubgameHandle {
@@ -47,15 +50,30 @@ fn turn_root_p0_to_act() -> GameState {
     let b: [u8; 4] = [0, 14, 28, 42];
     let mut s = GameState::new(200.0, 1.0, 2.0);
     // Preflop: SB call, BB check
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[0..3]);
     // Flop: check, check
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[3..4]);
     // Turn: BB (P1) checks -> P0 (SB) to act
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s
 }
 
@@ -103,7 +121,6 @@ fn subgame_handle_decides_turn() {
     assert!((sum - 1.0).abs() < 1e-6, "not normalized: {:.6}", sum);
 }
 
-
 /// Turn root where BB (P1) is to act at the start of the turn.
 /// Exercises the mirror path: `state.actor == 1`, so `decide` mirrors
 /// the state before solving.
@@ -113,11 +130,23 @@ fn subgame_handle_decides_turn() {
 fn turn_root_p1_to_act() -> GameState {
     let b: [u8; 4] = [0, 14, 28, 42];
     let mut s = GameState::new(200.0, 1.0, 2.0);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Call });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Call,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[0..3]);
-    s.apply_action_in_place(&Action { player: 0, kind: ActionKind::Check });
-    s.apply_action_in_place(&Action { player: 1, kind: ActionKind::Check });
+    s.apply_action_in_place(&Action {
+        player: 0,
+        kind: ActionKind::Check,
+    });
+    s.apply_action_in_place(&Action {
+        player: 1,
+        kind: ActionKind::Check,
+    });
     s.advance_street_in_place(&b[3..4]);
     // Turn just started; whoever the state machine makes the actor is
     // what we test against. Assert to surface the actual value.
@@ -131,11 +160,14 @@ fn subgame_handle_decides_turn_as_seat1() {
     let state = turn_root_p1_to_act();
 
     assert_eq!(state.street, Street::Turn);
-    println!("  state after advance: actor={} is_street_complete={}",
-             state.actor, state.is_street_complete());
+    println!(
+        "  state after advance: actor={} is_street_complete={}",
+        state.actor,
+        state.is_street_complete()
+    );
     assert!(!state.is_street_complete(), "turn just started");
 
-    let our_hole: [u8; 2] = [11, 22];  // arbitrary non-board hand
+    let our_hole: [u8; 2] = [11, 22]; // arbitrary non-board hand
     let opp_range = uniform_opp_range();
 
     let s = handle

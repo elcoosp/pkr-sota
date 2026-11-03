@@ -121,8 +121,16 @@ fn mirror_to_seat0(state: &GameState) -> GameState {
     // previous-street bet was reading the WRONG infoset. Swap them like
     // every other per-seat field. Value 2 is the "no aggressor" sentinel
     // and must pass through unchanged.
-    m.street_aggressor = match m.street_aggressor { 0 => 1, 1 => 0, a => a };
-    m.prev_street_aggressor = match m.prev_street_aggressor { 0 => 1, 1 => 0, a => a };
+    m.street_aggressor = match m.street_aggressor {
+        0 => 1,
+        1 => 0,
+        a => a,
+    };
+    m.prev_street_aggressor = match m.prev_street_aggressor {
+        0 => 1,
+        1 => 0,
+        a => a,
+    };
     m
 }
 
@@ -185,8 +193,12 @@ impl SubgameHandle {
             ^ ((work_state.street as u64) << 8)
             ^ work_state.board[..work_state.board_len as usize]
                 .iter()
-                .fold(0u64, |h, &c| h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c as u64)
-            ^ our_hole.iter().fold(0u64, |h, &c| h.wrapping_mul(0x100_0000_01b3) ^ c as u64);
+                .fold(0u64, |h, &c| {
+                    h.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ c as u64
+                })
+            ^ our_hole
+                .iter()
+                .fold(0u64, |h, &c| h.wrapping_mul(0x100_0000_01b3) ^ c as u64);
         let opp_samples = pkr_subgame::range_tracker::sample_hands_weighted(
             opp_range,
             self.cfg.hands_per_range,

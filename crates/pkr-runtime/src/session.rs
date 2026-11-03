@@ -20,12 +20,12 @@
 //!
 //! The runtime does not leak `RangeTracker` details to bot callers.
 
+use crate::shadow::Shadow;
+use crate::subgame::SubgameHandle;
 use pkr_cfr::table::CompactRegretTable;
 use pkr_contracts::{AbstractionBuilder, Evaluator};
 use pkr_core::state::{Action, GameState};
-use pkr_subgame::range_tracker::{N_HANDS, RangeTracker};
-use crate::shadow::Shadow;
-use crate::subgame::SubgameHandle;
+use pkr_subgame::range_tracker::{RangeTracker, N_HANDS};
 
 /// Stateful session that tracks a posterior across a single deal.
 ///
@@ -56,8 +56,12 @@ pub struct RuntimeSession<'a> {
     ///
     /// `RefCell` because `advise` takes `&self` (callers hold the
     /// session immutably while sampling an action).
-    pending_trace: std::cell::RefCell<Option<(Vec<pkr_subgame::vector::Act>, Vec<u8>, Vec<Vec<f32>>)>>,
+    pending_trace: std::cell::RefCell<Option<PendingTrace>>,
 }
+
+/// 2026-11-03 re-audit: aliased to satisfy `clippy::type_complexity` —
+/// (search actions, per-action buckets, per-action per-hand matrix).
+type PendingTrace = (Vec<pkr_subgame::vector::Act>, Vec<u8>, Vec<Vec<f32>>);
 
 /// §B: enable live action translation (env `PKR_TRANSLATE=1`). Off by
 /// default so range tracking is unchanged until it is A/B'd with LBR.
@@ -138,6 +142,33 @@ impl<'a> RuntimeSession<'a> {
     /// No-op if no deal is active. Tracker sync failure is logged but
     /// does not abort the caller (state is the caller's ground truth).
     pub fn observe_action(&mut self, action: Action) {
+        // 2026-11-03 re-audit (item 7): an out-of-order host action must
+        // not silently update the wrong seat. `Action::player` is
+        // documentary for `apply_action_in_place` (the action is applied
+        // to `state.actor`), so a stale or misrouted action used to be
+        // recorded as the ACTUAL actor's action — advancing the wrong
+        // seat's chips, shadow state, and posterior. Warn loudly and
+        // DROP the action; do not panic in release. (A hard
+        // `debug_assert!` here would make debug builds — including this
+        // crate's own regression tests, which must exercise the drop
+        // path — panic on exactly the behaviour they assert, so the
+        // guard is warn-and-drop in every build.)
+        if let Some(t) = self.tracker.as_ref() {
+            if action.player != t.state().actor {
+                use std::sync::OnceLock;
+                static WARNED: OnceLock<()> = OnceLock::new();
+                if WARNED.set(()).is_ok() {
+                    eprintln!(
+                        "WARNING [session]: observed action from seat {} but the tracked actor is \
+                         {} — dropping the out-of-order action ({:?})",
+                        action.player,
+                        t.state().actor,
+                        action.kind
+                    );
+                }
+                return;
+            }
+        }
         // Phase 1.1: with a shadow, translate the observed action to the
         // in-tree equivalent and feed THAT to the tracker, so the
         // posterior tracks the strategy the blueprint actually has.
@@ -154,7 +185,9 @@ impl<'a> RuntimeSession<'a> {
             // existed for exactly this and was dead code.
             if action.player as u8 == self.our_seat {
                 let applied = {
-                    let sh = self.shadow.as_mut().unwrap();
+                    let Some(sh) = self.shadow.as_mut() else {
+                        unreachable!("guarded by self.shadow.is_some() above");
+                    };
                     let s = &sh.st;
                     let bucket = pkr_core::abstraction::action_bucket(
                         &action.kind,
@@ -174,7 +207,9 @@ impl<'a> RuntimeSession<'a> {
                 // the search was unbounded-kept (not blended); when it is
                 // `None`, fall back to the blueprint update as before.
                 let consumed = self.pending_trace.borrow_mut().take();
-                if let (Some((acts, buckets, per_hand)), Some(t)) = (consumed, self.tracker.as_mut()) {
+                if let (Some((_acts, buckets, per_hand)), Some(t)) =
+                    (consumed, self.tracker.as_mut())
+                {
                     let bucket = pkr_core::abstraction::action_bucket(
                         &applied.kind,
                         t.state().stacks[t.state().actor],
@@ -190,7 +225,9 @@ impl<'a> RuntimeSession<'a> {
                     let cur = *t.range(self.our_seat);
                     let mut any = false;
                     for (i, b) in buckets.iter().enumerate() {
-                        if *b != bucket { continue; }
+                        if *b != bucket {
+                            continue;
+                        }
                         any = true;
                         for h in 0..N_HANDS {
                             let p = per_hand.get(i).map(|row| row[h] as f64).unwrap_or(0.0);
@@ -200,7 +237,9 @@ impl<'a> RuntimeSession<'a> {
                     if any {
                         let ssum: f64 = updated.iter().sum();
                         if ssum > 1e-12 {
-                            for v in updated.iter_mut() { *v /= ssum; }
+                            for v in updated.iter_mut() {
+                                *v /= ssum;
+                            }
                             t.set_range(self.our_seat, &updated);
                         }
                     }
@@ -222,7 +261,9 @@ impl<'a> RuntimeSession<'a> {
             let real_before = self.tracker.as_ref().map(|t| t.state().clone());
             if let Some(rb) = real_before {
                 let applied = {
-                    let sh = self.shadow.as_mut().unwrap();
+                    let Some(sh) = self.shadow.as_mut() else {
+                        unreachable!("guarded by self.shadow.is_some() above");
+                    };
                     sh.observe_opp(&rb, &action, &mut self.rng)
                 };
                 if let Some(t) = self.tracker.as_mut() {
@@ -238,11 +279,9 @@ impl<'a> RuntimeSession<'a> {
             // The real state still advances with the observed action
             // (correct chips). Default OFF — unchanged behaviour.
             if translate_observed() {
-                if let Some(bucket) = crate::translate_live::observed_bet_bucket(
-                    t.state(),
-                    &action,
-                    &mut self.rng,
-                ) {
+                if let Some(bucket) =
+                    crate::translate_live::observed_bet_bucket(t.state(), &action, &mut self.rng)
+                {
                     let _ = t.apply_action_with_bucket(action, bucket as usize);
                     return;
                 }
@@ -317,8 +356,27 @@ impl<'a> RuntimeSession<'a> {
     ) -> Option<[f64; crate::subgame::SUBGAME_BUCKETS]> {
         let tracker = self.tracker.as_ref()?;
         let oop = 1 - st.dealer;
-        let r_oop: Vec<f32> = tracker.range(oop as u8).iter().map(|&x| x as f32).collect();
-        let r_ip: Vec<f32> = tracker.range((1 - oop) as u8).iter().map(|&x| x as f32).collect();
+        // 2026-11-03 re-audit (item 8): the OPPONENT range fed to the
+        // solver must have our hole's 6 combos (and any board-card hands,
+        // already zeroed by the tracker) removed, exactly like
+        // `VSearchHandle::decide`. The tracker maintains the two seat
+        // marginals independently, so `tracker.range(opp)` still carries
+        // mass on OUR holding. `masked_opp_range` returns None when
+        // masking removed all mass; fall back to the blueprint/sampled
+        // path instead of solving a degenerate game.
+        let board = &st.board[..st.board_len as usize];
+        let opp_masked =
+            crate::vsearch::masked_opp_range(tracker.range(1 - self.our_seat), board, our_hole)?;
+        let our_r: Vec<f32> = tracker
+            .range(self.our_seat)
+            .iter()
+            .map(|&x| x as f32)
+            .collect();
+        let (r_oop, r_ip) = if oop as u8 == self.our_seat {
+            (our_r, opp_masked.clone())
+        } else {
+            (opp_masked.clone(), our_r)
+        };
         // Safety routing for the live bot.
         //
         // Default = the PROVEN heuristic bound (safe by construction, and it
@@ -329,17 +387,23 @@ impl<'a> RuntimeSession<'a> {
         let mut cfg = crate::vsearch::VSearchCfg::default();
         let want_gadget = std::env::var("PKR_VSEARCH_GADGET").as_deref() == Ok("1");
         let want_raw = std::env::var("PKR_VSEARCH_RAW").as_deref() == Ok("1");
-        cfg.gadget = want_gadget;                       // proven safe (EV cbv)
-        cfg.bound = !want_gadget && !want_raw;          // default: proven bound
-        // Streets to search. DEFAULT RIVER-ONLY: a turn bound decision costs
-        // ~52s (the bound's BR walks are not covered by time_budget_ms, and
-        // each turn-tree walk is seconds), so turn is unaffordable live.
-        // Override with PKR_VSEARCH_STREETS=tr etc.
+        cfg.gadget = want_gadget; // proven safe (EV cbv)
+        cfg.bound = !want_gadget && !want_raw; // default: proven bound
+                                               // Streets to search. DEFAULT RIVER-ONLY: a turn bound decision costs
+                                               // ~52s (the bound's BR walks are not covered by time_budget_ms, and
+                                               // each turn-tree walk is seconds), so turn is unaffordable live.
+                                               // Override with PKR_VSEARCH_STREETS=tr etc.
         cfg.enabled_streets = [false, false, false, true];
         if let Ok(s) = std::env::var("PKR_VSEARCH_STREETS") {
             let mut e = [false; 4];
             for ch in s.chars() {
-                match ch { 'p' => e[0] = true, 'f' => e[1] = true, 't' => e[2] = true, 'r' => e[3] = true, _ => {} }
+                match ch {
+                    'p' => e[0] = true,
+                    'f' => e[1] = true,
+                    't' => e[2] = true,
+                    'r' => e[3] = true,
+                    _ => {}
+                }
             }
             cfg.enabled_streets = e;
         }
@@ -353,7 +417,12 @@ impl<'a> RuntimeSession<'a> {
         // decision. Clear any prior trace first.
         let acts = if cfg.bound {
             match crate::vsearch::solve_root_bounded_traced(
-                st, ranges(), *our_hole, &cfg, self.abs, self.tbl,
+                st,
+                ranges(),
+                *our_hole,
+                &cfg,
+                self.abs,
+                self.tbl,
             ) {
                 Some((a, trace)) => {
                     *self.pending_trace.borrow_mut() = trace;
@@ -364,10 +433,42 @@ impl<'a> RuntimeSession<'a> {
                     // bound (which may still succeed on the fallback
                     // branch). If that also fails, try the raw solve.
                     *self.pending_trace.borrow_mut() = None;
-                    crate::vsearch::solve_root_bounded(st, ranges(), *our_hole, &cfg, self.abs, self.tbl)
-                        .or_else(|| crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg))?
+                    crate::vsearch::solve_root_bounded(
+                        st,
+                        ranges(),
+                        *our_hole,
+                        &cfg,
+                        self.abs,
+                        self.tbl,
+                    )
+                    .or_else(|| crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg))?
                 }
             }
+        } else if want_gadget && !want_raw {
+            // 2026-11-03 re-audit (item 1): PKR_VSEARCH_GADGET=1 used to
+            // set `cfg.gadget` and then fall through to the RAW
+            // `solve_root` here (only `cfg.bound` branched), so the
+            // gadget silently never ran on the session path. Route to
+            // `solve_root_gadgetted`, mirroring `VSearchHandle::decide`:
+            // our own range is a POINT MASS at our hole (the gadget's
+            // sampled POC enumerates range cross-products, so a wide own
+            // range is unaffordable — decide builds it this way) and the
+            // opponent range is the masked tracker posterior from above.
+            // On gadget failure fall back to the raw solve on the same
+            // ranges, exactly like decide does.
+            *self.pending_trace.borrow_mut() = None;
+            // A hole overlapping the board is an impossible holding;
+            // mirroring decide, refuse rather than solve with a nonsense
+            // point mass (advise falls through to the blueprint path).
+            let our_mass = crate::vsearch::our_point_mass(our_hole, board)?;
+            let opp_mass = opp_masked.clone();
+            let (g0, g1) = if st.actor == oop {
+                (our_mass, opp_mass)
+            } else {
+                (opp_mass, our_mass)
+            };
+            crate::vsearch::solve_root_gadgetted(st, [g0, g1], *our_hole, &cfg, self.abs, self.tbl)
+                .or_else(|| crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg))?
         } else {
             *self.pending_trace.borrow_mut() = None;
             crate::vsearch::solve_root(st, ranges(), *our_hole, &cfg)?
@@ -386,15 +487,21 @@ impl<'a> RuntimeSession<'a> {
                 Act::Bet(t) => pkr_core::state::ActionKind::Bet(*t),
             };
             let b = pkr_core::abstraction::action_bucket(
-                &kind, st.stacks[st.actor], st.street_bets[st.actor],
-                st.street_bets[1 - st.actor], st.pot) as usize;
+                &kind,
+                st.stacks[st.actor],
+                st.street_bets[st.actor],
+                st.street_bets[1 - st.actor],
+                st.pot,
+            ) as usize;
             if b < crate::subgame::SUBGAME_BUCKETS {
                 out[b] += *p as f64;
                 total += *p as f64;
             }
         }
         if total > 1e-9 {
-            for x in out.iter_mut() { *x /= total; }
+            for x in out.iter_mut() {
+                *x /= total;
+            }
             return Some(out);
         }
         None
@@ -404,6 +511,15 @@ impl<'a> RuntimeSession<'a> {
     pub fn opp_range(&self) -> Option<&[f64; N_HANDS]> {
         let opp = 1 - self.our_seat;
         self.tracker.as_ref().map(|t| t.range(opp))
+    }
+
+    /// 2026-11-03 re-audit (items 3 & 7): read-only view of the
+    /// tracker's concrete state, for diagnostics and regression tests
+    /// (e.g. asserting the tracker did not go terminal on a phantom
+    /// fold, or that an out-of-order action did not advance it).
+    /// `None` when no deal is active.
+    pub fn tracker_state(&self) -> Option<&GameState> {
+        self.tracker.as_ref().map(|t| t.state())
     }
 
     /// Whether a deal is currently being tracked.
@@ -477,21 +593,17 @@ impl<'a> RuntimeSession<'a> {
         out
     }
 
-    fn handle_blueprint_strategy(&self, hash: u64, out: &mut [f32; crate::subgame::SUBGAME_BUCKETS]) {
+    fn handle_blueprint_strategy(
+        &self,
+        hash: u64,
+        out: &mut [f32; crate::subgame::SUBGAME_BUCKETS],
+    ) {
         self.handle.table_ref().get_average_strategy_into(hash, out);
     }
 }
 
-/// Given the trace's tree actions and the tracker's bucket, return the
-/// bucket index if any tree action maps to it. This is a coarse check;
-/// the caller then sums per-hand probabilities across those actions.
-fn own_bucket_in_trace(_acts: &[pkr_subgame::vector::Act], applied_bucket: u8) -> Option<u8> {
-    // The bucket passed by the caller is authoritative (it was computed
-    // by `action_bucket` on the shadow state, exactly as the tracker
-    // will compute it). Return it as long as it is a valid bucket.
-    if (applied_bucket as usize) < pkr_core::abstraction::NUM_ACTION_BUCKETS {
-        Some(applied_bucket)
-    } else {
-        None
-    }
-}
+// 2026-11-03 re-audit (item 10): `own_bucket_in_trace` was deleted. It
+// was defined but never called (superseded by the inline
+// `pending_trace` matching in `observe_action`, which sums per-hand
+// probabilities across every tree action mapping to the applied
+// bucket) and only produced a dead-code warning.

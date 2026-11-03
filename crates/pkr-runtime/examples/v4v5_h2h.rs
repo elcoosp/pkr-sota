@@ -16,27 +16,48 @@ struct Bot {
 impl Bot {
     fn launch(bp: &str, sig: u8, tables: &str) -> Self {
         let mut c = Command::new("target/release/pkr-bot-pipe")
-            .arg(bp).arg(tables).arg("--sig").arg(sig.to_string())
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
-            .spawn().expect("spawn bot");
+            .arg(bp)
+            .arg(tables)
+            .arg("--sig")
+            .arg(sig.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn bot");
         let stdin = c.stdin.take().unwrap();
         let stdout = BufReader::new(c.stdout.take().unwrap());
-        Bot { _child: c, stdin, stdout }
+        Bot {
+            _child: c,
+            stdin,
+            stdout,
+        }
     }
-    fn decide(&mut self, hole: [u8; 2], board: &[u8], actions: &[Action], actor: usize, seed: u64) -> String {
-        let acts: Vec<_> = actions.iter().map(|a| {
-            let (kind, amt) = match a.kind {
-                ActionKind::Fold => ("fold", 0.0),
-                ActionKind::Check => ("check", 0.0),
-                ActionKind::Call => ("call", 0.0),
-                ActionKind::Bet(t) => ("bet", t as f64),
-            };
-            serde_json::json!({"player": a.player, "kind": kind, "amt": amt})
-        }).collect();
+    fn decide(
+        &mut self,
+        hole: [u8; 2],
+        board: &[u8],
+        actions: &[Action],
+        actor: usize,
+        seed: u64,
+    ) -> String {
+        let acts: Vec<_> = actions
+            .iter()
+            .map(|a| {
+                let (kind, amt) = match a.kind {
+                    ActionKind::Fold => ("fold", 0.0),
+                    ActionKind::Check => ("check", 0.0),
+                    ActionKind::Call => ("call", 0.0),
+                    ActionKind::Bet(t) => ("bet", t as f64),
+                };
+                serde_json::json!({"player": a.player, "kind": kind, "amt": amt})
+            })
+            .collect();
         let msg = serde_json::json!({
             "hole": [hole[0], hole[1]], "board": board,
             "actor": actor, "street": 0, "actions": acts, "seed": seed
-        }).to_string();
+        })
+        .to_string();
         self.stdin.write_all(msg.as_bytes()).unwrap();
         self.stdin.write_all(b"\n").unwrap();
         self.stdin.flush().unwrap();
@@ -69,7 +90,11 @@ fn deal(seed: u64) -> ([u8; 2], [u8; 2], [u8; 5]) {
         let j = i + (next() as usize) % (52 - i);
         deck.swap(i, j);
     }
-    ([deck[0], deck[1]], [deck[2], deck[3]], [deck[4], deck[5], deck[6], deck[7], deck[8]])
+    (
+        [deck[0], deck[1]],
+        [deck[2], deck[3]],
+        [deck[4], deck[5], deck[6], deck[7], deck[8]],
+    )
 }
 
 fn mix(x: u64) -> u64 {
@@ -80,12 +105,20 @@ fn mix(x: u64) -> u64 {
 }
 
 fn play(
-    a: &mut Bot, b: &mut Bot,
-    hero_hole: [u8; 2], vill_hole: [u8; 2], runout: &[u8; 5],
-    hero_seat: usize, base_seed: u64,
+    a: &mut Bot,
+    b: &mut Bot,
+    hero_hole: [u8; 2],
+    vill_hole: [u8; 2],
+    runout: &[u8; 5],
+    hero_seat: usize,
+    base_seed: u64,
 ) -> f32 {
     let mut st = GameState::new(pkr_core::state::stack_chips(), 1.0, 2.0);
-    let (h0, h1) = if hero_seat == 0 { (hero_hole, vill_hole) } else { (vill_hole, hero_hole) };
+    let (h0, h1) = if hero_seat == 0 {
+        (hero_hole, vill_hole)
+    } else {
+        (vill_hole, hero_hole)
+    };
     st.set_hole_cards(h0, h1);
     let mut actions: Vec<Action> = Vec::new();
     let mut board: Vec<u8> = Vec::new();
@@ -99,14 +132,24 @@ fn play(
         // passes, so A-vs-A cancels exactly.
         let dseed = mix(base_seed.wrapping_add(decision_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15)));
         decision_idx += 1;
-        let bot = if (actor == 0) == (hero_seat == 0) { &mut *a } else { &mut *b };
+        let bot = if (actor == 0) == (hero_seat == 0) {
+            &mut *a
+        } else {
+            &mut *b
+        };
         let tok = bot.decide(st.hole[actor], &board, &actions, actor, dseed);
-        let act = Action { player: actor, kind: token_to_kind(&tok) };
+        let act = Action {
+            player: actor,
+            kind: token_to_kind(&tok),
+        };
         actions.push(act);
         st.apply_action_in_place(&act);
         if st.is_street_complete() && st.street != Street::River {
             let need = match st.street {
-                Street::Preflop => 3, Street::Flop => 1, Street::Turn => 1, Street::River => 0,
+                Street::Preflop => 3,
+                Street::Flop => 1,
+                Street::Turn => 1,
+                Street::River => 0,
             };
             if deck_idx + need <= runout.len() {
                 let chunk = runout[deck_idx..deck_idx + need].to_vec();
@@ -116,13 +159,27 @@ fn play(
             }
         }
     }
-    let p0 = if st.is_terminal() { st.terminal_payoff(0, &pkr_eval::NlheEvaluator) } else { 0.0 };
-    if hero_seat == 0 { p0 } else { -p0 }
+    let p0 = if st.is_terminal() {
+        st.terminal_payoff(0, &pkr_eval::NlheEvaluator)
+    } else {
+        0.0
+    };
+    if hero_seat == 0 {
+        p0
+    } else {
+        -p0
+    }
 }
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let (bp_a, sig_a, bp_b, sig_b, tables) = (&a[1], a[2].parse::<u8>().unwrap(), &a[3], a[4].parse::<u8>().unwrap(), &a[5]);
+    let (bp_a, sig_a, bp_b, sig_b, tables) = (
+        &a[1],
+        a[2].parse::<u8>().unwrap(),
+        &a[3],
+        a[4].parse::<u8>().unwrap(),
+        &a[5],
+    );
     let deals: u64 = a.get(6).and_then(|s| s.parse().ok()).unwrap_or(2000);
     let seed: u64 = a.get(7).and_then(|s| s.parse().ok()).unwrap_or(42);
     let mut bot_a = Bot::launch(bp_a, sig_a, tables);
@@ -130,8 +187,24 @@ fn main() {
     let mut diffs: Vec<f64> = Vec::new();
     for i in 0..deals {
         let (h, v, runout) = deal(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(i));
-        let a0 = play(&mut bot_a, &mut bot_b, h, v, &runout, 0, seed.wrapping_add(i));
-        let b0 = play(&mut bot_b, &mut bot_a, h, v, &runout, 0, seed.wrapping_add(i));
+        let a0 = play(
+            &mut bot_a,
+            &mut bot_b,
+            h,
+            v,
+            &runout,
+            0,
+            seed.wrapping_add(i),
+        );
+        let b0 = play(
+            &mut bot_b,
+            &mut bot_a,
+            h,
+            v,
+            &runout,
+            0,
+            seed.wrapping_add(i),
+        );
         diffs.push((a0 - b0) as f64);
     }
     let n = diffs.len() as f64;
