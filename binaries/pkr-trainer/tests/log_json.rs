@@ -33,20 +33,34 @@ fn log_json_emits_only_valid_json_objects() {
         // k < 100 unless this is set (see smoke.sh).
         .env("PKR_ALLOW_SMALL_K", "1")
         .env("PKR_ALLOW_EHS_FALLBACK", "1")
-        .arg("--iterations").arg("50000")
-        .arg("--seed").arg("42")
-        .arg("--threads").arg("2")
-        .arg("--capacity").arg("1000000")
-        .arg("--eval-every").arg("50000")
-        .arg("--eval-deals").arg("50")
-        .arg("--centroids").arg(smoke.join("centroids.bin"))
-        .arg("--preflop-table").arg(smoke.join("preflop_abstraction.bin"))
-        .arg("--flop-table").arg(smoke.join("flop_abstraction.bin"))
-        .arg("--turn-table").arg(smoke.join("turn_abstraction.bin"))
-        .arg("--river-table").arg(smoke.join("river_buckets.bin"))
-        .arg("--rank-table").arg(smoke.join("hand_ranks.bin"))
-        .arg("--output").arg(out_dir.path().join("blueprint.bin"))
-        .arg("--checkpoint").arg(out_dir.path().join("train.ckpt"))
+        .arg("--iterations")
+        .arg("50000")
+        .arg("--seed")
+        .arg("42")
+        .arg("--threads")
+        .arg("2")
+        .arg("--capacity")
+        .arg("1000000")
+        .arg("--eval-every")
+        .arg("50000")
+        .arg("--eval-deals")
+        .arg("50")
+        .arg("--centroids")
+        .arg(smoke.join("centroids.bin"))
+        .arg("--preflop-table")
+        .arg(smoke.join("preflop_abstraction.bin"))
+        .arg("--flop-table")
+        .arg(smoke.join("flop_abstraction.bin"))
+        .arg("--turn-table")
+        .arg(smoke.join("turn_abstraction.bin"))
+        .arg("--river-table")
+        .arg(smoke.join("river_buckets.bin"))
+        .arg("--rank-table")
+        .arg(smoke.join("hand_ranks.bin"))
+        .arg("--output")
+        .arg(out_dir.path().join("blueprint.bin"))
+        .arg("--checkpoint")
+        .arg(out_dir.path().join("train.ckpt"))
         .arg("--fresh")
         .arg("--log-json")
         .output()
@@ -65,8 +79,8 @@ fn log_json_emits_only_valid_json_objects() {
             continue;
         }
         json_lines += 1;
-        let v: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("invalid JSON line: {e}\n{line}"));
+        let v: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid JSON line: {e}\n{line}"));
         assert!(
             v.get("event").is_some(),
             "JSON line missing 'event' field:\n{line}"
