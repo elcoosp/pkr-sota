@@ -1,6 +1,6 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
-pub mod potential;
 pub mod histogram;
+pub mod potential;
 
 pub mod ehs;
 pub use ehs::calculate_ehs;
@@ -38,8 +38,6 @@ static FALLBACK_COUNTS: [AtomicU64; 4] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-
-/// Total EHS fallbacks across all streets since process start.
 
 /// Env-gated soft-kmeans blending. When `PKR_SOFT_KMEANS=1`, hands whose
 /// river hand_rank falls within `SOFT_BOUNDARY_FRAC` of a tier boundary
@@ -195,23 +193,17 @@ pub fn hand_structure_features_v39(hole: &[u8]) -> [f32; 4] {
     let r0 = card_rank(hole[0]);
     let r1 = card_rank(hole[1]);
     let (rank_high, rank_low) = if r0 >= r1 { (r0, r1) } else { (r1, r0) };
-    let suited = if card_suit(hole[0]) == card_suit(hole[1]) { 1.0 } else { 0.0 };
+    let suited = if card_suit(hole[0]) == card_suit(hole[1]) {
+        1.0
+    } else {
+        0.0
+    };
     let gap = (rank_high - rank_low) as f32 / 12.0;
-    [
-        rank_high as f32 / 12.0,
-        rank_low as f32 / 12.0,
-        suited,
-        gap,
-    ]
+    [rank_high as f32 / 12.0, rank_low as f32 / 12.0, suited, gap]
 }
 
 /// V39 combined vector: (EHS, EHS^2, rank_high/12, rank_low/12, suited, gap/12).
-pub fn hand_and_board_features_v39(
-    ehs: f32,
-    ehs_sq: f32,
-    hole: &[u8],
-    board: &[u8],
-) -> [f32; 10] {
+pub fn hand_and_board_features_v39(ehs: f32, ehs_sq: f32, hole: &[u8], board: &[u8]) -> [f32; 10] {
     let h = hand_structure_features_v39(hole);
     let b = board_structure_features(board);
     [ehs, ehs_sq, h[0], h[1], h[2], h[3], b[0], b[1], b[2], b[3]]
@@ -221,7 +213,6 @@ pub fn hand_and_board_features_v39(
 pub fn preflop_v39_enabled() -> bool {
     std::env::var("PKR_PREFLOP_V39").as_deref() == Ok("1")
 }
-
 
 // ---------------------------------------------------------------------------
 // 10D "hand+board" feature space for flop/turn tables.
@@ -304,12 +295,7 @@ pub fn board_structure_features(board: &[u8]) -> [f32; 4] {
 /// Compose the 10D feature vector from EHS, EHS^2, hole structure and
 /// board structure. Centralized so precompute and any future runtime
 /// path use the exact same layout.
-pub fn hand_and_board_features(
-    ehs: f32,
-    ehs_sq: f32,
-    hole: &[u8],
-    board: &[u8],
-) -> [f32; 10] {
+pub fn hand_and_board_features(ehs: f32, ehs_sq: f32, hole: &[u8], board: &[u8]) -> [f32; 10] {
     let h = hand_structure_features(hole);
     let b = board_structure_features(board);
     [ehs, ehs_sq, h[0], h[1], h[2], h[3], b[0], b[1], b[2], b[3]]
@@ -450,7 +436,11 @@ impl KMeansAbstraction {
             default_centroids,
             tables,
             flop_buckets: OnceLock::new(),
-            bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") { 2 } else { 1 },
+            bucket_width: if std::env::var("PKR_BUCKET_U16").as_deref() == Ok("1") {
+                2
+            } else {
+                1
+            },
             evaluator,
         }
     }
@@ -496,6 +486,41 @@ impl KMeansAbstraction {
     pub fn init_table(&self, street_code: u8, path: &str) -> Result<(), std::io::Error> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
+        // 2026-11-03 re-audit: a truncated (or width-mismatched) table
+        // used to load silently and degrade every lookup on that street
+        // into Monte-Carlo fallbacks — invisible under
+        // PKR_ALLOW_EHS_FALLBACK=1 (which smoke.sh sets). The
+        // per-street entry counts are exact constants; validate them.
+        const EXPECTED_ENTRIES: [(u8, u64); 4] = [
+            (0, 1_326),       // preflop: one entry per hole combo
+            (1, 25_989_600),  // flop: C(52,5) x 10 hole-mask slots
+            (2, 305_377_800), // turn: C(52,6) x 15 hole-mask slots
+            (3, 2_598_960),   // river: C(52,5)
+        ];
+        let entries = EXPECTED_ENTRIES
+            .iter()
+            .find(|&&(code, _)| code == street_code)
+            .map(|&(_, n)| n)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("init_table: unknown street code {street_code}"),
+                )
+            })?;
+        let expected = (entries * self.bucket_width as u64) as usize;
+        if mmap.len() != expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "init_table(street {street_code}): {path} is {} bytes, \
+                     expected {expected} ({entries} entries x width {}); \
+                     the table is truncated or was built with a different \
+                     bucket width",
+                    mmap.len(),
+                    self.bucket_width
+                ),
+            ));
+        }
         let lock = self
             .tables
             .get(&street_code)
@@ -797,6 +822,15 @@ impl AbstractionBuilder for KMeansAbstraction {
                         0
                     }
                 };
+                // 2026-11-03 re-audit: board_bucket is truncated to 8
+                // bits here, so the river board table must hold <= 256
+                // buckets — generate_river_buckets enforces the same
+                // bound at generation time. Debug guard for u16 tables.
+                debug_assert!(
+                    board_bucket <= 255,
+                    "river board bucket {} exceeds the 8-bit hash field",
+                    board_bucket
+                );
                 (hand_bucket << 8) | (board_bucket & 0xff)
             }
             _ => ehs_fallback(),
@@ -976,7 +1010,8 @@ mod extended_tests {
                 .map(|i| (i as f32 / n as f32, i as f32 / n as f32))
                 .collect(),
         };
-        let tmp = std::env::temp_dir().join(format!("test_river_centroids-{}.bin", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("test_river_centroids-{}.bin", std::process::id()));
         save_centroids(tmp.to_str().unwrap(), &store).unwrap();
         let loaded = load_centroids(tmp.to_str().unwrap()).unwrap();
         assert_eq!(loaded.centroids.len(), n);
@@ -1318,9 +1353,9 @@ mod rich_features_tests {
     fn card_encoding_is_suit13_plus_rank() {
         // Encoding: card = suit * 13 + rank. rank in 0..=12 (0=2, 12=A),
         // suit in 0..=3.
-        assert_eq!(card_rank(0), 0);   // deuce of suit 0
+        assert_eq!(card_rank(0), 0); // deuce of suit 0
         assert_eq!(card_rank(12), 12); // ace of suit 0
-        assert_eq!(card_rank(13), 0);  // deuce of suit 1
+        assert_eq!(card_rank(13), 0); // deuce of suit 1
         assert_eq!(card_suit(0), 0);
         assert_eq!(card_suit(12), 0);
         assert_eq!(card_suit(13), 1);
@@ -1345,8 +1380,8 @@ mod rich_features_tests {
 
         // AKs: ace (12) + king (11), both suit 0.
         let aks = hand_structure_features(&[12, 11]);
-        assert!((aks[0] - 1.0).abs() < 1e-6);          // rank_high = 12/12
-        assert!((aks[1] - 11.0 / 12.0).abs() < 1e-6);  // rank_low = 11/12
+        assert!((aks[0] - 1.0).abs() < 1e-6); // rank_high = 12/12
+        assert!((aks[1] - 11.0 / 12.0).abs() < 1e-6); // rank_low = 11/12
         assert_eq!(aks[2], 1.0); // suited
         assert_eq!(aks[3], 1.0); // gap 1 -> connector
 
@@ -1415,7 +1450,7 @@ mod hand_board_features_tests {
         // board_high = 11/12; unpaired; not flush-drawn (all distinct suits);
         // not connected (K-Q gap 1, Q-2 gap 8).
         let f = board_structure_features(&[11, 23, 26]);
-        assert!((f[0] - 11.0/12.0).abs() < 1e-6);
+        assert!((f[0] - 11.0 / 12.0).abs() < 1e-6);
         assert_eq!(f[1], 0.0); // not paired
         assert_eq!(f[2], 0.0); // not flush draw
         assert_eq!(f[3], 0.0); // not connected
@@ -1427,7 +1462,7 @@ mod hand_board_features_tests {
         // 9-spades = 0*13+7 = 7.
         // board_high = 9/12; unpaired; flush draw (3 spades); connected (J-T-9).
         let f = board_structure_features(&[9, 8, 7]);
-        assert!((f[0] - 9.0/12.0).abs() < 1e-6);
+        assert!((f[0] - 9.0 / 12.0).abs() < 1e-6);
         assert_eq!(f[1], 0.0); // not paired
         assert_eq!(f[2], 1.0); // 3 spades -> flush draw bit
         assert_eq!(f[3], 1.0); // J-T-9 -> connected
@@ -1445,7 +1480,7 @@ mod hand_board_features_tests {
         // AAK counts as "connected" under the gap <= 2 rule (intentional:
         // the flag means "ranks are clustered", not "straight is possible").
         let f = board_structure_features(&[38, 51, 24]);
-        assert!((f[0] - 12.0/12.0).abs() < 1e-6);
+        assert!((f[0] - 12.0 / 12.0).abs() < 1e-6);
         assert_eq!(f[1], 1.0); // paired
         assert_eq!(f[2], 0.0); // three different suits
         assert_eq!(f[3], 1.0); // clustered ranks (gap 0 and gap 1)
@@ -1471,23 +1506,19 @@ mod hand_board_features_tests {
         // [EHS, EHS^2, rank_high, rank_low, suited, connector, board_high, paired, flush_draw, connected]
         assert!((feat[0] - 0.5).abs() < 1e-6);
         assert!((feat[1] - 0.25).abs() < 1e-6);
-        assert!((feat[2] - 1.0).abs() < 1e-6);  // A rank_high
-        assert!((feat[3] - 1.0).abs() < 1e-6);  // A rank_low (pair)
-        assert_eq!(feat[4], 0.0);               // AA offsuit
-        assert_eq!(feat[5], 1.0);               // gap 0 -> connector
-        assert!((feat[6] - 11.0/12.0).abs() < 1e-6); // K-high board
-        assert_eq!(feat[7], 0.0);               // unpaired board
-        assert_eq!(feat[8], 0.0);               // rainbow
-        assert_eq!(feat[9], 0.0);               // not connected (K-Q-2)
+        assert!((feat[2] - 1.0).abs() < 1e-6); // A rank_high
+        assert!((feat[3] - 1.0).abs() < 1e-6); // A rank_low (pair)
+        assert_eq!(feat[4], 0.0); // AA offsuit
+        assert_eq!(feat[5], 1.0); // gap 0 -> connector
+        assert!((feat[6] - 11.0 / 12.0).abs() < 1e-6); // K-high board
+        assert_eq!(feat[7], 0.0); // unpaired board
+        assert_eq!(feat[8], 0.0); // rainbow
+        assert_eq!(feat[9], 0.0); // not connected (K-Q-2)
     }
 
     #[test]
     fn nearest_centroid_10d_picks_identity() {
-        let c: Vec<[f32; 10]> = vec![
-            [0.0; 10],
-            [0.5; 10],
-            [1.0; 10],
-        ];
+        let c: Vec<[f32; 10]> = vec![[0.0; 10], [0.5; 10], [1.0; 10]];
         // Probe is offset in every dim, so it stays closest to the
         // [0.5; 10] centroid under squared L2. Any near-[0.5] probe
         // works here; all-dims-set avoids accidentally landing closer
@@ -1513,5 +1544,53 @@ mod hand_board_features_tests {
         assert_eq!(loaded.centroids.len(), 2);
         assert!((loaded.centroids[1][9] - 1.0).abs() < 1e-6);
         std::fs::remove_file(tmp).ok();
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    //! 2026-11-03 re-audit: `init_table` must reject truncated or
+    //! width-mismatched tables loudly instead of degrading every lookup
+    //! on that street into silent Monte-Carlo fallbacks.
+
+    use super::*;
+    use std::sync::Arc;
+
+    struct NoopEval;
+    impl pkr_contracts::Evaluator for NoopEval {
+        fn evaluate_hand(&self, _h: &[u8], _b: &[u8]) -> u32 {
+            0
+        }
+    }
+
+    #[test]
+    fn init_table_rejects_truncated_table() {
+        let abs = KMeansAbstraction::new(vec![(0.5, 0.25)], Arc::new(NoopEval));
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("preflop_abstraction.bin");
+        // Preflop table must be exactly 1326 bytes (u8 width).
+        std::fs::write(&p, vec![0u8; 100]).unwrap();
+        let err = abs.init_table(0, p.to_str().unwrap()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn init_table_accepts_exact_size() {
+        let abs = KMeansAbstraction::new(vec![(0.5, 0.25)], Arc::new(NoopEval));
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("preflop_abstraction.bin");
+        std::fs::write(&p, vec![0u8; 1326]).unwrap();
+        abs.init_table(0, p.to_str().unwrap())
+            .expect("exact-size table must load");
+    }
+
+    #[test]
+    fn init_table_rejects_unknown_street() {
+        let abs = KMeansAbstraction::new(vec![(0.5, 0.25)], Arc::new(NoopEval));
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.bin");
+        std::fs::write(&p, vec![0u8; 16]).unwrap();
+        let err = abs.init_table(9, p.to_str().unwrap()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

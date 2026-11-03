@@ -116,7 +116,10 @@ pub fn ehs_and_potential(
     inner: usize,
 ) -> (f32, f32) {
     assert_eq!(hole.len(), 2, "ehs_and_potential: exactly 2 hole cards");
-    assert!(board.len() <= 4, "ehs_and_potential: flop (3) or turn (4) only");
+    assert!(
+        board.len() <= 4,
+        "ehs_and_potential: flop (3) or turn (4) only"
+    );
     assert!(inner >= 1, "inner samples must be >= 1");
 
     let mut rng = SmallRng::seed_from_u64(seed_for(hole, board));
@@ -217,7 +220,9 @@ mod tests {
         let dt = t0.elapsed().as_secs_f64();
         eprintln!(
             "1000 flop hands @ inner=20: {:.3}s ({:.1}us/hand), acc={:.3}",
-            dt, dt / n as f64 * 1e6, acc
+            dt,
+            dt / n as f64 * 1e6,
+            acc
         );
     }
 }

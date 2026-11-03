@@ -1,9 +1,8 @@
 #![allow(clippy::needless_range_loop)] // numerics: indexed loops are idiomatic here
 
 use pkr_abstraction::{
-    calculate_ehs, hand_and_board_features,
-    hand_structure_features, hand_structure_features_v39, load_centroids,
-    load_centroids_6d, nearest_centroid_10d, nearest_centroid_6d, save_centroids,
+    calculate_ehs, hand_and_board_features, hand_structure_features, hand_structure_features_v39,
+    load_centroids, load_centroids_6d, nearest_centroid_10d, nearest_centroid_6d, save_centroids,
     save_centroids_10d, save_centroids_6d, CentroidStore, CentroidStore10D, CentroidStore6D,
 };
 use pkr_contracts::Evaluator;
@@ -50,7 +49,11 @@ fn bucket_u16() -> bool {
 /// Decode an on-disk bucket blob into u16 elements (gate-aware).
 fn read_bucket_bytes(disk: &[u8]) -> Vec<u16> {
     if bucket_u16() {
-        disk.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect()
+        disk.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u16::from_le_bytes(*p))
+            .collect()
     } else {
         disk.iter().map(|&b| b as u16).collect()
     }
@@ -60,7 +63,9 @@ fn read_bucket_bytes(disk: &[u8]) -> Vec<u16> {
 fn buckets_to_bytes(v: &[u16]) -> Vec<u8> {
     if bucket_u16() {
         let mut b = Vec::with_capacity(v.len() * 2);
-        for &x in v { b.extend_from_slice(&x.to_le_bytes()); }
+        for &x in v {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
         b
     } else {
         v.iter().map(|&x| x as u8).collect()
@@ -121,11 +126,9 @@ fn main() {
                 centroids_path, rank_table_path
             );
             if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_abstraction_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -134,11 +137,9 @@ fn main() {
             let output = args.get(2).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             println!("Generating hand ranks -> {}", output);
             if let Err(e) = generate_hand_ranks(output) {
-
                 eprintln!("precompute generate_hand_ranks failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -153,11 +154,9 @@ fn main() {
                 num_samples, k, rank_table_path, output
             );
             if let Err(e) = generate_centroids(num_samples, k, rank_table_path, output) {
-
                 eprintln!("precompute generate_centroids failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -175,14 +174,17 @@ fn main() {
             let num_boards = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
             let k = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
             let rank_table_path = args.get(4).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
-            let output = args.get(5).map(|s| s.as_str()).unwrap_or("centroids_pot.bin");
+            let output = args
+                .get(5)
+                .map(|s| s.as_str())
+                .unwrap_or("centroids_pot.bin");
             let street = args.get(6).map(|s| s.as_str()).unwrap_or("flop");
-            if let Err(e) = generate_centroids_potential(num_boards, k, rank_table_path, output, street) {
-
+            if let Err(e) =
+                generate_centroids_potential(num_boards, k, rank_table_path, output, street)
+            {
                 eprintln!("precompute generate_centroids_potential failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -190,30 +192,40 @@ fn main() {
         "abs-potential" => {
             // F4: build the flop hand table using the (mean, potential)
             // feature space instead of (EHS, EHS^2).
-            let centroids_path = args.get(2).map(|s| s.as_str()).unwrap_or("centroids_pot.bin");
+            let centroids_path = args
+                .get(2)
+                .map(|s| s.as_str())
+                .unwrap_or("centroids_pot.bin");
             let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
-            let output = args.get(4).map(|s| s.as_str()).unwrap_or("abstraction_pot.bin");
-            if let Err(e) = generate_abstraction_table_potential(centroids_path, rank_table_path, output) {
-
+            let output = args
+                .get(4)
+                .map(|s| s.as_str())
+                .unwrap_or("abstraction_pot.bin");
+            if let Err(e) =
+                generate_abstraction_table_potential(centroids_path, rank_table_path, output)
+            {
                 eprintln!("precompute generate_abstraction_table_potential failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
         }
         "turn-potential" => {
             // F4: turn hand table against (mean, potential) centroids.
-            let centroids_path = args.get(2).map(|s| s.as_str()).unwrap_or("centroids_turn_pot.bin");
+            let centroids_path = args
+                .get(2)
+                .map(|s| s.as_str())
+                .unwrap_or("centroids_turn_pot.bin");
             let rank_table_path = args.get(3).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
-            let output = args.get(4).map(|s| s.as_str()).unwrap_or("turn_table_pot.bin");
+            let output = args
+                .get(4)
+                .map(|s| s.as_str())
+                .unwrap_or("turn_table_pot.bin");
             if let Err(e) = generate_turn_table_potential(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_turn_table_potential failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -230,12 +242,12 @@ fn main() {
                 centroids_path, rank_table_path, output
             );
             let num_samples = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(10_000);
-            if let Err(e) = generate_turn_table(centroids_path, rank_table_path, output, num_samples) {
-
+            if let Err(e) =
+                generate_turn_table(centroids_path, rank_table_path, output, num_samples)
+            {
                 eprintln!("precompute generate_turn_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -251,11 +263,9 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("preflop_table.bin");
             if let Err(e) = generate_preflop_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_preflop_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -275,11 +285,9 @@ fn main() {
                 centroids_path, rank_table_path, output
             );
             if let Err(e) = generate_preflop_rich_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_preflop_rich_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -300,11 +308,9 @@ fn main() {
                 rank_table_path, centroids_out, table_out, k
             );
             if let Err(e) = generate_flop_rich_table(rank_table_path, centroids_out, table_out, k) {
-
                 eprintln!("precompute generate_flop_rich_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -325,11 +331,9 @@ fn main() {
                 rank_table_path, centroids_out, table_out, k
             );
             if let Err(e) = generate_turn_rich_table(rank_table_path, centroids_out, table_out, k) {
-
                 eprintln!("precompute generate_turn_rich_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -343,11 +347,9 @@ fn main() {
             let k = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(64);
             println!("Generating {} flop buckets -> {}", k, output);
             if let Err(e) = generate_flop_buckets(k, rank_table_path, output) {
-
                 eprintln!("precompute generate_flop_buckets failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -374,11 +376,9 @@ fn main() {
                 println!("  (river default RIVER_OUTER_SAMPLES=50; override with env)");
             }
             if let Err(e) = generate_river_buckets(k, rank_table_path, output) {
-
                 eprintln!("precompute generate_river_buckets failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -387,11 +387,9 @@ fn main() {
             let rank_table_path = args.get(2).map(|s| s.as_str()).unwrap_or("hand_ranks.bin");
             let output = args.get(3).map(|s| s.as_str()).unwrap_or("all7_scores.bin");
             if let Err(e) = generate_all7_scores(rank_table_path, output) {
-
                 eprintln!("precompute generate_all7_scores failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -407,11 +405,9 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
             if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_abstraction_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -427,11 +423,9 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
             if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_abstraction_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -447,11 +441,9 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
             if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_abstraction_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -467,11 +459,9 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
             if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_abstraction_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -487,11 +477,9 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("abstraction_table.bin");
             if let Err(e) = generate_abstraction_table(centroids_path, rank_table_path, output) {
-
                 eprintln!("precompute generate_abstraction_table failed: {e}");
 
                 std::process::exit(1);
-
             }
 
             println!("Done.");
@@ -637,7 +625,7 @@ fn generate_turn_table(
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
     assert!(
         store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
-        "turn table uses u8 bucket ids; keep centroid count <= 255"
+        "turn table stores u16-aware bucket ids (write_bucket_table)"
     );
     let centroids = &store.centroids;
     let evaluator = make_evaluator(rank_table_path)?;
@@ -665,8 +653,10 @@ fn generate_turn_table(
                 return Err(format!(
                     "resume marker width mismatch: file says bucket_u16={}, \
 current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
-                    stored_u16, bucket_u16()
-                ).into());
+                    stored_u16,
+                    bucket_u16()
+                )
+                .into());
             }
             let p = u64::from_le_bytes(prog_bytes[1..9].try_into().unwrap()) as usize;
             if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
@@ -796,8 +786,8 @@ fn generate_preflop_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
     assert!(
-        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
-        "centroid count must be <= 255 for u8 ids"
+        store.centroids.len() <= 255,
+        "centroid count must be <= 255: this table stores u8 ids regardless of PKR_BUCKET_U16 (2026-11-03 re-audit)"
     );
     let centroids = &store.centroids;
     let evaluator = make_evaluator(rank_table_path)?;
@@ -909,7 +899,15 @@ fn generate_river_buckets(
     rank_table_path: &str,
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    assert!(k <= if bucket_u16() { 65535 } else { 255 }, "river buckets exceed storage width");
+    // 2026-11-03 re-audit: the river infoset hash truncates board_bucket
+    // to 8 bits ((hand_bucket << 8) | (board_bucket & 0xff)), so ANY
+    // k above 256 aliases boards modulo 256 — silent hash collisions
+    // between strategically different boards. The old bound (65535
+    // under PKR_BUCKET_U16) allowed exactly that.
+    assert!(
+        k <= 256,
+        "river buckets exceed the 8-bit infoset hash field (k={k})"
+    );
     let evaluator = make_evaluator(rank_table_path)?;
     let total_boards = choose(52, 5) as usize;
     let features: Vec<[f32; 10]> = (0..total_boards)
@@ -1039,7 +1037,10 @@ fn generate_centroids_potential(
         "flop" => 3,
         "turn" => 4,
         other => {
-            return Err(format!("centroids-potential: unknown street '{other}' (expected flop or turn)").into());
+            return Err(format!(
+                "centroids-potential: unknown street '{other}' (expected flop or turn)"
+            )
+            .into());
         }
     };
 
@@ -1070,7 +1071,10 @@ fn generate_centroids_potential(
                 (combinadic_unrank_3(board_idx as u32).to_vec(), None)
             } else {
                 let cards = combinadic_unrank_6(board_idx as u32);
-                ([cards[2], cards[3], cards[4], cards[5]].to_vec(), Some([cards[0], cards[1]]))
+                (
+                    [cards[2], cards[3], cards[4], cards[5]].to_vec(),
+                    Some([cards[0], cards[1]]),
+                )
             };
             let mut rng = StdRng::seed_from_u64(0x9E37_0000 + board_idx as u64);
             let avail: Vec<u8> = (0..52u8).filter(|c| !board.contains(c)).collect();
@@ -1082,7 +1086,11 @@ fn generate_centroids_potential(
             if let Some(h) = fixed_hole {
                 out.push(ehs_and_potential(&h, &board, evaluator.as_ref(), INNER));
             }
-            let target = if fixed_hole.is_some() { HANDS_PER_BOARD - 1 } else { HANDS_PER_BOARD };
+            let target = if fixed_hole.is_some() {
+                HANDS_PER_BOARD - 1
+            } else {
+                HANDS_PER_BOARD
+            };
             for _ in 0..target {
                 let i = rng.random_range(0..avail.len());
                 let mut j = rng.random_range(0..avail.len());
@@ -1096,7 +1104,11 @@ fn generate_centroids_potential(
         })
         .collect();
 
-    eprintln!("  potential: fitting k-means on {} pairs, k={}", data.len(), k);
+    eprintln!(
+        "  potential: fitting k-means on {} pairs, k={}",
+        data.len(),
+        k
+    );
     let centroids = kmeans_2d(&data, k, 50);
 
     // Report centroid coordinate stats so we can see whether the
@@ -1104,11 +1116,22 @@ fn generate_centroids_potential(
     let n = centroids.len().max(1) as f32;
     let mean_m: f32 = centroids.iter().map(|c| c.0).sum::<f32>() / n;
     let mean_p: f32 = centroids.iter().map(|c| c.1).sum::<f32>() / n;
-    let var_m: f32 = centroids.iter().map(|c| (c.0 - mean_m).powi(2)).sum::<f32>() / n;
-    let var_p: f32 = centroids.iter().map(|c| (c.1 - mean_p).powi(2)).sum::<f32>() / n;
+    let var_m: f32 = centroids
+        .iter()
+        .map(|c| (c.0 - mean_m).powi(2))
+        .sum::<f32>()
+        / n;
+    let var_p: f32 = centroids
+        .iter()
+        .map(|c| (c.1 - mean_p).powi(2))
+        .sum::<f32>()
+        / n;
     eprintln!(
         "  centroids: mean(EHS)={:.4} sd(EHS)={:.4}   mean(pot)={:.4} sd(pot)={:.4}",
-        mean_m, var_m.sqrt(), mean_p, var_p.sqrt(),
+        mean_m,
+        var_m.sqrt(),
+        mean_p,
+        var_p.sqrt(),
     );
 
     let store = CentroidStore { centroids };
@@ -1128,14 +1151,12 @@ fn kmeans_2d(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f32)>
     }
     let k = k.min(n);
     let mut rng = StdRng::seed_from_u64(42);
-    let mut centroids: Vec<(f32, f32)> = (0..k)
-        .map(|_| data[rng.random_range(0..n)])
-        .collect();
+    let mut centroids: Vec<(f32, f32)> = (0..k).map(|_| data[rng.random_range(0..n)]).collect();
 
     for _ in 0..max_iters {
         let mut counts = vec![0usize; k];
         let mut sums = vec![(0.0f32, 0.0f32); k];
-        for (i, &(x, y)) in data.iter().enumerate() {
+        for &(x, y) in data.iter() {
             let mut best_dist = f32::MAX;
             let mut best_idx = 0;
             for (c_idx, &(cx, cy)) in centroids.iter().enumerate() {
@@ -1186,8 +1207,8 @@ fn generate_abstraction_table_potential(
 
     let store = load_centroids(centroids_path)?;
     assert!(
-        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
-        "centroid count must be <= 255 for u8 ids"
+        store.centroids.len() <= 255,
+        "centroid count must be <= 255: this table stores u8 ids regardless of PKR_BUCKET_U16 (2026-11-03 re-audit)"
     );
     let centroids = &store.centroids;
     let evaluator = make_evaluator(rank_table_path)?;
@@ -1196,8 +1217,16 @@ fn generate_abstraction_table_potential(
     let mut table: Vec<u8> = vec![0u8; entries];
 
     let mask: [[usize; 2]; 10] = [
-        [0, 1], [0, 2], [0, 3], [0, 4], [1, 2],
-        [1, 3], [1, 4], [2, 3], [2, 4], [3, 4],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [2, 3],
+        [2, 4],
+        [3, 4],
     ];
 
     table
@@ -1233,7 +1262,8 @@ fn generate_abstraction_table_potential(
         });
 
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&table).map_err(|e| format!("write: {}", e))?;
+    file.write_all(&table)
+        .map_err(|e| format!("write: {}", e))?;
     println!(
         "Generated potential flop table with {} entries -> {}",
         total_combos * 10,
@@ -1258,8 +1288,8 @@ fn generate_turn_table_potential(
 
     let store = load_centroids(centroids_path).map_err(|e| format!("centroids: {}", e))?;
     assert!(
-        store.centroids.len() <= if bucket_u16() { 65535 } else { 255 },
-        "turn table uses u8 bucket ids; keep centroid count <= 255"
+        store.centroids.len() <= 255,
+        "turn table uses u8 bucket ids; keep centroid count <= 255 (u8 storage regardless of PKR_BUCKET_U16, 2026-11-03 re-audit)"
     );
     let centroids = &store.centroids;
     let evaluator = make_evaluator(rank_table_path)?;
@@ -1283,8 +1313,10 @@ fn generate_turn_table_potential(
                 return Err(format!(
                     "resume marker width mismatch: file says bucket_u16={}, \
 current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
-                    stored_u16, bucket_u16()
-                ).into());
+                    stored_u16,
+                    bucket_u16()
+                )
+                .into());
             }
             let p = u64::from_le_bytes(prog_bytes[1..9].try_into().unwrap()) as usize;
             if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
@@ -1304,10 +1336,20 @@ current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
     }
 
     let masks: [[usize; 2]; 15] = [
-        [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
-        [1, 2], [1, 3], [1, 4], [1, 5],
-        [2, 3], [2, 4], [2, 5],
-        [3, 4], [3, 5],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [0, 5],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [1, 5],
+        [2, 3],
+        [2, 4],
+        [2, 5],
+        [3, 4],
+        [3, 5],
         [4, 5],
     ];
 
@@ -1355,9 +1397,11 @@ current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
         done = end;
 
         let mut f = File::create(&tmp_path).map_err(|e| format!("create {}: {}", tmp_path, e))?;
-        f.write_all(&table).map_err(|e| format!("write {}: {}", tmp_path, e))?;
+        f.write_all(&table)
+            .map_err(|e| format!("write {}: {}", tmp_path, e))?;
         f.sync_all().ok();
-        let mut pf = File::create(&prog_path).map_err(|e| format!("create {}: {}", prog_path, e))?;
+        let mut pf =
+            File::create(&prog_path).map_err(|e| format!("create {}: {}", prog_path, e))?;
         pf.write_all(&[if bucket_u16() { 1u8 } else { 0u8 }])?;
         pf.write_all(&(done as u64).to_le_bytes())
             .map_err(|e| format!("write {}: {}", prog_path, e))?;
@@ -1367,7 +1411,9 @@ current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
         let elapsed = t_start.elapsed().as_secs_f64();
         let eta = if done > resume_from {
             elapsed * (total_combos - done) as f64 / (done - resume_from).max(1) as f64
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         eprintln!(
             "  turn-potential: {}/{} combos ({:.1}%), {:.0}s elapsed, ETA {:.0}s",
             done, total_combos, pct, elapsed, eta,
@@ -1375,10 +1421,14 @@ current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
     }
 
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&table).map_err(|e| format!("write: {}", e))?;
+    file.write_all(&table)
+        .map_err(|e| format!("write: {}", e))?;
     let _ = std::fs::remove_file(&tmp_path);
     let _ = std::fs::remove_file(&prog_path);
-    println!("Generated potential turn table with {} entries -> {}", entries, output);
+    println!(
+        "Generated potential turn table with {} entries -> {}",
+        entries, output
+    );
     Ok(())
 }
 
@@ -1388,15 +1438,14 @@ fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> 
         return vec![];
     }
     let k = k.min(n);
-    let mut _kmeans_rng = StdRng::seed_from_u64(
-        0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
+    let mut _kmeans_rng = StdRng::seed_from_u64(0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
     let mut centroids: Vec<[f32; 10]> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
         let mut counts: Vec<usize> = vec![0; k];
         let mut sums: Vec<[f32; 10]> = vec![[0f32; 10]; k];
 
-        for (i, point) in data.iter().enumerate() {
+        for point in data.iter() {
             let mut best_dist = f32::MAX;
             let mut best_idx = 0;
             for (c_idx, c) in centroids.iter().enumerate() {
@@ -1423,7 +1472,11 @@ fn kmeans_10d(data: &[[f32; 10]], k: usize, max_iters: usize) -> Vec<[f32; 10]> 
                 for j in 0..10 {
                     new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
                 }
-                if new_c.iter().zip(centroids[c_idx].iter()).any(|(a, b)| (a - b).abs() > 1e-6) {
+                if new_c
+                    .iter()
+                    .zip(centroids[c_idx].iter())
+                    .any(|(a, b)| (a - b).abs() > 1e-6)
+                {
                     moved = true;
                 }
                 centroids[c_idx] = new_c;
@@ -1442,15 +1495,14 @@ fn simple_kmeans(data: &[(f32, f32)], k: usize, max_iters: usize) -> Vec<(f32, f
         return vec![];
     }
     let k = k.min(n);
-    let mut _kmeans_rng = StdRng::seed_from_u64(
-        0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
+    let mut _kmeans_rng = StdRng::seed_from_u64(0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
     let mut centroids: Vec<(f32, f32)> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
         let mut counts: Vec<usize> = vec![0; k];
         let mut sums: Vec<(f32, f32)> = vec![(0f32, 0f32); k];
 
-        for (i, &(x, y)) in data.iter().enumerate() {
+        for &(x, y) in data.iter() {
             let mut best_dist = f32::MAX;
             let mut best_idx = 0;
             for (c_idx, &(cx, cy)) in centroids.iter().enumerate() {
@@ -1563,7 +1615,8 @@ fn generate_preflop_rich_table(
         *slot = nearest_centroid_6d(&feat, centroids) as u16;
     });
     let mut file = File::create(output).map_err(|e| format!("create {}: {}", output, e))?;
-    file.write_all(&buckets_to_bytes(&table)).map_err(|e| format!("write: {}", e))?;
+    file.write_all(&buckets_to_bytes(&table))
+        .map_err(|e| format!("write: {}", e))?;
     println!(
         "Generated rich preflop table with {} entries ({} centroids) -> {}",
         total,
@@ -1579,15 +1632,14 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
         return vec![];
     }
     let k = k.min(n);
-    let mut _kmeans_rng = StdRng::seed_from_u64(
-        0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
+    let mut _kmeans_rng = StdRng::seed_from_u64(0x5EED_1F70 ^ (k as u64) ^ (data.len() as u64));
     let mut centroids: Vec<[f32; 6]> = data.sample(&mut _kmeans_rng, k).cloned().collect();
 
     for _ in 0..max_iters {
         let mut counts: Vec<usize> = vec![0; k];
         let mut sums: Vec<[f32; 6]> = vec![[0f32; 6]; k];
 
-        for (i, point) in data.iter().enumerate() {
+        for point in data.iter() {
             let mut best_dist = f32::MAX;
             let mut best_idx = 0;
             for (c_idx, c) in centroids.iter().enumerate() {
@@ -1614,7 +1666,11 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
                 for j in 0..new_c.len() {
                     new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
                 }
-                if new_c.iter().zip(centroids[c_idx].iter()).any(|(a, b)| (a - b).abs() > 1e-6) {
+                if new_c
+                    .iter()
+                    .zip(centroids[c_idx].iter())
+                    .any(|(a, b)| (a - b).abs() > 1e-6)
+                {
                     moved = true;
                 }
                 centroids[c_idx] = new_c;
@@ -1626,7 +1682,6 @@ fn kmeans_6d(data: &[[f32; 6]], k: usize, max_iters: usize) -> Vec<[f32; 6]> {
     }
     centroids
 }
-
 
 // ===========================================================================
 // Rich flop / turn precompute (v35 experiment).
@@ -1675,12 +1730,7 @@ fn sample_seed() -> u64 {
 /// K-means with explicit seed. Same math as `kmeans_10d`, but the
 /// initial centroid selection uses a seeded RNG so the result is
 /// reproducible across runs.
-fn kmeans_10d_seeded(
-    data: &[[f32; 10]],
-    k: usize,
-    max_iters: usize,
-    seed: u64,
-) -> Vec<[f32; 10]> {
+fn kmeans_10d_seeded(data: &[[f32; 10]], k: usize, max_iters: usize, seed: u64) -> Vec<[f32; 10]> {
     use rand::SeedableRng;
     let n = data.len();
     if n == 0 || k == 0 {
@@ -1688,8 +1738,7 @@ fn kmeans_10d_seeded(
     }
     let k = k.min(n);
     let mut rng = StdRng::seed_from_u64(seed);
-    let mut centroids: Vec<[f32; 10]> =
-        data.sample(&mut rng, k).cloned().collect();
+    let mut centroids: Vec<[f32; 10]> = data.sample(&mut rng, k).cloned().collect();
 
     for _ in 0..max_iters {
         let mut counts: Vec<usize> = vec![0; k];
@@ -1722,7 +1771,11 @@ fn kmeans_10d_seeded(
                 for j in 0..10 {
                     new_c[j] = sums[c_idx][j] / counts[c_idx] as f32;
                 }
-                if new_c.iter().zip(centroids[c_idx].iter()).any(|(a, b)| (a - b).abs() > 1e-6) {
+                if new_c
+                    .iter()
+                    .zip(centroids[c_idx].iter())
+                    .any(|(a, b)| (a - b).abs() > 1e-6)
+                {
                     moved = true;
                 }
                 centroids[c_idx] = new_c;
@@ -1737,14 +1790,18 @@ fn kmeans_10d_seeded(
 
 /// Sample 10D features from the 5-card (hole, flop) space. Each sample
 /// is a random 5-card combo paired with a random 2-of-5 mask as the hole.
-fn sample_flop_features(
-    n: usize,
-    evaluator: &dyn Evaluator,
-    seed: u64,
-) -> Vec<[f32; 10]> {
+fn sample_flop_features(n: usize, evaluator: &dyn Evaluator, seed: u64) -> Vec<[f32; 10]> {
     const MASKS: [[usize; 2]; 10] = [
-        [0, 1], [0, 2], [0, 3], [0, 4], [1, 2],
-        [1, 3], [1, 4], [2, 3], [2, 4], [3, 4],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [2, 3],
+        [2, 4],
+        [3, 4],
     ];
     let total = choose(52, 5) as u32;
     let mut rng = StdRng::seed_from_u64(seed);
@@ -1770,16 +1827,22 @@ fn sample_flop_features(
 }
 
 /// Sample 10D features from the 6-card (hole, turn) space.
-fn sample_turn_features(
-    n: usize,
-    evaluator: &dyn Evaluator,
-    seed: u64,
-) -> Vec<[f32; 10]> {
+fn sample_turn_features(n: usize, evaluator: &dyn Evaluator, seed: u64) -> Vec<[f32; 10]> {
     const MASKS: [[usize; 2]; 15] = [
-        [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
-        [1, 2], [1, 3], [1, 4], [1, 5],
-        [2, 3], [2, 4], [2, 5],
-        [3, 4], [3, 5],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [0, 5],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [1, 5],
+        [2, 3],
+        [2, 4],
+        [2, 5],
+        [3, 4],
+        [3, 5],
         [4, 5],
     ];
     let total = choose(52, 6) as u32;
@@ -1836,8 +1899,16 @@ fn generate_flop_rich_table(
 
     // Phase 2: assign all 26M entries.
     const MASKS: [[usize; 2]; 10] = [
-        [0, 1], [0, 2], [0, 3], [0, 4], [1, 2],
-        [1, 3], [1, 4], [2, 3], [2, 4], [3, 4],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [2, 3],
+        [2, 4],
+        [3, 4],
     ];
     let total_combos = choose(52, 5) as usize;
     let entries = total_combos * 10;
@@ -1878,10 +1949,7 @@ fn generate_flop_rich_table(
     let dt = t0.elapsed().as_secs_f64();
     eprintln!(
         "  flop-rich: wrote {} entries ({} bytes) to {} in {:.1}s",
-        entries,
-        entries,
-        table_out,
-        dt
+        entries, entries, table_out, dt
     );
     Ok(())
 }
@@ -1917,10 +1985,20 @@ fn generate_turn_rich_table(
 
     // Phase 2: assign all entries with checkpoint/resume (305 MB output).
     const MASKS: [[usize; 2]; 15] = [
-        [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],
-        [1, 2], [1, 3], [1, 4], [1, 5],
-        [2, 3], [2, 4], [2, 5],
-        [3, 4], [3, 5],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [0, 5],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [1, 5],
+        [2, 3],
+        [2, 4],
+        [2, 5],
+        [3, 4],
+        [3, 5],
         [4, 5],
     ];
     let total_combos = choose(52, 6) as usize;
@@ -1946,8 +2024,10 @@ fn generate_turn_rich_table(
                 return Err(format!(
                     "resume marker width mismatch: file says bucket_u16={}, \
 current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
-                    stored_u16, bucket_u16()
-                ).into());
+                    stored_u16,
+                    bucket_u16()
+                )
+                .into());
             }
             let p = u64::from_le_bytes(prog_bytes[1..9].try_into().unwrap()) as usize;
             if p > 0 && p < total_combos && std::path::Path::new(&tmp_path).exists() {
@@ -2007,8 +2087,8 @@ current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
         f.write_all(&table)
             .map_err(|e| format!("write {}: {}", tmp_path, e))?;
         f.sync_all().ok();
-        let mut pf = File::create(&prog_path)
-            .map_err(|e| format!("create {}: {}", prog_path, e))?;
+        let mut pf =
+            File::create(&prog_path).map_err(|e| format!("create {}: {}", prog_path, e))?;
         pf.write_all(&[if bucket_u16() { 1u8 } else { 0u8 }])?;
         pf.write_all(&(done as u64).to_le_bytes())
             .map_err(|e| format!("write {}: {}", prog_path, e))?;
@@ -2039,10 +2119,7 @@ current PKR_BUCKET_U16 gives {}. Delete the .progress/.tmp and restart.",
     let dt = t_start.elapsed().as_secs_f64();
     eprintln!(
         "  turn-rich: wrote {} entries ({} bytes) to {} in {:.1}s",
-        entries,
-        entries,
-        table_out,
-        dt
+        entries, entries, table_out, dt
     );
     Ok(())
 }

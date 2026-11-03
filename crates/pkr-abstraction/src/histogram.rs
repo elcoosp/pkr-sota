@@ -78,7 +78,9 @@ pub fn flop_hist(
     let mut n = 0f32;
     let mut rng = seed | 1; // nonzero LCG state
     let mut next = || {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (rng >> 33) as u32
     };
     for turn in 0..52u8 {
@@ -140,7 +142,10 @@ pub fn kmeans_cdf(data: &[Vec<f32>], k: usize, iters: usize) -> (Vec<Vec<f32>>, 
             let mut bd = f32::INFINITY;
             for (ci, c) in cents.iter().enumerate() {
                 let d: f32 = p.iter().zip(c).map(|(a, b)| (a - b) * (a - b)).sum();
-                if d < bd { bd = d; best = ci; }
+                if d < bd {
+                    bd = d;
+                    best = ci;
+                }
             }
             assign[i] = best;
         }
@@ -149,11 +154,15 @@ pub fn kmeans_cdf(data: &[Vec<f32>], k: usize, iters: usize) -> (Vec<Vec<f32>>, 
         let mut counts = vec![0usize; k];
         for (i, p) in cdfs.iter().enumerate() {
             counts[assign[i]] += 1;
-            for d in 0..dim { sums[assign[i]][d] += p[d]; }
+            for d in 0..dim {
+                sums[assign[i]][d] += p[d];
+            }
         }
         for ci in 0..k {
             if counts[ci] > 0 {
-                for d in 0..dim { cents[ci][d] = sums[ci][d] / counts[ci] as f32; }
+                for d in 0..dim {
+                    cents[ci][d] = sums[ci][d] / counts[ci] as f32;
+                }
             }
         }
     }
@@ -171,7 +180,10 @@ pub fn nearest_centroid_cdf(hist: &[f32], centroids: &[Vec<f32>]) -> usize {
     for (i, c) in centroids.iter().enumerate() {
         // centroids are stored as CDFs already (kmeans_cdf output).
         let d: f32 = ch.iter().zip(c).map(|(a, b)| (a - b).abs()).sum();
-        if d < bd { bd = d; best = i; }
+        if d < bd {
+            bd = d;
+            best = i;
+        }
     }
     best
 }
@@ -179,14 +191,22 @@ pub fn nearest_centroid_cdf(hist: &[f32], centroids: &[Vec<f32>]) -> usize {
 /// Mean within-cluster EMD (L1 of CDFs) of a clustering — the quality
 /// metric Task 2.3(c) compares against the legacy buckets.
 pub fn mean_within_cluster_emd(data: &[Vec<f32>], cents: &[Vec<f32>], assign: &[usize]) -> f32 {
-    // M-26 (audit 2026-10-10): emd_l1 expects CDFs and integrates them
-    // again. Passing raw histograms here meant emd_l1 built a second CDF
-    // inside, so the mean was over CDF-of-CDF, not the EMD the metric
-    // advertises. CDF both args before calling.
-    if data.is_empty() { return 0.0; }
+    // M-26 (audit 2026-10-10) fixed properly in the 2026-11-03
+    // re-audit: emd_l1 already CDFs its inputs internally, so the old
+    // "CDF both args before calling" produced CDF-of-CDF on BOTH sides
+    // (still symmetric and finite, but not the advertised EMD and not
+    // zero for a point vs its own centroid). Compare CDFs directly.
+    if data.is_empty() {
+        return 0.0;
+    }
     let mut tot = 0f32;
     for (i, h) in data.iter().enumerate() {
-        tot += emd_l1(&cdf(h), &cdf(&cents[assign[i]]));
+        let (ch, cc) = (cdf(h), cdf(&cents[assign[i]]));
+        tot += ch
+            .iter()
+            .zip(cc.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>();
     }
     tot / data.len() as f32
 }
@@ -234,16 +254,22 @@ mod tests {
         // different equity histogram from trash.
         let ev = NlheEvaluator;
         let board4 = [12u8, 11, 9, 1]; // A K Q-ish dry-ish
-        let strong = [0u8, 13];        // pair-ish w/ ace kicker region
-        let trash = [44u8, 46];        // low offsuit junk
+        let strong = [0u8, 13]; // pair-ish w/ ace kicker region
+        let trash = [44u8, 46]; // low offsuit junk
         let hs = turn_hist(&strong, &board4, &ev, 10);
         let ht = turn_hist(&trash, &board4, &ev, 10);
         // Mean equity proxy = sum(bin_index * mass).
-        let mean = |h: &[f32]| h.iter().enumerate().map(|(i, &m)| i as f32 * m).sum::<f32>();
+        let mean = |h: &[f32]| {
+            h.iter()
+                .enumerate()
+                .map(|(i, &m)| i as f32 * m)
+                .sum::<f32>()
+        };
         assert!(
             mean(&hs) > mean(&ht),
             "strong mean {} should exceed trash mean {}",
-            mean(&hs), mean(&ht)
+            mean(&hs),
+            mean(&ht)
         );
     }
 
@@ -271,22 +297,34 @@ mod tests {
     fn kmeans_cdf_separates_two_clusters() {
         // Cluster A: mass in low bins. Cluster B: mass in high bins.
         let mut data = Vec::new();
-        for _ in 0..10 { data.push(vec![1.0, 0.0, 0.0, 0.0, 0.0]); }
-        for _ in 0..10 { data.push(vec![0.0, 0.0, 0.0, 0.0, 1.0]); }
+        for _ in 0..10 {
+            data.push(vec![1.0, 0.0, 0.0, 0.0, 0.0]);
+        }
+        for _ in 0..10 {
+            data.push(vec![0.0, 0.0, 0.0, 0.0, 1.0]);
+        }
         let (cents, assign) = kmeans_cdf(&data, 2, 20);
         assert_eq!(cents.len(), 2);
         // All A's share one label, all B's the other.
         let a = assign[0];
         assert!(assign[..10].iter().all(|&x| x == a), "A not homogeneous");
-        assert!(assign[10..].iter().all(|&x| x != a), "B not separated from A");
+        assert!(
+            assign[10..].iter().all(|&x| x != a),
+            "B not separated from A"
+        );
     }
 
     #[test]
     fn kmeans_cdf_quality_improves_or_is_finite() {
         let mut data = Vec::new();
         let mut rng = 12345u64;
-        let mut next = || { rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1); (rng >> 40) as f32 / (1u64 << 24) as f32 };
-        for _ in 0..50 { data.push(vec![next(), next(), next(), next()]); }
+        let mut next = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (rng >> 40) as f32 / (1u64 << 24) as f32
+        };
+        for _ in 0..50 {
+            data.push(vec![next(), next(), next(), next()]);
+        }
         let (cents, assign) = kmeans_cdf(&data, 4, 20);
         let q = mean_within_cluster_emd(&data, &cents, &assign);
         assert!(q.is_finite() && q >= 0.0, "quality {q}");
@@ -326,18 +364,34 @@ mod tests {
         let mut best: (u32, [u8; 2]) = (u32::MAX, [0, 0]);
         let mut worst: (u32, [u8; 2]) = (0, [0, 0]);
         for a in 0..52u8 {
-            if board.contains(&a) { continue; }
+            if board.contains(&a) {
+                continue;
+            }
             for b in (a + 1)..52u8 {
-                if board.contains(&b) { continue; }
+                if board.contains(&b) {
+                    continue;
+                }
                 let r = ev.evaluate_hand(&[a, b], &board);
-                if r < best.0 { best = (r, [a, b]); }
-                if r > worst.0 { worst = (r, [a, b]); }
+                if r < best.0 {
+                    best = (r, [a, b]);
+                }
+                if r > worst.0 {
+                    worst = (r, [a, b]);
+                }
             }
         }
         let e_nuts = river_equity(&best.1, &board, &ev);
         let e_worst = river_equity(&worst.1, &board, &ev);
-        assert!(e_nuts > 0.8, "nuts {:?} equity {e_nuts} should be high", best.1);
-        assert!(e_worst < 0.2, "worst {:?} equity {e_worst} should be low", worst.1);
+        assert!(
+            e_nuts > 0.8,
+            "nuts {:?} equity {e_nuts} should be high",
+            best.1
+        );
+        assert!(
+            e_worst < 0.2,
+            "worst {:?} equity {e_worst} should be low",
+            worst.1
+        );
         assert!(e_nuts > e_worst);
     }
 
@@ -348,7 +402,10 @@ mod tests {
         let hole = [0u8, 5];
         let h = turn_hist(&hole, &board4, &ev, 10);
         let sum: f32 = h.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-3, "histogram must sum to 1, got {sum}");
+        assert!(
+            (sum - 1.0).abs() < 1e-3,
+            "histogram must sum to 1, got {sum}"
+        );
         assert_eq!(h.len(), 10);
         // 46 river cards -> some bin gets mass; not all zero.
         assert!(h.iter().any(|&x| x > 0.0));
@@ -365,15 +422,52 @@ mod tests {
         let mine = ev.evaluate_hand(&hole, &board);
         let (mut w, mut t, mut n) = (0u32, 0u32, 0u32);
         for a in 0..52u8 {
-            if hole.contains(&a) || board.contains(&a) { continue; }
+            if hole.contains(&a) || board.contains(&a) {
+                continue;
+            }
             for b in (a + 1)..52u8 {
-                if hole.contains(&b) || board.contains(&b) { continue; }
+                if hole.contains(&b) || board.contains(&b) {
+                    continue;
+                }
                 let o = ev.evaluate_hand(&[a, b], &board);
                 n += 1;
-                if mine < o { w += 1 } else if mine == o { t += 1 }
+                if mine < o {
+                    w += 1
+                } else if mine == o {
+                    t += 1
+                }
             }
         }
         let want = (w as f32 + 0.5 * t as f32) / n as f32;
         assert!((e - want).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod audit_2026_11_tests {
+    use super::*;
+
+    /// 2026-11-03 re-audit: mean_within_cluster_emd compared
+    /// CDF-of-CDFs (emd_l1 integrates its inputs internally), so a
+    /// point vs its OWN centroid scored a strictly positive "EMD".
+    /// A single-point dataset must have EMD 0 to its own centroid.
+    #[test]
+    fn mean_within_cluster_emd_is_zero_for_own_centroid() {
+        let h = vec![0.25f32, 0.5, 0.25];
+        let data = vec![h.clone()];
+        let cents = vec![h];
+        let assign = vec![0usize];
+        let m = mean_within_cluster_emd(&data, &cents, &assign);
+        assert!(m.abs() < 1e-6, "own centroid must give EMD 0, got {m}");
+    }
+
+    /// And a genuinely different centroid must score positive.
+    #[test]
+    fn mean_within_cluster_emd_positive_for_different_centroid() {
+        let data = vec![vec![1.0f32, 0.0, 0.0]];
+        let cents = vec![vec![0.0f32, 0.0, 1.0]];
+        let assign = vec![0usize];
+        let m = mean_within_cluster_emd(&data, &cents, &assign);
+        assert!(m > 0.5, "disjoint histograms must score > 0.5, got {m}");
     }
 }

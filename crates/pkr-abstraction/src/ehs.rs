@@ -11,6 +11,10 @@ fn num_samples() -> usize {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1000)
+            // 2026-11-03 re-audit: EHS_SAMPLES=0 made the MC estimator
+            // 0/0 = NaN, which silently poisoned every k-means bucket
+            // id downstream. Clamp instead.
+            .max(1)
     })
 }
 
@@ -31,6 +35,10 @@ fn seed_for(hole: &[u8], board: &[u8]) -> u64 {
 pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f32, f32) {
     assert_eq!(hole.len(), 2, "exactly 2 hole cards required");
     assert!(board.len() <= 5, "board cannot exceed 5 cards");
+    // 2026-11-03 re-audit: duplicate hole cards overflow the 50-slot
+    // remaining deck buffer (52 - 1 distinct = 51 > 50). Misuse-only,
+    // but fail loudly instead of indexing out of bounds.
+    assert_ne!(hole[0], hole[1], "duplicate hole card");
     let needed_board = 5 - board.len();
     let total_draw = 2 + needed_board;
 
