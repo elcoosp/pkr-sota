@@ -23,19 +23,60 @@ source scripts/run-config.sh
 # on SIGINT/SIGTERM. The training wrapper writes to $LOG, and the trainer
 # itself handles SIGINT (see binaries/pkr-trainer), so we only need to
 # forward the signal and wait for the child to exit.
+#
+# 2026-11-03 re-audit (M1): the old trap was a no-op — _CHILD_PID was the
+# only assignment (never set), so _forward always exited 130 without
+# touching the child. Even with a PID, `cargo run … | tee` means a TERM to
+# the pipeline leader does not reach the pkr-trainer grandchild (cargo
+# does not forward signals). Fix: the training pipeline below is launched
+# with `set -m` so it owns a process group, and _forward TERMs that whole
+# group (cargo + pkr-trainer + tee), guarded by a ps pgid check so it can
+# never kill our own group. The logic is exercised byte-for-byte by a
+# standalone harness (see /tmp sigtrap test in the 2026-11-03 audit).
 _CHILD_PID=""
+_LOCK_HELD=0
+_MYPGID="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]' || true)"
 _forward() {
+    trap - INT TERM   # no re-entry
     if [ -n "$_CHILD_PID" ] && kill -0 "$_CHILD_PID" 2>/dev/null; then
-        kill -TERM "$_CHILD_PID" 2>/dev/null || true
+        # TERM the pipeline's own process group (set -m) so the signal
+        # reaches cargo AND pkr-trainer AND tee; fall back to the leader
+        # alone if the child is somehow in our group.
+        _pgid="$(ps -o pgid= -p "$_CHILD_PID" 2>/dev/null | tr -d '[:space:]' || true)"
+        if [ -n "$_pgid" ] && [ -n "$_MYPGID" ] && [ "$_pgid" != "$_MYPGID" ]; then
+            kill -TERM -- -"$_pgid" 2>/dev/null || true
+        else
+            kill -TERM "$_CHILD_PID" 2>/dev/null || true
+        fi
+        # Give the trainer its final-checkpoint window before exiting.
         wait "$_CHILD_PID" 2>/dev/null || true
     fi
     exit 130
 }
+# 2026-11-03 re-audit (M18): serialize runs per version dir. Two
+# concurrent run.sh invocations with the same VERSION interleave their
+# rolling checkpoint saves on $OUT/train.ckpt. mkdir is atomic across
+# mac/linux; no flock dependency.
+_acquire_lock() {
+    if ! mkdir "$OUT/.lock" 2>/dev/null; then
+        echo "ABORT: $OUT/.lock exists — another run.sh appears active for" \
+             "this VERSION. Remove the directory only if that run is dead."
+        exit 1
+    fi
+    _LOCK_HELD=1
+}
+_cleanup() {
+    if [ "$_LOCK_HELD" = "1" ]; then
+        rmdir "$OUT/.lock" 2>/dev/null || true
+    fi
+}
 trap _forward INT TERM
+trap _cleanup EXIT
 
 LOG="${LOG:-/tmp/${VERSION}.log}"
 EVAL_LOG="${EVAL_LOG:-/tmp/${VERSION}_evals.log}"
 mkdir -p "$OUT"
+_acquire_lock
 
 echo "=== pkr-sota ${VERSION} ==="
 echo "  started:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -132,6 +173,11 @@ fi
 # 3. Train
 # ---------------------------------------------------------------
 echo "==> [8/8] train"
+# 2026-11-03 re-audit (M1): run the pipeline in the background with job
+# control so it owns a process group (PGID = first pipeline member) and
+# _forward can TERM cargo + pkr-trainer + tee together. The explicit rc
+# capture preserves the old set -e behaviour of a failing pipeline.
+set -m
 cargo run --release -p pkr-trainer -- \
     --iterations "$ITERATIONS" \
     --bench-seconds "$BENCH_SECONDS" \
@@ -158,7 +204,13 @@ cargo run --release -p pkr-trainer -- \
     --metrics-csv "$OUT/metrics.csv" \
     --stats-json "$OUT/stats.json" \
     --output "$OUT/blueprint.bin" \
-    2>&1 | tee "$LOG"
+    2>&1 | tee "$LOG" &
+_CHILD_PID=$!
+_rc=0
+wait "$_CHILD_PID" || _rc=$?
+_CHILD_PID=""
+set +m
+[ "$_rc" -eq 0 ] || exit "$_rc"
 
 echo ""
 echo "=== ${VERSION} complete at $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
