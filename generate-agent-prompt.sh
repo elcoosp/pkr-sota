@@ -94,7 +94,7 @@ You are working in the \`pkr-sota\` Rust workspace. You must code against the pr
   \`git cat-file -e main:relative/path 2>/dev/null\`
 - If it exists, **read its current content** with \`git show main:relative/path\`.
 - Make only the **necessary changes** – do not rewrite the whole file unless it's the only safe way.
-- Prefer \`sed -i '' 's/old/new/g'\` for small changes. If \`sed\` fails, then fallback to a full rewrite using \`cat > file << 'EOF'\`.
+- Prefer a portable in-place edit (works on GNU and BSD sed alike): \`sed 's/old/new/g' file > file.tmp && mv file.tmp file\`. Never use \`sed -i ''\` (BSD-only) or bare \`sed -i\` (GNU-only) directly. If a targeted edit is unsafe, fall back to a full rewrite using \`cat > file << 'EOF'\`.
 
 ### 3. Workspace dependencies must be centralized
 - When adding a new dependency to a crate, reference it as \`dep = { workspace = true }\` in that crate's \`Cargo.toml\`.
