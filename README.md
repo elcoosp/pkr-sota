@@ -42,13 +42,13 @@ The pipeline has four stages, and each one is its own crate boundary:
 ```
 
 > [!NOTE]
-> "sota" is the destination, not a claim. The project's own assessments in [`docs/status.md`](docs/status.md) grade the current bot honestly, and every experiment document records its measurement caveats — including the negative results. See [Project status](#project-status).
+> "sota" is the destination, not a claim. The project's own assessments in [`docs/STATUS.md`](docs/STATUS.md) grade the current bot honestly, and the history records its measurement caveats — including the negative results. See [Project status](#project-status).
 
 ## Features
 
 - **End-to-end on one machine.** `./smoke.sh` runs the full pipeline — hand-rank table, centroids, per-street bucket tables, training, export, reload — and finishes with a release-mode integration test that loads the blueprint through `pkr-runtime`.
 - **Deterministic by construction.** Same seed and inputs produce a byte-identical `blueprint.bin` at any thread count; the `golden` CI workflow fails on any drift from stored SHA-256 hashes.
-- **Nanosecond queries.** The runtime `mmap`s the blueprint and answers lookups with a branchless binary search — p50 ≈ 42 ns, p99 ≈ 84 ns against a large blueprint on an M1 (see [`docs/status.md`](docs/status.md)).
+- **Nanosecond queries.** The runtime `mmap`s the blueprint and answers lookups with a branchless binary search — p50 ≈ 42 ns, p99 ≈ 84 ns against a large blueprint (see [`docs/STATUS.md`](docs/STATUS.md)).
 - **Safety-first search.** River subgame solving ships only in provably-safe modes: a bounded variant that blends back until the opponent's best response is no better than against the blueprint, and a CFR-D gadget (Burch et al., 2014) that grants the opponent a terminate option paying blueprint continuation value.
 - **Honest instrumentation.** Sampled best response with held-out lower bounds, myopic local best response, duplicate-poker tournaments with common random numbers, and exact-enumeration convergence canaries on Kuhn and Leduc.
 - **Battle-tested.** 460+ `#[test]` functions across the workspace, Miri on the core crates, fuzz targets over the blueprint loader and game-state transitions, nightly criterion benchmarks pushed to Bencher.
@@ -157,7 +157,7 @@ All hyperparameters are environment variables read once per process (set them be
 | `PKR_EMIT_FMPH` | off | Emit the optional minimal-perfect-hash tail in the blueprint |
 
 > [!TIP]
-> `cargo run --release -p pkr-trainer -- --help` documents all ~35 trainer flags — capacity, evaluator choice (`table` or `fast7`), checkpoint intervals, eval scheduling, promotion gates, plateau stopping, seeding, and JSON logging.
+> `cargo run --release -p pkr-trainer -- --help` documents all ~42 trainer flags — capacity, evaluator choice (`table` or `fast7`), checkpoint intervals, sync batching, eval scheduling, promotion gates, plateau stopping, seeding, and JSON logging.
 
 ## Continuous integration
 
@@ -183,7 +183,7 @@ What is verified working today:
 
 - The full pipeline (precompute → train → export → load → query), exercised by `smoke.sh` and held in place by the golden-hash CI gate.
 - Deterministic training: identical seed and inputs yield a byte-identical blueprint regardless of thread count.
-- Runtime lookups at p50 ≈ 42 ns / p99 ≈ 84 ns (M1, large blueprint — [`docs/status.md`](docs/status.md)).
+- Runtime lookups at p50 ≈ 42 ns / p99 ≈ 84 ns (large blueprint — [`docs/STATUS.md`](docs/STATUS.md)).
 - River-only bounded search beats the bare blueprint by ≈ +1.03 chips/deal on average across four decorrelated seeds (t ≥ 4.1), with the safety bound (search best-response ≤ blueprint best-response) passing in test.
 - The production CFR path converges on Leduc hold'em to well under the CI gate's 70 milli-chips/game threshold (~21 measured at 2M iterations).
 - 460+ unit/integration tests, Miri-clean core crates, fuzzed blueprint loader and state transitions.
@@ -192,18 +192,16 @@ What is verified working today:
 > Three honesty rules the project holds itself to, which apply to anything you read here:
 >
 > 1. **This is not a superhuman bot.** The project's own reviews place it far from competitive HUNL solvers; the realistic near-term goal is a strategy that is *provably not trivially exploitable*.
-> 2. **Absolute exploitability numbers are inflated.** The in-sample estimator behind the historical numbers in `docs/experiments/` is known-biased; only seeded, relative A/B comparisons between runs are meaningful.
-> 3. **K=7 invalidated history.** The 7-bucket action abstraction landed on 2026-10-10; every earlier checkpoint is unloadable by design, K=6 and K=7 are different abstract games whose numbers must not be compared, and a K=7 re-baseline is the current open work.
+> 2. **Absolute exploitability numbers are inflated.** The in-sample estimator behind the historical numbers (see [`docs/HISTORY.md`](docs/HISTORY.md)) is known-biased; only seeded, relative A/B comparisons between runs are meaningful.
+> 3. **K=6 history is closed.** The 7-bucket action abstraction shipped on 2026-10-10; every earlier checkpoint is unloadable by design, K=6 and K=7 are different abstract games whose numbers must not be compared. The follow-up "run 1" (eps + strict min-raise combined) measured as a mild regression and was not shipped.
 
-The [`docs/experiments/`](docs/experiments) directory is a deliberate record of dead ends too — finer river bucketing, k=400 abstraction, turn-time search, PCFR+ momentum, and variance-reduction schemes all have negative or inconclusive verdicts written up alongside the wins.
+The project also keeps a deliberate record of dead ends — finer river bucketing, k=400 abstraction, turn-time search, PCFR+ momentum, AIVAT-style variance reduction, and more, all with negative or inconclusive verdicts (see [`docs/HISTORY.md`](docs/HISTORY.md)).
 
 ## Documentation
 
-- [`docs/INDEX.md`](docs/INDEX.md) — annotated index of every document, with current-vs-historical status
-- [`docs/status.md`](docs/status.md) — current state of the codebase, verified numbers, known issues
-- [`docs/arch-overview.md`](docs/arch-overview.md) — architecture and design decisions
-- [`docs/spec/architecture.md`](docs/spec/architecture.md) and [`docs/spec/bst.md`](docs/spec/bst.md) — layered specification
-- [`docs/roadmap/PLAN_STATUS_2026-10-10.md`](docs/roadmap/PLAN_STATUS_2026-10-10.md) — the latest plan status
-- [`docs/experiments/VERIFIED_FINDINGS.md`](docs/experiments/VERIFIED_FINDINGS.md) — what is actually confirmed, with measurement context
-- [`docs/handoffs/`](docs/handoffs) and [`docs/playbooks/`](docs/playbooks) — session handoffs and working procedures
+The documentation set is deliberately small — four living files:
+
+- [`docs/STATUS.md`](docs/STATUS.md) — current state: what works, verified numbers, known gaps
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architecture and design decisions, as implemented
+- [`docs/HISTORY.md`](docs/HISTORY.md) — session timeline, verified findings, negative results, methodology lessons
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
