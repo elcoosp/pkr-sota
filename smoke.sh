@@ -90,7 +90,14 @@ echo "==> [8/8] pkr-trainer (10 iterations)"
 # smoke run makes the trainer resume at iteration 10; max_iters=10
 # then means the loop never runs. Delete the ckpt first so the
 # smoke run always exercises the full pipeline.
-rm -f "$SMOKE_DIR_ABS/train.ckpt"
+# 2026-11-03 re-audit (M11): train.ckpt alone was wiped, but
+# metrics.csv / exploitability.csv / blueprint.bin / stats.json from a
+# previous run persisted and accumulated (the trainer appends to the
+# CSVs), so the smoke dir mixed artifacts from several runs. Wipe
+# them (and the .prev rotation copy) alongside the checkpoint.
+rm -f "$SMOKE_DIR_ABS/train.ckpt" "$SMOKE_DIR_ABS/train.ckpt.prev" \
+      "$SMOKE_DIR_ABS/metrics.csv" "$SMOKE_DIR_ABS/exploitability.csv" \
+      "$SMOKE_DIR_ABS/blueprint.bin" "$SMOKE_DIR_ABS/stats.json"
 env EHS_SAMPLES=5 cargo run --release --quiet -p pkr-trainer -- \
     --iterations 10 \
     --threads 2 \
