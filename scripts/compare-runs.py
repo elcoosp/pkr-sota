@@ -1,8 +1,3 @@
-  wrote patches/T22-river-resolution.patch (git apply --check-able after fix)
-
-=== 2. Fix the stale T2.2 section of the audit ===
-
-=== 3. Result-analysis script for T2.2 / ε A/B ===
 #!/usr/bin/env python3
 """Compare two exploitability CSVs side by side.
 
