@@ -69,7 +69,7 @@ pub fn calculate_ehs(hole: &[u8], board: &[u8], evaluator: &dyn Evaluator) -> (f
     full_board_buf[..board.len()].copy_from_slice(board);
 
     for _ in 0..samples {
-        remaining[..rem_len].partial_shuffle(&mut rng, total_draw);
+        let _ = remaining[..rem_len].partial_shuffle(&mut rng, total_draw);
 
         let opp_hole = [remaining[0], remaining[1]];
         let board_fill = &remaining[2..2 + needed_board];
