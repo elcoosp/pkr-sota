@@ -68,7 +68,7 @@ fn equity_vs_random(
 
     let mut sum = 0.0f64;
     for _ in 0..inner {
-        remaining[..rem_len].partial_shuffle(rng, total_draw);
+        let _ = remaining[..rem_len].partial_shuffle(rng, total_draw);
         let opp = [remaining[0], remaining[1]];
         let fill = &remaining[2..2 + needed_board];
         full_board[board.len()..].copy_from_slice(fill);
